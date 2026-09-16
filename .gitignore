@@ -1,0 +1,10 @@
+.venv/
+node_modules/
+.DS_Store
+.claude/
+# raw school exports, scanned teacher keys, and design-tournament drafts stay local (never published)
+source/
+content/*.png
+designs/
+qa/screenshots/
+qa/node_modules/
