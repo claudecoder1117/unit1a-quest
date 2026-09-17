@@ -295,7 +295,15 @@ function boot() {
   const ver = document.querySelector('meta[name="build"]'); if (ver && APP_VERSION !== 'dev') ver.setAttribute('content', APP_VERSION);
   window.addEventListener('hashchange', route);
   route();
-  window.packet = { bus, navigate, currentRoute, getState, update, setHeader, applyTheme, toggleTheme, APP_VERSION, flags };
+  // Wave-1 integrator wiring (notes/T03.md → Requests): warm the grader registry once at boot so the
+  // lazily imported T04/T05 graders have settled before the first submit. Deliberately NOT a static
+  // import — the dynamic import keeps the first paint off the grader module graph. Screens that grade
+  // (`screens/card.js`, T09) `await window.packet.graders` (or `await ready` from the module) once
+  // before their first grade() call; until it resolves grade() answers `malformed` err:'no-grader'.
+  const graders = import('./grader/index.js')
+    .then(async (m) => { await m.ready; if (m.missing.length) console.warn('graders failed to load:', m.missing); return m; })
+    .catch((err) => { console.warn('grader registry unavailable:', err); return null; });
+  window.packet = { bus, navigate, currentRoute, getState, update, setHeader, applyTheme, toggleTheme, APP_VERSION, flags, graders };
 }
 
 if (typeof document !== 'undefined') {

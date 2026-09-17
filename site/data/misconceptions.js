@@ -74,6 +74,8 @@ export const MISCONCEPTIONS = Object.freeze({
     'Perimeter uses whole sides — a bisected side is twice its half (CB + BA), so double before you add.', 'setup'),
   'ratio-as-measure':    entry('Ratio numbers used as degrees',
     '5:7 are parts, not degrees — add the parts (12), divide the total (180 or 90) by that, then multiply each part.', 'setup'),
+  'grouping':            entry('Grouping misread',
+    'Multiply or subtract the WHOLE phrase: "three times the difference between x and 5" is 3(x − 5), not 3x − 5.', 'setup'),
 
   // ---- ratio grader --------------------------------------------------------------------------
   'unreduced-ratio':     entry('Ratio not reduced',
