@@ -247,7 +247,15 @@ test('boss: the check question is one tap, three options, exactly one right', ()
   assert.equal(q.options.filter((o) => o.ok).length, 1);
   assert.equal(new Set(q.options.map((o) => o.text)).size, 3, 'no duplicate options');
   const right = q.options.find((o) => o.ok).text;
-  assert.equal(right, (it.solution[0].say || it.solution[0].math).trim(), 'the answer is the first move of the solution');
+  // r2: the first-move question was a giveaway (its options were the step headings printed just above);
+  // a solved item now asks for the VALUE the working arrives at — the last `x = <number>` line.
+  const solved = it.solution.map((s) => String(s.math || '').trim()).filter((m) => /^x = [−-]?\d+(\.\d+)?$/.test(m));
+  assert.ok(solved.length, 'a T-cs-lin solution has an `x = <number>` line');
+  assert.equal(q.kind, 'value');
+  assert.match(q.prompt, /what did x come out as/i);
+  assert.equal(right, solved[solved.length - 1], 'the answer is the value x came out as');
+  assert.ok(q.options.every((o) => /^x = [−-]?\d+(\.\d+)?$/.test(o.text)), 'every option is an x-value, so it cannot be answered by matching a heading');
+  assert.match(q.wrong, /where x is solved/);
   assert.deepEqual(checkQuestion(it, 'seed|0'), q, 'deterministic per (item, seed)');
   assert.notDeepEqual(checkQuestion(it, 'seed|1').options, q.options, 'a different slot shuffles differently');
 });
@@ -480,4 +488,21 @@ test('r1: a blank B4 setup can be skipped on purpose — no heart, flawless forf
   const skip = src.slice(src.indexOf('function skipSetup('), src.indexOf('function keepInView('));
   assert.ok(skip.includes('st.setupMiss = true'), 'skipping forfeits flawless');
   assert.equal(skip.includes('st.hearts'), false, 'skipping never touches the hearts');
+  // r2: the widget's own skip() refuses in a boss, so skipSetup clears the blank-submit verdict itself and
+  // marks the box skipped (widgets.css dims `[data-skipped="true"]`, the hint reads as skipped).
+  assert.ok(skip.includes('entry.w.clear?.()'), 'the "! Type the equation." verdict and the field mark are cleared');
+  assert.ok(skip.includes("wroot.dataset.skipped = 'true'"), 'the equation box is marked skipped');
+  assert.ok(skip.includes("hint.dataset.kind = 'skipped'"), 'the hint reads as skipped');
+});
+
+test('r2: the check question falls back to the first move when the working has no solved value (fac-16), and to the hints (not-04)', () => {
+  const fac = checkQuestion(prepareItem(getCard('fac-16'), bossById.B3), 's');
+  assert.equal(fac.kind, 'first');
+  assert.equal(fac.options.find((o) => o.ok).text, (getCard('fac-16').solution[0].say || '').trim());
+  const not = checkQuestion(prepareItem(getCard('not-04'), bossById.B1), 's');
+  assert.equal(not.kind, 'hint');
+  const wp = checkQuestion(prepareItem(getCard('wp-16'), bossById.B4), 's');
+  assert.equal(wp.kind, 'value');
+  assert.equal(wp.options.find((o) => o.ok).text, 'x = 14');
+  assert.equal(new Set(wp.options.map((o) => o.text)).size, 3);
 });

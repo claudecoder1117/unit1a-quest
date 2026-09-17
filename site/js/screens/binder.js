@@ -94,6 +94,15 @@ function moduleOpen(save, moduleId) {
   if (!m) return false;
   return (m.originals ?? []).some(cid => !isCleared(save?.cards?.[cid]));
 }
+/**
+ * JUMP is defined over a module's originals (S1 "JUMP HERE per module", T14): a module with none (M3's
+ * arithmetic chains, M12's systems) is neither jumpable nor "cleared" — the sheet says nothing about JUMP.
+ * binder r2 — a fresh save used to print "Systems cleared — nothing left to jump."
+ */
+export function moduleJumpable(moduleId) {
+  const m = moduleById[moduleId];
+  return !!(m && m.jump && (m.originals ?? []).length);
+}
 
 /** Everything a tile needs, from the save alone. */
 function tileInfo(save, id) {
@@ -235,6 +244,21 @@ export function mountBinder(params, query) {
 
       const title = t.fam ? (famDef?.name ?? id) : `${numbering(id) || ''} ${card?.src ?? id}`.trim();
       const hist = Array.isArray(t.rec?.history) ? t.rec.history.slice(-6).reverse() : [];
+      // binder r2: a family tile has no card record — its history is the Gold Variants in save.variants[fam]
+      // ({ clearsGold, goldDays }), so the sheet never says "No Variants … yet" under "1 / 6 Gold Variants".
+      const vrec = t.fam ? (save.variants?.[id] ?? null) : null;
+      const goldDays = t.fam ? [...new Set((Array.isArray(vrec?.goldDays) ? vrec.goldDays : []).filter(d => typeof d === 'string'))].sort().reverse().slice(0, 6) : [];
+      const famHist = t.fam && t.prog.have > 0
+        ? h('div.bnd-hist',
+          h('h3.bnd-hist-h', 'Gold Variants'),
+          h('ul.bnd-hist-list', (goldDays.length ? goldDays : [null]).map(d => h('li',
+            h('span.bnd-hist-mark', { dataset: { ok: 'true' } }, '✓'),
+            h('span.mono', d ? fmtDay(Date.parse(`${d}T12:00:00`)) : ''),
+            h('span.muted', d
+              ? `Gold Variant${goldDays.length === 1 && t.prog.have > 1 ? `s · ${t.prog.have} that day` : ''}`
+              : `${t.prog.have} Gold Variant${t.prog.have > 1 ? 's' : ''}`),
+          ))))
+        : null;
 
       const body = h('div.bnd-pop', { role: 'dialog', 'aria-label': `${title} — tile details`, tabindex: '-1' },
         h('div.bnd-pop-head',
@@ -251,7 +275,7 @@ export function mountBinder(params, query) {
               + (t.cls === 'b' ? ` (${t.prog.variants} Variants · ${t.prog.reviewDays} review days)` : ''))
             : null,
         t.placed ? h('p.bnd-pop-note.muted', 'Placed by JUMP — the plan stops scheduling it as new, but it still comes back as a review.') : null,
-        hist.length
+        famHist ?? (hist.length
           ? h('div.bnd-hist',
             h('h3.bnd-hist-h', 'History'),
             h('ul.bnd-hist-list', hist.map(e => h('li',
@@ -260,12 +284,12 @@ export function mountBinder(params, query) {
               h('span.muted', `attempt ${e.attempt ?? 1}${e.hints ? ` · ${e.hints} hint${e.hints > 1 ? 's' : ''}` : ''}`),
               h('span.mono.muted', fmtSecs(e.ms)),
             ))))
-          : h('p.bnd-pop-note.muted', t.fam ? 'No Variants of this family yet.' : 'Not attempted yet.'),
+          : h('p.bnd-pop-note.muted', t.fam ? 'No Variants of this family yet.' : 'Not attempted yet.')),
         h('div.bnd-pop-actions',
           t.fam ? null : h('a.btn.btn-primary', { href: `#/card/${id}`, onclick: () => closePop() }, 'Open card'),
           ...tmpl.map(tid => h('a.btn', { href: `#/variant/${tid}`, onclick: () => closePop() }, `Infinite · ${templateLabel(tid)}`)),
-          t.module && moduleById[t.module]?.jump && !t.placed && moduleOpen(save, t.module) ? h('a.btn', { href: `#/run/jump/${t.module}`, onclick: () => closePop() }, `JUMP HERE · ${moduleById[t.module].name}`) : null,   // T14 (S1 "JUMP HERE per module"); never on a module already cleared through
-          t.module && moduleById[t.module]?.jump && !t.placed && !moduleOpen(save, t.module) ? h('span.muted.fs-1', `${moduleById[t.module].name} cleared — nothing left to jump.`) : null,
+          t.module && moduleJumpable(t.module) && !t.placed && moduleOpen(save, t.module) ? h('a.btn', { href: `#/run/jump/${t.module}`, onclick: () => closePop() }, `JUMP HERE · ${moduleById[t.module].name}`) : null,   // T14 (S1 "JUMP HERE per module"); never on a module already cleared through
+          t.module && moduleJumpable(t.module) && !t.placed && !moduleOpen(save, t.module) ? h('span.muted.fs-1', `${moduleById[t.module].name} cleared — nothing left to jump.`) : null,
           // W4 integration: the Binder is where a module lives, so its two module-scoped runs start here
           // too — BLITZ (M1/M3/M9 only, notes/T16.md) and the Boss the module belongs to, once it is ready
           // (notes/T12.md). A boss that is not ready is not offered at all rather than offered and refused.

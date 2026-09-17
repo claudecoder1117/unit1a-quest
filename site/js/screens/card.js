@@ -385,9 +385,13 @@ export function createCardView(host, source = {}, opts = {}) {
   function renderHead(item, rec) {
     meta.replaceChildren();
     if (o.kind === 'card') {
-      meta.append(h('span.chip.card-sheet', `${item.sheet ?? ''}${item.numbering ? ' · ' + item.numbering : ''}`.trim()));
+      // page r2: the chip is sheet + number only — the paper's own margin carries a long teacher label
+      // ("Warm up! — item 2"), so the chip keeps just its trailing number ("AP-1 · 2") or the sheet alone.
+      const no = String(item.numbering ?? '');
+      const chipNo = no.length > 4 ? (no.match(/(\d+)\s*$/)?.[1] ?? '') : no;
+      meta.append(h('span.chip.card-sheet', `${item.sheet ?? ''}${chipNo ? ' · ' + chipNo : ''}`.trim()));
     } else {
-      meta.append(h('span.chip.card-variant', { dataset: { tone: 'accent' }, title: `Variant of ${item.template} · seed ${item.seed}` }, `◆ ${item.template}#${item.seedTag ?? ''}`));
+      meta.append(h('span.chip.card-variant', { dataset: { tone: 'accent' }, title: `Variant of ${item.template} · seed ${item.seed}` }, '◆ Variant ', h('span.muted.mono.fs-1', `#${item.seedTag ?? ''}`)));   // page r2: no raw template id
       if (o.forCard) meta.append(h('span.chip', `for ${o.forCard}`));
     }
     meta.append(h('span.chip.card-tier', `tier ${item.tier}`));
@@ -445,7 +449,9 @@ export function createCardView(host, source = {}, opts = {}) {
     dockHint.hidden = false;
     dockHint.disabled = next < 0 || next >= n;
     dockHint.textContent = '';
-    dockHint.append(dockHint.disabled ? 'No hints left' : 'Hint ', dockHint.disabled ? null : h('span.mono.fs-1', `${next + 1}/${n}`));
+    // content r2: native append() stringifies null ("No hints leftnull") — only h() filters nulls.
+    if (dockHint.disabled) dockHint.append('No hints left');
+    else dockHint.append('Hint ', h('span.mono.fs-1', `${next + 1}/${n}`));
     dockHint.setAttribute('aria-label', dockHint.disabled ? 'No hints left' : `Hint ${next + 1} of ${n} (H)`);
   }
   /** card r1: the hint ALSO lands inside the part box the student is working in (the ladder stays the record),
@@ -454,13 +460,18 @@ export function createCardView(host, source = {}, opts = {}) {
     const e = entry || activeEntry() || requiredEntries().find((x) => !x.finished) || null;
     if (!e || !st.item) return;
     const wrap = e.inline || (e.inline = h('div.card-inline', { role: 'note' }));
-    if (!wrap.isConnected) e.box.append(wrap);
+    // page r2: on a phone the hint sits at the TOP of the part box (above the inputs, under the label) and is
+    // scrolled into view — appended under a 900 px pairs list it landed 440 px below the fold and a tap on
+    // the dock's Hint changed nothing but the counter.
+    const phone = typeof matchMedia === 'function' && matchMedia('(max-width: 1023px)').matches;
+    if (!wrap.isConnected) { if (phone) e.box.insertBefore(wrap, e.body); else e.box.append(wrap); }
     const row = h('div.card-inline-hint', { dataset: { n: String(i + 1) } },
       h('span.hint-tag.mono', `H${i + 1}`),
       h('span.hint-text', { html: mathfmt(st.item.hints[i]) }),
       auto ? h('span.hint-auto.muted.fs-1', 'shown after a second miss — counts as a hint') : null);
     wrap.append(row);
     requestAnimationFrame(() => row.classList.add('is-in'));
+    try { row.scrollIntoView({ block: 'nearest', behavior: reduceMotion() ? 'auto' : 'smooth' }); } catch { /* jsdom */ }
   }
 
   function revealNextHint({ auto = false } = {}) {
@@ -500,8 +511,11 @@ export function createCardView(host, source = {}, opts = {}) {
     for (const g of groups) {
       const optional = !!g.optional;
       const box = h('div.card-part', { dataset: { part: g.id || '', type: g.type, optional: String(optional), state: '' } });
-      const label = optional ? 'Setup · optional (Gold needs it tried once)' : required.length > 1 ? `Part ${++n} of ${required.length}` : groups.length > 1 ? 'Answer' : '';
-      if (label) box.append(h('p.card-part-h.muted.fs-1', label));
+      // card r2: the optional setup is ONE compact row (label · box · Skip — CSS "card r2"), so the required
+      // answer field sits a screen closer; the label carries the S4 Gold note as a muted aside.
+      // (a rootcase group carries its own stage rail — "1 Solve · 2 Keep or reject · 3 Cases" — so "Answer" adds nothing)
+      const label = optional ? 'Setup · optional' : required.length > 1 ? `Part ${++n} of ${required.length}` : groups.length > 1 && g.type !== 'rootcase' ? 'Answer' : '';
+      if (label) box.append(h('p.card-part-h.muted.fs-1', label, optional ? h('span.card-part-h-aside', ' — Gold needs it tried once') : null));
       const body = h('div.card-part-body');
       box.append(body);
       partsHost.append(box);
@@ -513,6 +527,9 @@ export function createCardView(host, source = {}, opts = {}) {
       const entry = { group: g, optional, box, body, ctx, w: null, finished: false, ok: false, revealed: false, skipped: false, wrongs: 0, lastRes: null, lastSubmitAt: 0, pendingReason: false, pairsSeen: null };
       if (optional) ctx.onSkip = (hnd) => { entry.skipped = !!(hnd?.skipped ?? true); box.dataset.state = entry.skipped ? 'skipped' : ''; };
       entry.w = mountPart(body, g, ctx);
+      // card r2: a setup whose prompt is only the generic "Set up the equation" drops that line — the part label
+      // already says Setup — so the compact row is label + box + Skip (a content prompt, doc-07's, stays).
+      if (optional) { const pr = body.querySelector('.w-eq-head .w-prompt'); if (pr && /^set up the equation\s*(\([^)]*\))?\.?$/i.test(pr.textContent.trim())) box.dataset.prompt = 'default'; }
       st.entries.push(entry);
       on(body, 'w-submit', (e) => { e.stopPropagation(); gradeEntry(entry, { fromWidget: true }); });
       if (g.type === 'pairs') on(body, 'w-input', () => pairsInput(entry));
@@ -528,8 +545,15 @@ export function createCardView(host, source = {}, opts = {}) {
   function requiredEntries() { return st.entries.filter((e) => !e.optional); }
 
   function focusFirst() {
+    // page r2: no auto-focus on a phone — the field's keepVisible() scrolled the stem 490 px off the top and
+    // the OS keyboard popped over it before the student had read the problem (same rule as mock r1).
+    if (typeof matchMedia === 'function' && matchMedia('(max-width: 1023px)').matches) return;
     const e = requiredEntries().find((x) => !x.finished) || st.entries.find((x) => !x.finished && !x.skipped);
-    if (e && e.w && !reduceMotion()) { try { e.w.focus(); } catch { /* not focusable */ } }
+    if (!e || !e.w || reduceMotion()) return;
+    // …and on a laptop only when the part is already on screen: focusing a field below the fold makes
+    // keepVisible() centre it, which parks the stem under the sticky header.
+    try { const r = e.box.getBoundingClientRect(); if (r.bottom > innerHeight - (dock.el?.offsetHeight || 0) - 8) return; } catch { /* no layout */ }
+    try { e.w.focus(); } catch { /* not focusable */ }
   }
 
   function activeEntry() {
@@ -739,6 +763,7 @@ export function createCardView(host, source = {}, opts = {}) {
     // Second miss: misconception line + H1 auto-shown — but only where the ladder is actually on screen.
     // W4 integration (notes/T12.md Requests): in a Boss / an `hints:false` run the ladder is hidden, and
     // this used to record `hintsUsed` for a hint the student never saw.
+    if (o.mode === 'mock') return;                                     // binder r2: a Mock never offers or forces the solution (S7) — a strip's third wrong slot runs on to hand-in
     if (n === 2 && !hintWrap.hidden) revealHint(0, { auto: true, entry });
     if (n >= 2) offerSolution();
     if (n >= MAX_WRONG) showSolution({ forced: true, part });          // third miss: the full worked solution, 0 XP, Bronze
@@ -953,7 +978,9 @@ export function createCardView(host, source = {}, opts = {}) {
       const line1 = h('div.card-result-top', okTick, rar, h('span.card-xp', xpN, h('span.muted', ' XP')));
       const line2 = h('p.card-breakdown.mono.muted', o.sandbox ? 'sandbox — not scored' : r.xpInfo.breakdown);
       const bits = [`${fmtClock(r.elapsedMs)} · par ${fmtClock(item.par * 1000)}`];
-      if (!o.sandbox && o.kind === 'card' && r.due) bits.push(`next review: ${fmtDue(r.due)}`);
+      // card r2: a 2nd-try clear leaves bucket 0 → due = now → "today", which reads as a bug right after the
+      // clear. The schedule is unchanged; the strip says when it actually comes back: the next Page.
+      if (!o.sandbox && o.kind === 'card' && r.due) bits.push(`next review: ${r.due <= Date.now() ? 'next Page' : fmtDue(r.due)}`);
       if (!o.sandbox && r.comboAfter !== r.comboBefore) bits.push(`combo ${r.comboAfter}`);
       else if (!o.sandbox && r.comboAfter > 0) bits.push(`combo holds at ${r.comboAfter}`);
       const line3 = h('p.card-par.mono.muted', bits.join('  ·  '));
@@ -977,7 +1004,9 @@ export function createCardView(host, source = {}, opts = {}) {
     if (actions.children.length) result.append(actions);
     result.hidden = false;
     requestAnimationFrame(() => { result.classList.add('is-in'); okTick.classList.add('is-draw'); });
-    if (!reduceMotion()) setTimeout(() => result.scrollIntoView({ block: 'nearest', behavior: 'smooth' }), 60);
+    // page r2: a miss scrolls the VERDICT to the top (the solution opens right under it); `nearest` left the
+    // "✗ BRONZE · 0 XP · third miss" strip above the fold once openSolution() had scrolled 780 px further.
+    if (!reduceMotion()) setTimeout(() => result.scrollIntoView({ block: r.cleared ? 'nearest' : 'start', behavior: 'smooth' }), 60);
   }
 
   function tween(el, from, to, ms, fmt = String) {
@@ -1001,14 +1030,14 @@ export function createCardView(host, source = {}, opts = {}) {
     if (!item.solution.length) return;
     if (!solBuilt) {
       solBuilt = true;
-      solution.append(h('div.card-side-h', 'Worked solution ', h('span.muted.fs-1', `(${item.solution.length} steps — one per tap)`)), solList, solNext);
+      solution.append(h('div.card-side-h', 'Worked solution ', h('span.muted.fs-1', `(${item.solution.length} steps${all ? '' : ' — one per tap'})`)), solList, solNext);   // page r2: a forced reveal opens every step
       on(solNext, 'click', () => nextStep());
       on(solList, 'click', () => { if (!all) nextStep(); });
     }
     solution.hidden = false;
     if (all) { while (nextStep()) { /* reveal every step */ } }
     else if (st.solutionStep === 0) nextStep();
-    if (!reduceMotion()) setTimeout(() => solution.scrollIntoView({ block: 'nearest', behavior: 'smooth' }), 60);
+    if (!all && !reduceMotion()) setTimeout(() => solution.scrollIntoView({ block: 'nearest', behavior: 'smooth' }), 60);   // page r2: a forced reveal scrolls with the verdict (showResult), not past it
   }
   function nextStep() {
     const item = st.item;

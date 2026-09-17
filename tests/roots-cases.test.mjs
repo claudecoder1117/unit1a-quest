@@ -269,16 +269,21 @@ test('reject: nothing decided / a root undecided / no reason are malformed (free
   assert.equal(found.kind, 'correct');
 });
 
-test('reject: menu() lists the item reason, its distractors and the standard seven, deterministically', () => {
+test('reject: menu() lists the item reason, its distractors and generic entries (one per meaning, ≤ 6), deterministically', () => {
+  // card r2: the menu is capped at MENU_MAX (6) and deduplicated by reason id — the "standard seven" no longer
+  // all appear; the ones whose meaning the item already covers are dropped and the rest fill up to six.
   const p = part('ang-10', 'reject');
   const m1 = reject.menu(p).map((x) => x.text);
   const m2 = reject.menu(p).map((x) => x.text);
   assert.deepEqual(m1, m2);
   assert.ok(m1.includes('both give positive angle measures'));
   assert.ok(m1.includes('−1/2 is negative so reject it'), 'the always-present distractor on both-valid items');
-  for (const t of ['negative length', 'negative angle', 'angle > 180', 'zero angle', "doesn't satisfy the equation", 'neither']) assert.ok(m1.includes(t), t);
+  assert.ok(m1.length <= reject.MENU_MAX, `menu of ${m1.length}`);
+  assert.ok(m1.some((t) => reject.REASONS.some((r) => r.text === t)), 'generic entries fill the menu');
   assert.ok(!m1.includes('both valid'), 'the item wording stands in for the both-valid entry');
   assert.equal(new Set(m1).size, m1.length);
+  const ids = m1.map((t) => reject.reasonId(t).id).filter(Boolean);
+  assert.equal(new Set(ids).size, ids.length, 'no two chips classify to the same reason id');
   for (const r of ['negative length', 'Negative Angle', 'angle > 180', 'zero angle', "doesn't satisfy the equation", 'both valid', 'neither']) {
     assert.ok(reject.reasonId(r).id, `menu text "${r}" maps to an id`);
   }
@@ -316,7 +321,10 @@ test('cases: the "+ another case" path — first miss hints without the root, se
   assert.deepEqual(first.tags, ['missing-case']);
   const second = cases.grade(ANG10C(), [ROW3], ctx);
   assert.equal(second.kind, 'wrong', 'the second miss consumes the attempt');
-  assert.match(second.msg, /what if x = −1\/2\?/i);
+  // card r2: the item's own missing-case line stands alone (it names the root); the widget's "What if x = −1/2?"
+  // is printed only when the card carries no such line — the two used to be concatenated.
+  assert.match(second.msg, /x = −1\/2/);
+  assert.ok(!/what if/i.test(second.msg), `one line, not two: ${second.msg}`);
   assert.deepEqual(second.reveal, { x: '−1/2' });
   assert.deepEqual(second.tags, ['missing-case']);
   assert.equal(second.credit, 0.5, 'the found row\'s cells still count');
@@ -385,7 +393,7 @@ test('cases: ang-05 verdict rows (−8, 67, 67, YES) and (−1, 4, 18, NO) in an
   const reveal = cases.grade(p, [{ x: '-8', MAH: '67', HAC: '67', verdict: 'yes' }], ctx);
   assert.equal(reveal.kind, 'wrong');
   assert.deepEqual(reveal.reveal, { x: '−1' });
-  assert.match(reveal.msg, /what if x = −1\?/i);
+  assert.match(reveal.msg, /x = −1\b/);                 // card r2: the item line alone (see the ang-10 test above)
 });
 
 test('cases: empty / unreadable input is malformed (free); a wrong row beats a missing row in the verdict', () => {

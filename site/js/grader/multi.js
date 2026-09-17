@@ -171,7 +171,10 @@ export function grade(part = {}, raw, ctx = {}) {
       if (!other) continue;
       const otherRow = out.find((r) => r.key === other.key);
       const mutual = otherRow && holds(otherRow, f);
-      if (mutual || via.get(row.key) !== 'misconception') swapLine(row, other);
+      // card r2 (S9 #4): a one-sided swap keeps the num grader's own diagnosis when it already names what the
+      // student found and what the question asks for (a card misconception, or the asks-chain distractor line
+      // "That's the complement — the question asks for the angle"); only a diagnosis-free miss gets the box line.
+      if (mutual || !['misconception', 'distractor'].includes(via.get(row.key))) swapLine(row, other);
     }
     for (const row of out) if (row.state === 'wrong') tags.push(...row.tags);
   }

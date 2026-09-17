@@ -184,7 +184,9 @@ export function grade(part = {}, raw, ctx = {}) {
     }
     const xText = show(first.row[xKey]);
     const m = misc.find((e) => e && e.tag === 'missing-case' && (e.part == null || String(e.part) === String(part.id ?? '')));
-    const msg = `What if ${xLabel} = ${xText}? Work out that case too.${m && m.msg ? ` ${m.msg}` : ''}`;
+    // card r2: the item's missing-case line already names the root and the measures to work out — printing it
+    // after the widget's own "What if x = −1/2?" said the same thing twice. One line or the other, never both.
+    const msg = m && m.msg ? String(m.msg) : `What if ${xLabel} = ${xText}? Work out that case too.`;
     return result('wrong', msg, { ...base, tags: ['missing-case'], reveal: { [xKey]: xText, x: xText }, code: 'missing-case', submits: n });
   }
   if (openCells) {

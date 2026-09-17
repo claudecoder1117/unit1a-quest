@@ -1027,6 +1027,7 @@ export function createMockView(host, opts = {}) {
     const left = remainingMs(st.run);
     clockEl.textContent = fmtClock(left);
     clockEl.setAttribute('aria-label', `${fmtClock(left)} left`);
+    if (dialogEl && dialogSub && dialogSubEl) dialogSubEl.textContent = dialogSub();   // r2: the dialog's clock ticks too
     const state = left <= 0 ? 'out' : left <= PULSE_MS ? 'pulse' : left <= AMBER_MS ? 'amber' : 'ok';
     if (clockEl.dataset.t !== state) {
       clockEl.dataset.t = state;
@@ -1078,22 +1079,26 @@ export function createMockView(host, opts = {}) {
     openDialog({
       title: 'Submit the paper?',
       body: line,
-      sub: `${fmtClock(remainingMs(st.run))} still on the clock.`,
+      sub: () => `${fmtClock(remainingMs(st.run))} still on the clock.`,   // r2: a function — tick() keeps it live
       ok: 'SUBMIT',
       onOk: () => doSubmit(st.n, { auto: false }),
     });
   }
 
-  let dialogEl = null;
+  let dialogEl = null, dialogSub = null, dialogSubEl = null;
   function openDialog({ title, body: text, sub, ok, onOk }) {
     closeDialog();
     const okBtn = h('button.btn.btn-primary', { type: 'button' }, ok);
     const cancel = h('button.btn', { type: 'button' }, 'Keep working');
+    // r2: `sub` may be a function — the SUBMIT dialog's "still on the clock" line then ticks with the bar
+    dialogSub = typeof sub === 'function' ? sub : null;
+    const subText = dialogSub ? dialogSub() : sub;
+    dialogSubEl = subText ? h('p.mock-dialog-s.muted.fs-1', subText) : null;
     dialogEl = h('div.mock-dialog', { role: 'dialog', 'aria-modal': 'true', 'aria-label': title },
       h('div.mock-dialog-card',
         h('h2.mock-dialog-h', title),
         h('p.mock-dialog-b', text),
-        sub ? h('p.mock-dialog-s.muted.fs-1', sub) : null,
+        dialogSubEl,
         h('div.mock-dialog-row', cancel, okBtn)));
     on(okBtn, 'click', () => { closeDialog(); onOk(); });
     on(cancel, 'click', () => closeDialog());
@@ -1102,7 +1107,7 @@ export function createMockView(host, opts = {}) {
     okBtn.focus();
   }
 
-  function closeDialog() { if (dialogEl) { dialogEl.remove(); dialogEl = null; } }
+  function closeDialog() { if (dialogEl) { dialogEl.remove(); dialogEl = null; } dialogSub = null; dialogSubEl = null; }
 
   async function doSubmit(n, { auto = false, force = false } = {}) {
     if (st.submitting) return;

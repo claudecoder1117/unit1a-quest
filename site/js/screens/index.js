@@ -59,12 +59,10 @@ screens['/sheet'] = mountSheet;                  // T14
 screens['/binder'] = mountBinder;                // T11
 screens['/stats'] = mountStats;                  // T11
 
-// Warm the two screens a fresh student reaches next (the run screen and the card engine) once Home has
-// painted and the network is idle — so the first tap is instant on a second visit too (the SW caches them).
-if (typeof window !== 'undefined') {
-  const warm = () => { import('./run.js').catch(() => {}); import('./card.js').catch(() => {}); };
-  if ('requestIdleCallback' in window) window.requestIdleCallback(warm, { timeout: 4000 }); else setTimeout(warm, 2500);
-}
+// home r2: the run.js / card.js warm-up moved to home.js (`warmNext`, after the composed CTA is on screen).
+// requestIdleCallback fired here at ~290 ms on a cold open — the main thread is idle while the network is
+// busy — so 140 KB of screens plus their grader/widget graph raced Home's own lazy page/plan modules for
+// the pipe (the CTA landed at 1.08 s on Wi-Fi, 9.6 s on 3G). Home knows when its critical path is done.
 
 // T11: trophies are pure predicates over the save, evaluated after every grade (S4) — `install` listens
 // on bus 'graded' and on 'state'. Deferred one microtask because THIS module is imported from app.js's

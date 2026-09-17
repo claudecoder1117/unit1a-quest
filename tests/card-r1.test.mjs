@@ -97,6 +97,17 @@ test('card r1 / source pins: the re-tap guard, the pips, the wedge floor, one Co
   assert.match(cardSrc, /entry\.ctx\.state\.charged = \[\.\.\.entry\.chargedSlots\]/, 'strips hand their charged slots to the grader');
   assert.ok(!/'Continue'\)\);\s*result\.append\(actions\)/.test(cardSrc), 'the result strip no longer repeats the dock Continue');
   assert.match(cardSrc, /dockHint/, 'the dock carries a Hint button on phones');
+  // content r2: after the third hint the dock read "No hints leftnull" — Element.append(null) stringifies null
+  // (only h() filters it). The spent-ladder label is now built on its own branch, with no null operand.
+  assert.match(cardSrc, /if \(dockHint\.disabled\) dockHint\.append\('No hints left'\);/, 'spent ladder: dock label is exactly "No hints left"');
+  assert.ok(!/'No hints left'[^\n]*\? null/.test(cardSrc), 'no null operand is ever handed to dockHint.append');
+  // content r2: the ⚑ note leads with the graded letter so "…flagged it as A — graded as the teacher's answer"
+  // can no longer be skimmed as A being the graded letter; on a miss that will ask chips, the verdict line is
+  // the short "Not Always. Sometimes." (the reason line would otherwise print the correct chip above the question).
+  const asnSrc = read('site/js/widgets/asn.js');
+  assert.match(asnSrc, /`Graded \$\{res\.answer\} \(the teacher's answer\)\. \$\{res\.disputed\}\.`/, '⚑ note names the graded letter first');
+  assert.ok(!/graded as the teacher's answer\.`/.test(asnSrc), 'the old trailing "— graded as the teacher\'s answer." suffix is gone');
+  assert.match(asnSrc, /short \? `Not \$\{LETTERS\[res\.verdict\]\}\. \$\{LETTERS\[res\.answer\]\}\.`/, 'chips-pending miss shows only the letters');
   assert.match(read('site/js/widgets/factored.js'), /pips: \(\) => \(\{ total: 1, filled: f\.wrap\.dataset\.state === 'ok' \? 1 : 0 \}\)/);
   assert.match(read('site/js/widgets/equation.js'), /pips: \(\) => \(\{ total: 1, filled: root\.dataset\.kind === 'correct' \? 1 : 0 \}\)/);
   const m = /const WEDGE_MIN = (\d+), WEDGE_MAX = (\d+), BAND = (\d+), MIN_CHORD = (\d+);/.exec(read('site/js/figure/svg.js'));

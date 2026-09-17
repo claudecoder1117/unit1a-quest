@@ -207,7 +207,7 @@ export function createReportView(host, opts = {}) {
     if (!r) return null;
     return h('p.report-readiness.muted.fs-1',
       `Readiness is now `, h('strong.mono', String(r.r)), ` — ${r.band.label}`,
-      r.provisional ? ' (still provisional)' : ' · locked by this paper');
+      r.provisional ? ' (still provisional)' : ' · this paper now counts as your Mock score');   // r2: "locked by this paper" read as locked-out
   }
 
   /* ---- one item, expandable ---- */

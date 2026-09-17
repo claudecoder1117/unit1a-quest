@@ -292,21 +292,60 @@ export function checkQuestion(item, seed = '') {
   };
   const steps = uniq((item?.solution ?? []).map((s) => s?.say || s?.math || ''));
   const hints = uniq(item?.hints ?? []);
-  let prompt = null, correct = null, decoys = [];
-  if (steps.length >= 3) {
+  let prompt = null, correct = null, decoys = [], kind = null, wrong = null;
+  // r2: the first-move question was a giveaway (its options were the step headings printed 40 px above).
+  // Ask for a VALUE the working arrives at instead — the last line of the form `x = 10` — with two decoy
+  // values taken from the other numbers in the working (near-misses are fabricated when there are too few).
+  const maths = uniq((item?.solution ?? []).map((s) => s?.math || '').filter((m) => !/\n/.test(m)));
+  const valued = maths.map((m) => m.match(VALUE_LINE)).filter(Boolean);
+  if (valued.length) {
+    const hit = valued[valued.length - 1];
+    const v = hit[1];
+    const val = hit[2];
+    const asNum = (s) => Number(String(s).replace(/−/g, '-'));
+    const show = (n) => String(n).replace(/-/g, '−');
+    const seen = new Set([asNum(val)]);
+    const pool = [];
+    for (const m of maths) {
+      for (const n of m.match(/[−-]?\d+(?:\.\d+)?/g) ?? []) {
+        const k = asNum(n);
+        if (!Number.isFinite(k) || seen.has(k)) continue;
+        seen.add(k); pool.push(show(n));
+      }
+    }
+    const picks = rng.shuffle(pool).slice(0, 2);
+    const kv = asNum(val);
+    for (const f of [kv * 2, kv + 10, kv - 10, kv + 1]) {          // only when the working has < 2 other numbers
+      if (picks.length >= 2) break;
+      if (!Number.isFinite(f) || seen.has(f)) continue;
+      seen.add(f); picks.push(show(f));
+    }
+    kind = 'value';
+    prompt = `In the solution you just read, what did ${v} come out as?`;
+    correct = `${v} = ${val}`;
+    decoys = picks.map((p) => `${v} = ${p}`);
+    wrong = `Not that one — find the line where ${v} is solved, then pick again.`;
+  } else if (steps.length >= 3) {
+    kind = 'first';
     prompt = 'Which line is the FIRST move in the solution you just read?';
     correct = steps[0];
     decoys = steps.slice(1);
+    wrong = 'Not that one — it is in the solution, but not the first move. Read it again and pick another.';
   } else if (hints.length >= 3) {
+    kind = 'hint';
     prompt = 'Which line names the relationship this problem turns on?';
     correct = hints[0];
     decoys = hints.slice(1);
+    wrong = 'Not that one — read the solution again and pick another.';
   } else {
     return null;
   }
   const options = rng.shuffle([{ text: correct, ok: true }, ...decoys.slice(0, 2).map((t) => ({ text: t, ok: false }))]);
-  return { prompt, options };
+  return { prompt, options, kind, wrong };
 }
+
+/** A solved-value line in a worked solution: `x = 10`, `n = 20`, `x = −8`, `x = 67.5` (a lone letter on the left). */
+const VALUE_LINE = /^\s*([a-z])\s*=\s*([−-]?\d+(?:\.\d+)?)\s*°?\s*$/i;
 
 /* ------------------------------------------------------------------ ghost + splits (S4) */
 
@@ -543,7 +582,8 @@ export function createBossRun(host, bossId, opts = {}) {
     missBox.replaceChildren(...[
       h('p.boss-miss-line', heart == null ? null : h('strong', heart ? 'Heart lost. ' : 'No heart lost. '), line.text),
       extra,
-      line.drill ? h('a.btn.btn-ghost.boss-drill', { href: line.drill }, `Drill 5: ${line.skillName}`) : null,
+      // r2: the skill name is a span so the collapsed (keyboard-open) dock row can show just "Drill 5"
+      line.drill ? h('a.btn.btn-ghost.boss-drill', { href: line.drill, 'aria-label': `Drill 5: ${line.skillName}` }, 'Drill 5', h('span.boss-drill-skill', `: ${line.skillName}`)) : null,
     ].filter(Boolean));
     missBox.hidden = false;
     if (typeof document !== 'undefined' && stageHost.contains(document.activeElement)) keepInView(document.activeElement);
@@ -624,12 +664,23 @@ export function createBossRun(host, bossId, opts = {}) {
     if (String(raw ?? '').trim() !== '') return;     // a malformed attempt, not an empty one
     const skip = h('button.btn.btn-ghost.boss-skip-setup', { type: 'button' }, 'Skip the setup ', h('span.muted.fs-1', '(no heart · flawless gone)'));
     on(skip, 'click', () => skipSetup(entry));
-    showMiss({ text: 'The setup box is empty. Type the equation, or leave it blank and answer the question:' }, { heart: null, setup: true, extra: skip });
+    showMiss({ text: 'The setup box is empty — type the equation, or skip it and answer the question.' }, { heart: null, setup: true, extra: skip });
   }));
   function skipSetup(entry) {
     if (st.destroyed || st.phase !== 'run' || !st.view || entry.finished) return;
     entry.finished = true; entry.ok = false; entry.revealed = false; entry.skipped = true;
     entry.box.dataset.state = 'skipped';
+    // r2: the widget's own skip() refuses in a boss (the slot is required), so the blank submit's
+    // "! Type the equation." verdict and the amber field mark would survive the skip. Clear the verdict
+    // and the field state, dim the box as skipped (widgets.css `[data-skipped]`) and say so in the hint.
+    try { entry.w.clear?.(); } catch { /* proxy */ }
+    const wroot = entry.w?.el ?? entry.body?.querySelector?.('.w-equation') ?? null;
+    if (wroot) {
+      wroot.dataset.skipped = 'true';
+      wroot.dataset.kind = '';
+      const hint = wroot.querySelector('.w-eq-hint');
+      if (hint) { hint.dataset.kind = 'skipped'; hint.textContent = 'Setup skipped — no heart lost; the flawless bonus is gone.'; }
+    }
     try { entry.w.lock(true); } catch { /* proxy */ }
     st.setupMiss = true;
     writeProgress();
@@ -648,7 +699,9 @@ export function createBossRun(host, bossId, opts = {}) {
       if (!t.isConnected) return;
       const r = t.getBoundingClientRect();
       const dockH = document.getElementById('dock')?.offsetHeight ?? 0;
-      const topH = head.getBoundingClientRect().bottom;
+      // r2: with the keyboard open the head is no longer sticky (polish.css), so the app header is the floor
+      const hdrH = document.querySelector('.hdr')?.getBoundingClientRect().bottom ?? 0;
+      const topH = Math.max(head.getBoundingClientRect().bottom, hdrH);
       const vh = window.innerHeight;
       let dy = 0;
       if (r.bottom > vh - dockH - 12) dy = r.bottom - (vh - dockH - 12);
@@ -822,7 +875,7 @@ export function createBossRun(host, bossId, opts = {}) {
         } else {
           btn.dataset.state = 'bad';
           btn.disabled = true;
-          feedback.textContent = 'Not that one — it is in the solution, but not the first move. Read it again and pick another.';
+          feedback.textContent = q.wrong || 'Not that one — read the solution again and pick another.';
           feedback.dataset.tone = 'bad';
           feedback.hidden = false;
         }

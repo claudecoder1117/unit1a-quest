@@ -73,7 +73,7 @@
 
 @media (prefers-reduced-motion: reduce) {
   .sum-tile { animation: none; transform: none; opacity: 1; }
-  .sum-tile .tile-sheen { animation: none; opacity: .5; }
+  .sum-tile .tile-sheen { animation: none; opacity: 0; }   /* page r2: a parked sheen is a permanent smear across the number — the ◐/●/★ foot is the mint signal */
   .sum-bar-fill, .blitz-meter-fill { transition: none; }
 }
 /* === /T16 === */

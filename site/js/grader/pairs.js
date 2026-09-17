@@ -23,7 +23,7 @@
 // tags:['vertex-not-middle', 'confused-comp-supp', 'confused-vertical-linear', 'not-adjacent',
 //       'adjacent-not-linear', 'adjacent-as-nonexample']
 
-import { relate, findAngle, getAngle, normRelation, RELATIONS, fanAt, rayByName, resolve } from '../figure/model.js';
+import { relate, findAngle, getAngle, normRelation, RELATIONS, fanAt, rayByName, resolve, angles } from '../figure/model.js';   // page r2: angles() for the example name
 import { getFigure } from '../../data/figures.js';
 
 /** The S3 typed-name regex, applied after trim + NFKC + uppercase + whitespace collapse. */
@@ -213,7 +213,7 @@ export function gradePairs(part, picks, model, ctx = {}) {
   const last = results[results.length - 1];
   let kind, msg;
   if (ok) { kind = 'correct'; msg = last?.ok ? `${last.msg} — ${count} of ${count}` : `${count} of ${count} pairs found`; }
-  else if (!last) { kind = 'malformed'; msg = 'pick two angles from the figure (or type a name like ∠GFC)'; }
+  else if (!last) { kind = 'malformed'; msg = `pick two angles from the figure (or type a name like ∠${angles(model)[0]?.name ?? 'ABC'})`; }   // page r2: a name this figure has
   else if (last.ok) { kind = 'almost'; msg = `${last.msg} — ${valid} of ${count}`; }
   else { kind = last.kind; msg = last.msg; }
   const tags = ok ? [] : [...new Set((last?.tags ?? []))];

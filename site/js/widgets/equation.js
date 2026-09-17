@@ -32,7 +32,7 @@ const round1 = (n) => Math.round(n * 10) / 10;
 
 /** the prompt above the boxes; a "(… skippable …)" aside is dropped because the button says it better */
 export function promptOf(part, skippable) {
-  const raw = String(part.prompt ?? part.label ?? 'Set up the equation');
+  const raw = String(part.prompt ?? part.label ?? 'Set up the equation').replace(/\s*\([^)]*\bboss\b[^)]*\)/gi, '');   // page r2: the mode aside is not the student's business
   if (!skippable) return raw.replace(/\s*[—–-]?\s*\bskippable\b[^)]*/gi, '').replace(/\s*\(\s*\)/g, '').trim() || 'Set up the equation';
   return raw
     .replace(/\bskippable\b\s*[—–-]?\s*/gi, '')
@@ -167,6 +167,7 @@ export function mount(el, part = {}, ctx = {}) {
 
   /** the live, form-only hint under the boxes — never a correctness signal */
   function hint() {
+    hintEl.hidden = false;                                       // card r2: back in the flow (see setFeedback)
     if (skipped) {
       hintEl.dataset.kind = 'skipped';
       hintEl.textContent = 'Setup skipped. Gold on this card needs the setup attempted once — “Write the setup” brings it back.';
@@ -283,9 +284,12 @@ export function mount(el, part = {}, ctx = {}) {
       flash(open2 ? fields : f1.wrap, state);
       // the grader asked for the second equation → open the box it wants filled
       if (res.err === 'two-vars' || (res.system && hasSystem) || /two equations/i.test(res.msg || '')) api.openSecond();
-      // the live hint steps aside once there is a verdict; the next keystroke brings it back
+      // the live hint steps aside once there is a verdict; the next keystroke brings it back.
+      // card r2: it leaves the flow too (`hidden`) — an emptied 34 px block left a 58 px blank between the
+      // box and the verdict line; hint() un-hides it on the next keystroke / clear / un-skip.
       hintEl.dataset.kind = '';
       hintEl.textContent = '';
+      hintEl.hidden = true;
       if (ctx.mock) {
         const s = api.split(res);
         split.hidden = false;

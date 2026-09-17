@@ -9,7 +9,8 @@
 //     and in THAT branch M runs over the skills tested so far (n ≥ 1) — `masteryTermTested` — because on
 //     day 0 the 11 untested skills are unknowns, not zeros (S4 "untested is not weak"; home r1 fix of S9 #1:
 //     an 8/8 aced placement read 27 under the all-19 M, it reads 57 under the tested-only M).
-//   Bands: < 50 Not ready · 50–69 Getting there · 70–84 Ready · ≥ 85 Locked in.
+//   Bands: < 50 Not ready · 50–69 Getting there · 70–84 Ready · ≥ 85 Locked in — except while provisional with
+//   fewer than EARLY_MIN_TESTED (4) skills tested, which reads 'Too early to say' (home r2; `early: true`).
 //   Logged daily to forecastLog[] (7-day sparkline); the Page Summary shows the delta.
 //
 // Both formulas are printed in Settings (T15 reads FORMULA_FULL / FORMULA_PROVISIONAL below).
@@ -23,6 +24,7 @@ export const WEIGHTS = Object.freeze({ M: 0.5, A: 0.3, C: 0.2 });
 export const MINI_MOCK_FACTOR = 0.8;
 export const MINI_KINDS = Object.freeze(['baseline', 'night']);     // run kinds scored × 0.8
 export const MOCK_KINDS = Object.freeze(['mock', 'baseline', 'night']);
+export const NIGHT_MIN_SCORED = 4;                                    // = night.MINI_MIN_SCORED (ceil(8 / 2)); night.js imports this module, so the number lives here
 export const BANDS = Object.freeze([
   { min: 85, label: 'Locked in', key: 'locked' },
   { min: 70, label: 'Ready', key: 'ready' },
@@ -30,6 +32,10 @@ export const BANDS = Object.freeze([
   { min: 0, label: 'Not ready', key: 'not' },
 ]);
 export const WEAK_THRESHOLD = 70;   // m_shown < 70 ∧ n ≥ 1
+// home r2: while provisional AND fewer than this many skills carry n ≥ 1, the band is 'Too early to say' (key
+// 'not', so the tone is unchanged) — two clean placement answers must not read as "Getting there".
+export const EARLY_MIN_TESTED = 4;
+export const EARLY_BAND = Object.freeze({ min: 0, label: 'Too early to say', key: 'not', early: true });
 export const WEAK_MAX = 5;
 export const FORMULA_FULL = 'R = round(100 × (0.5·M + 0.3·A + 0.2·C))';
 export const FORMULA_PROVISIONAL = 'R = round(100 × (0.5·M + 0.2·C) / 0.7)   — provisional, until a Mock or Baseline exists; M runs over the skills tested so far (n ≥ 1), not all 19';
@@ -76,6 +82,7 @@ export function latestMock(save) {
     if (!isObj(r) || r.status !== 'done') continue;
     const kind = String(r.kind ?? '').split(':')[0];
     if (!MOCK_KINDS.includes(kind)) continue;
+    if (kind === 'night' && (Number.isFinite(r.scored) ? r.scored : (Array.isArray(r.items) ? r.items.length : 0)) < NIGHT_MIN_SCORED) continue;   // binder r2: a 1-item night sample never replaces a Baseline
     const acc = accuracyOf(r);
     if (acc == null) continue;
     return { run: r, kind, accuracy: acc, mini: MINI_KINDS.includes(kind), at: r.submittedAt ?? r.startedAt ?? null };
@@ -144,8 +151,9 @@ export function readiness(save, { ids = BANK_IDS } = {}) {
     ? 100 * (WEIGHTS.M * M + WEIGHTS.C * C) / (WEIGHTS.M + WEIGHTS.C)
     : 100 * (WEIGHTS.M * M + WEIGHTS.A * A + WEIGHTS.C * C);
   const r = Math.max(0, Math.min(100, Math.round(raw)));
-  const band = bandOf(r);
-  return { r, provisional, M, A, C, band, label: provisional ? PROVISIONAL_LABEL : '', mock: latestMock(save), tested: mt ? mt.tested : skills.length, skillsTotal: skills.length };
+  const early = provisional && mt.tested < EARLY_MIN_TESTED;   // home r2
+  const band = early ? EARLY_BAND : bandOf(r);
+  return { r, provisional, early, M, A, C, band, label: provisional ? PROVISIONAL_LABEL : '', mock: latestMock(save), tested: mt ? mt.tested : skills.length, skillsTotal: skills.length };
 }
 
 /* ---------------- forecast log ---------------- */

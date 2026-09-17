@@ -241,6 +241,8 @@ export function applyJump(save, moduleId, { correct = 0, total = JUMP_ITEMS, ski
  *   title, sub, badge,                                          // the block heading (badge: a live node, e.g. a clock)
  *   cardOpts,                                                   // merged into every createCardView call
  *   skipAfter: number|null, skipLabel,                          // "skip the rest" (S7)
+ *   skipInDock: bool,                                           // home r2: the skip lives in the dock beside Submit / Continue
+ *   compact: bool,                                              // home r2: one-row sticky head (title · item label · counter + ticks); no sub / actions row
  *   quitLabel, onQuit,                                          // the always-available way out
  *   onItem(result, item, index), onFinish({ results, answered, skipped, items }),
  *   footer(index, item)                                          // optional extra node under the card
@@ -253,15 +255,18 @@ export function createSequence(host, cfg = {}) {
   let i = 0, view = null, destroyed = false, skipped = 0;
 
   const root = h('section.screen.ob-run', { 'aria-label': cfg.title || 'Run' });
-  const head = h('header.ob-run-head');
+  const head = h('header.ob-run-head', { dataset: { compact: String(!!cfg.compact) } });
   const titleEl = h('h1.fs-3.ob-run-title', cfg.title || '');
   const counter = h('span.ob-run-count.mono', '');
+  // home r2: in compact mode the item label rides in the headline (muted, ellipsis) instead of a sub-line row.
+  const labelEl = h('span.ob-run-label', '');
+  let dockSkip = null;
   // One segmented progress bar: a tick per item, filled by outcome. (A second continuous bar above it
   // said the same thing and cost 20 px of a 375 px screen the sticky head cannot afford.)
   const ticks = h('ol.ob-ticks', { role: 'progressbar', 'aria-valuemin': '0', 'aria-valuemax': String(total), 'aria-valuenow': '0', 'aria-label': `${cfg.title || 'Run'} progress` });
   const subEl = h('p.ob-run-sub.muted.fs-1', cfg.sub || '');
   const actions = h('div.ob-run-actions');
-  head.append(h('div.ob-run-headline', titleEl, cfg.badge ?? null, counter), ticks, h('div.ob-run-meta', subEl, actions));
+  head.append(h('div.ob-run-headline', titleEl, labelEl, cfg.badge ?? null, counter), ticks, h('div.ob-run-meta', subEl, actions));
   const stage = h('div.ob-run-stage');
   const footer = h('div.ob-run-footer');
   root.append(head, stage, footer);
@@ -277,11 +282,17 @@ export function createSequence(host, cfg = {}) {
       return li;
     }));
     actions.replaceChildren();
+    if (dockSkip) { dockSkip.remove(); dockSkip = null; }
     if (cfg.skipAfter != null && results.length >= cfg.skipAfter && results.length < total) {
-      actions.append(h('button.btn.btn-ghost.ob-skip', {
+      const skipBtn = h('button.btn.btn-ghost.ob-skip', {
         type: 'button', onclick: () => finish({ skipRest: true }),
         title: `${total - results.length} left — what you have answered still counts`,
-      }, cfg.skipLabel || `Skip the rest (${total - results.length})`));
+      }, cfg.skipLabel || `Skip the rest (${total - results.length})`);
+      // home r2: the placement's skip sits in the card's dock (thumb zone, beside Submit / Continue) so the
+      // sticky head stays one row; the card's dock.destroy() takes the button with it on the next item.
+      const slot = cfg.skipInDock && typeof document !== 'undefined' ? document.getElementById('dock')?.querySelector('.w-dock-actions') : null;
+      if (slot) { skipBtn.classList.add('ob-dock-skip'); slot.prepend(skipBtn); dockSkip = skipBtn; }
+      else actions.append(skipBtn);
     }
     if (cfg.quitLabel) actions.append(h('button.btn.btn-ghost.ob-quit', { type: 'button', onclick: () => cfg.onQuit?.() }, cfg.quitLabel));
   }
@@ -303,14 +314,15 @@ export function createSequence(host, cfg = {}) {
     if (i >= total) return finish();
     const item = items[i];
     teardownView();
-    drawProgress();
+    if (!cfg.skipInDock) drawProgress();   // home r2: with the skip in the dock, draw after the view has built its dock
     // home r1: the previous item was answered at the bottom of the page, so without this the next stem
     // mounts under the sticky head (stemTop −95…−221 px measured). The head keeps the progress bar in
     // view, so top-of-page is the right place. `.ob-run-stage { overflow-anchor: none }` (polish.css)
     // stops Chrome's scroll anchoring from re-applying the old offset when the card parts mount async.
     window.scrollTo({ top: 0, behavior: 'auto' });
     footer.replaceChildren(cfg.footer?.(i, item) ?? '');
-    if (item.label) subEl.textContent = `${item.label}${item.blurb ? ' — ' + item.blurb : ''}`;
+    if (item.label && cfg.compact) labelEl.textContent = `· ${item.label}`;
+    else if (item.label) subEl.textContent = `${item.label}${item.blurb ? ' — ' + item.blurb : ''}`;
     const index = i;
     const opts = {
       hints: false, back: cfg.back || '/today', ...(cfg.cardOpts || {}), ...(item.opts || {}),
@@ -335,6 +347,7 @@ export function createSequence(host, cfg = {}) {
       onContinue: () => { i = index + 1; step(); },
     };
     view = createCardView(stage, item.source, opts);
+    if (cfg.skipInDock) drawProgress();
   }
 
   drawProgress();
@@ -585,18 +598,20 @@ export function mountOnboard(params, query) {
       const save = getState();
       const items = placementItems(save, { D });
       const total = items.length;
+      // home r2: the in-run "Start from zero" is gone — it APPLIED every answer so far (a 2-item quit landed
+      // "Readiness 57 over 2 skills"), the opposite of its label. The exits are now honest: "Skip the rest (n)"
+      // in the dock after item 4 keeps what was answered and says so; the card's ← goes back to the intro,
+      // whose "I'll start from zero" writes an empty placement (XP already earned by real answers stays).
+      // The sticky head is compact (title · item label · counter + ticks): the stem starts ≤ 230 px at 375×667.
       seq = createSequence(el, {
         title: 'Placement',
         sub: 'No hints. Answer what you can.',
-        back: '/onboard',
+        // `&intro=1` only makes the hash differ from the run's own `#/onboard?step=3` (show() replaceState's it),
+        // so the ← anchor fires a hashchange and the intro mounts; mountOnboard reads only `step`.
+        back: '/onboard?step=3&intro=1',
+        compact: true, skipInDock: true,
         skipAfter: Math.min(SKIP_AFTER, total),
-        cardOpts: { hints: false, back: '/onboard' },
-        quitLabel: 'Start from zero',
-        onQuit: () => {
-          const now = Date.now();
-          update(s => { applyPlacement(s, results, { now, total, skipped: total - Object.keys(results).length }); });
-          show(4);
-        },
+        cardOpts: { hints: false, back: '/onboard?step=3&intro=1' },
         items: items.map(it => ({ key: it.key, label: it.label, blurb: it.blurb, source: it.source, params: it.params })),
         onItem: (rec) => {
           const cluster = PLACEMENT_CLUSTERS.find(c => c.key === rec.key);

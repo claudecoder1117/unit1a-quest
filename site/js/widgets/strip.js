@@ -246,9 +246,35 @@ export function mount(el, part = {}, ctx = {}) {
       return;
     }
     const state = stateOf(res);
+    okCount = 0;
+    // binder r2 — Mock silence (S7 "no hints, no per-item feedback"): under `ctx.mock` a settled slot is
+    // neither green nor red and never prints its ANSWER line. The grader still decides the ladder (a wrong
+    // slot unlocks the next one); the widget records the pick, locks the row as `answered` and moves on.
+    // The grade surfaces at hand-in, never here.
+    if (ctx.mock) {
+      root.dataset.state = '';
+      line.clear();
+      for (const row of (res.slots ?? [])) {
+        const entry = rows.get(row.id);
+        if (!entry) continue;
+        const settled = row.state === 'ok' || row.state === 'revealed';
+        entry.li.dataset.state = settled ? 'answered' : row.state;
+        entry.controls.mark(null);
+        entry.controls.lock(locked || row.state !== 'pending');
+        entry.msg.hidden = true;
+        if (row.state === 'ok') okCount++;
+      }
+      complete = !!res.complete;
+      if (res.next && !locked) {
+        const entry = rows.get(res.next);
+        entry?.controls.focus();
+        entry?.li.scrollIntoView?.({ block: 'nearest' });
+      }
+      proseBox.hidden = true;
+      return;
+    }
     root.dataset.state = state;
     line.set(state, cleanMsg(res, state === 'ok' ? 'Complete' : ''));
-    okCount = 0;
     for (const row of (res.slots ?? [])) {
       const entry = rows.get(row.id);
       if (!entry) continue;

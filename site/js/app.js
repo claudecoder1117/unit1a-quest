@@ -312,10 +312,17 @@ function boot() {
   // import — the dynamic import keeps the first paint off the grader module graph. Screens that grade
   // (`screens/card.js`, T09) `await window.packet.graders` (or `await ready` from the module) once
   // before their first grade() call; until it resolves grade() answers `malformed` err:'no-grader'.
-  const graders = import('./grader/index.js')
+  // home r2 (visual QA, S9 #1): the warm-up no longer fires the instant route() returns — 262 KB of graders
+  // competed with Home's own lazy page/plan graph on a 3G-class link. `packet.graders` is a getter: the first
+  // reader (card.js before its first grade) starts the import at once; otherwise it starts after the window's
+  // load event + 2 s, i.e. once the first screen has everything it asked for. Same promise either way.
+  let gradersP = null;
+  const warmGraders = () => (gradersP ??= import('./grader/index.js')
     .then(async (m) => { await m.ready; if (m.missing.length) console.warn('graders failed to load:', m.missing); return m; })
-    .catch((err) => { console.warn('grader registry unavailable:', err); return null; });
-  window.packet = { bus, navigate, currentRoute, getState, update, setHeader, applyTheme, toggleTheme, APP_VERSION, flags, graders };
+    .catch((err) => { console.warn('grader registry unavailable:', err); return null; }));
+  window.packet = { bus, navigate, currentRoute, getState, update, setHeader, applyTheme, toggleTheme, APP_VERSION, flags, get graders() { return warmGraders(); } };
+  const afterLoad = () => setTimeout(warmGraders, 2000);
+  if (document.readyState === 'complete') afterLoad(); else window.addEventListener('load', afterLoad, { once: true });
   import('./sw-register.js').then(m => { window.packet.sw = m; return m.registerSW(); }).catch(() => {});   // T15: offline + "new version — reload" pill
 }
 

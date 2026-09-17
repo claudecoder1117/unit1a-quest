@@ -29,7 +29,7 @@ import { getState, update } from '../store.js';
 import { mathfmt } from '../mathfmt.js';
 import { nightCounted, NIGHT_FLOOR } from '../trophies.js';
 import { todayISO, daysUntilTest, isQuietHours, timeHM } from '../days.js';
-import { readiness, weakSpots, latestMock } from '../readiness.js';
+import { readiness, weakSpots, latestMock, NIGHT_MIN_SCORED } from '../readiness.js';
 import { dueList, checkDailyGoal, dailyRecord } from '../schedule.js';
 import { modeFor } from '../plan.js';
 import { tileRarity } from '../rarity.js';
@@ -51,6 +51,11 @@ export const SWEEP_COUNT = 8;           // block 2 — up to 8 cards with bucket
 export const SWEEP_BUCKET = 2;
 export const MINI_COUNT = 8;            // block 3 — 8 items …
 export const MINI_LIMIT_MS = 15 * 60 * 1000;   // … under a 15-minute wall clock
+export const MINI_MIN_SCORED = NIGHT_MIN_SCORED;   // binder r2 (= ceil(MINI_COUNT / 2), pinned by tests): fewer answered than this never writes an accuracy
+/** The accuracy a night run writes: right / answered, or null below the MINI_MIN_SCORED floor. Pure — tests read it. */
+export function miniAccuracy({ answered = 0, right = 0 } = {}) {
+  return answered >= MINI_MIN_SCORED ? Math.max(0, Math.min(1, right / answered)) : null;
+}
 export const QUIET_HOUR = 22;           // the soft close
 export const MORNING_NOTATION = 6, MORNING_ASN = 2, MORNING_FAC = 1;
 export const ELITES = Object.freeze([
@@ -176,7 +181,7 @@ export function morningItems(save) {
 /* ------------------------------------------------------------------ the run record */
 
 /** Push a `night` / `morning` run record (S6 `runs`). `accuracy` is written only when it was earned. */
-function writeRun(save, { kind, startedAt, submittedAt, items, accuracy = null, limitMs = null, answered = null }) {
+function writeRun(save, { kind, startedAt, submittedAt, items, accuracy = null, limitMs = null, answered = null, scored = null }) {
   if (!Array.isArray(save.runs)) save.runs = [];
   const n = save.runs.filter(r => String(r?.kind).split(':')[0] === kind).length + 1;
   const rec = {
@@ -188,6 +193,7 @@ function writeRun(save, { kind, startedAt, submittedAt, items, accuracy = null, 
     flagged: false, splits: [],
   };
   if (Number.isFinite(answered)) rec.answered = answered;      // every block's answered count (trophies.nightCounted)
+  if (Number.isFinite(scored)) rec.scored = scored;            // the mini-mock's own answered count (readiness.latestMock's floor)
   if (accuracy != null && Number.isFinite(accuracy)) { rec.accuracy = accuracy; rec.score = Math.round(accuracy * 100); rec.scoreMax = 100; }
   save.runs.push(rec);
   return rec;
@@ -274,9 +280,10 @@ function createMiniMock(host, cfg = {}) {
   root.append(stage, nextRow);
   host.append(root);
 
+  // binder r2: a settled item is `done` (neutral) until the report — a green / red tick mid-mock is a verdict.
   const tickState = (n) => {
     const r = results[n];
-    if (r) return r.answered ? (r.firstTry ? 'clean' : 'wrong') : 'skip';
+    if (r) return r.answered ? 'done' : 'skip';
     return n === i ? 'now' : 'todo';
   };
   function draw() {
@@ -338,10 +345,26 @@ function createMiniMock(host, cfg = {}) {
     const sub = { graded: 0 };
     cur = { index, sub };
     let done = false;
+    const settled = new Set();                                          // boxes whose first answer was wrong (silently locked)
+    // binder r2 — "one answer per box": every box locks on its first graded submit, right or wrong, with
+    // nothing said either way. A strip's own ladder (its wrong slot unlocks the next) and a rootcase chain
+    // run on; the item is booked only when every required box has an answer, so a wrong first box looks
+    // exactly like a right one until hand-in (S7 Mock silence, S9 #6/#7).
+    const entriesOf = () => view?.state?.entries ?? [];
+    const allSettled = () => { const req = entriesOf().filter(e => !e.optional); return req.length > 0 && req.every(e => e.finished || settled.has(e)); };
     offBus = bus.on('card:graded', (ev) => {
       if (destroyed || done || index !== i || ev?.free) return;        // a malformed entry is not an answer
       sub.graded++;
-      if (ev.kind === 'wrong' || (ev.ok === false && ev.kind !== 'correct')) {
+      const wrong = ev.kind === 'wrong' || (ev.ok === false && ev.kind !== 'correct');
+      const e = entriesOf().find(x => String(x.group?.id ?? '') === String(ev.part ?? '')) ?? null;
+      const type = e?.group?.type;
+      if (wrong && e && type === 'strip') { if (!e.lastRes?.complete) return; }   // the ladder goes on; the card finishes it
+      if (wrong && e && type !== 'rootcase' && !e.finished) {
+        settled.add(e);
+        try { e.w.lock(true); } catch { /* proxy */ }
+        e.box.dataset.state = e.box.dataset.state || 'done';
+      }
+      if (wrong && (!e || type === 'rootcase') ? true : allSettled()) {  // no entry to settle (or a chain): the old rule — first wrong books it
         lock();
         record(index, sub, null);
         offerNext(index);
@@ -350,6 +373,7 @@ function createMiniMock(host, cfg = {}) {
     });
     view = createCardView(stage, item.source, {
       hints: false, mode: 'mock', back: '/night',
+      save: false, xpFactor: 0,                                         // binder r2: no XP, daily tick or mastery write mid-mock — the run record is what Readiness reads
       ...(item.opts || {}),
       query: item.params ? new URLSearchParams(item.params) : undefined,
       onDone: (result) => {
@@ -357,7 +381,7 @@ function createMiniMock(host, cfg = {}) {
         done = true;
         record(index, sub, result);
         draw();
-        if (result?.cleared !== true) offerNext(index);                 // a revealed card: forward, never the solution
+        offerNext(index);   // binder r2: right or wrong, the same row and the same words (the dock's Continue is hidden in .nb-mini) — never the solution
       },
       onContinue: () => advance(index, sub),
     });
@@ -482,7 +506,10 @@ export function mountNight(params, query) {
       const scored = items.filter(r => r.answered !== false);          // skipped items are listed, not scored
       const answered = scored.length;
       const right = scored.filter(r => r.firstTry).length;
-      const accuracy = answered ? right / answered : null;
+      // binder r2: a one-item sample must not overwrite a 20-item Baseline — accuracy is written (and read
+      // by readiness.latestMock) only from MINI_MIN_SCORED answered items; below that the run is listed, not scored.
+      const accuracy = miniAccuracy({ answered, right });
+      const moves = accuracy != null;
       // S9 #10 "Honest": the night satisfies the daily goal because it is thirty minutes of work — so it
       // counts only past the floor (8 answered across the blocks, or some answered and 10 minutes).
       const answeredAll = collected.flash.length + collected.sweep.length + answered;
@@ -492,7 +519,7 @@ export function mountNight(params, query) {
       if (answeredAll > 0) update((s) => {
         writeRun(s, {
           kind: 'night', startedAt, submittedAt, limitMs: MINI_LIMIT_MS,
-          accuracy, answered: answeredAll,
+          accuracy, answered: answeredAll, scored: answered,
           items: scored.map(r => ({
             id: r.itemId, skill: r.result?.skills?.[0] ?? null, tier: r.result?.tier ?? null,
             credit: r.firstTry ? 1 : 0, ms: r.result?.elapsedMs ?? 0, work: r.scratch,
@@ -514,7 +541,9 @@ export function mountNight(params, query) {
         blockHead(3, 4, 'Mini-mock report', 15),
         h('h1#nb-rep-h', answered ? `${right} of ${answered} first try` : 'Nothing answered'),
         h('p.muted', answered
-          ? `Scored on the first answer you gave to each box${items.length > answered ? ` — ${items.length - answered} you never answered ${items.length - answered === 1 ? 'is' : 'are'} listed, not scored` : ''}. This is the number Readiness uses.`
+          ? `Scored on the first answer you gave to each box${items.length > answered ? ` — ${items.length - answered} you never answered ${items.length - answered === 1 ? 'is' : 'are'} listed, not scored` : ''}. ${moves
+            ? 'This is the number Readiness uses.'
+            : `Too few answered to move Readiness (it needs ${MINI_MIN_SCORED} of ${MINI_COUNT}) — your last full score still stands.`}`
           : 'No answers, so nothing was scored. The sheet is still worth five minutes.'),
         h('p.nb-rep-rd.mono', `Readiness ${rd.r}${rd.provisional ? ' · provisional' : ''}`),
         counted

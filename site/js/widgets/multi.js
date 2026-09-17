@@ -7,6 +7,38 @@
 // mount(el, part, ctx) → handle       raw() → { [fieldKey]: text }
 
 import { h, field, msgLine, keyRow, promptLine, plain, stateOf, flash, wire, handle, resultText, wedgeLink, keepVisible, KEYS } from './base.js';
+import { getFigure } from '../../data/figures.js';
+import { resolve, angleId } from '../figure/model.js';
+
+/**
+ * card r2: the expression printed inside a field's wedge ("3x + y" for UL on D7), so the field label can
+ * carry it ("upper-left angle · 3x + y"). On a phone the figure has scrolled away by the time a field is
+ * focused, so the wedge highlight alone left the student guessing which expression each box wants.
+ * Never throws: a figure-less card, an unlabelled wedge, or an unknown ref simply adds nothing.
+ */
+export function wedgeExpr(ctx = {}, ref) {
+  if (!ref) return null;
+  try {
+    let m = ctx.model && ctx.model.kind ? ctx.model : null;
+    if (!m) {
+      const f = ctx.figure && !ctx.figure.nodeType ? ctx.figure : ctx.card?.figure;
+      const spec = f?.spec || (f?.id ? getFigure(f.id) : null);
+      if (spec) m = resolve(spec, f);
+    }
+    if (!m || !Array.isArray(m.labels)) return null;
+    const r = String(ref);
+    const want = m.angleNames?.[r] ? m.angleNames[r].slice() : r.split('-');
+    if (want.length === 2) {
+      const id = angleId(want[0], want[1]);
+      return m.labels.find((l) => Array.isArray(l.angle) && l.angle.length === 2 && angleId(l.angle[0], l.angle[1]) === id)?.text ?? null;
+    }
+    if (want.length === 3) {
+      const id = angleId(want[0], want[2]);
+      return m.labels.find((l) => Array.isArray(l.angle) && l.angle.length === 3 && l.angle[1] === want[1] && angleId(l.angle[0], l.angle[2]) === id)?.text ?? null;
+    }
+    return null;
+  } catch { return null; }
+}
 
 export function mount(el, part = {}, ctx = {}) {
   const specs = Array.isArray(part.fields) ? part.fields : [];
@@ -23,11 +55,13 @@ export function mount(el, part = {}, ctx = {}) {
   const onInput = () => { root.dataset.state = ''; line.clear(); fire.input({ part }); };
 
   const box = h('div.w-fields', { dataset: { cols: specs.length > 3 ? '2' : '1' } });
-  const fields = specs.map((spec, i) =>
-    field({
+  const fields = specs.map((spec, i) => {
+    const expr = spec.wedge ? wedgeExpr(ctx, spec.wedge) : null;              // card r2: "upper-left angle · 3x + y"
+    const text = expr ? `${spec.label ?? spec.key} · ${expr}` : (spec.label ?? spec.key);
+    return field({
       key: spec.key,
-      label: spec.label ?? spec.key,
-      aria: plain(spec.label || spec.key),
+      label: text,
+      aria: plain(text),
       wedge: spec.wedge,
       size: specs.length > 3 ? 'sm' : 'md',
       value: ctx.values?.[spec.key] ?? '',
@@ -38,8 +72,8 @@ export function mount(el, part = {}, ctx = {}) {
         if (next) next.focus(); else submit();
       },
       onFocus: (f) => { link.on(spec.wedge); keepVisible(f.wrap, { dock: ctx.dock }); },
-    })
-  );
+    });
+  });
   for (const f of fields) box.append(f.wrap);
   root.append(box, line.el);
 

@@ -90,7 +90,7 @@ export function expectedReason(part = {}) {
  */
 export function menu(part = {}, opts = {}) {
   const items = [];
-  const seen = new Set();
+  const seen = new Set();          // menu ids already represented (card r2) — plus exact texts for id-less chips
   // card r1: when the roots stage ended with ONE root found (a second-subset miss), a chip that names a
   // root the student has not seen would leak it, and "both …" / "neither" are nonsense for a single root.
   // `opts.roots` (the found roots as text) drops those and offers a singular "valid" wording instead.
@@ -103,11 +103,16 @@ export function menu(part = {}, opts = {}) {
     if (unseen.some((k) => { const txt = normText(typeof k.raw === 'string' ? k.raw : show(k.raw)); return txt && new RegExp(`(^|[^0-9./])${txt.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![0-9./])`).test(n); })) return true;
     return single && /\bboth\b|\bneither\b|\ball\s+(roots|of them)\b/.test(n);
   };
+  // card r2: every candidate is classified with the same table grade() uses (reasonId), and only the FIRST
+  // text per reason id survives — the item's wording wins over the generic entry, so "both values work" and
+  // "both valid" (or "−2 does not satisfy the equation" and "doesn't satisfy the equation") never sit side by
+  // side as two chips that both read as the right answer. Id-less wordings dedupe by text.
   const add = (text, force = false) => {
+    if (items.length >= MENU_MAX && !force) return;
     const t = String(text ?? '').trim();
     if (!t) return;
     if (!force && leaks(t)) return;
-    const key = normText(t);
+    const key = reasonId(t).id ?? `text:${normText(t)}`;
     if (seen.has(key)) return;
     seen.add(key);
     items.push({ text: t });
@@ -123,6 +128,9 @@ export function menu(part = {}, opts = {}) {
   const order = rngFrom('reject-menu', part.id ?? 'reject', part.of ?? '').shuffle(items);
   return order;
 }
+
+/** card r2: the menu never exceeds six chips — the item's reason + its distractors, then generic entries to fill. */
+export const MENU_MAX = 6;
 
 function listOf(x) {
   if (x == null) return [];

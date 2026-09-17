@@ -757,7 +757,7 @@ function runHead({ title, subtitle, back, right = null, quitLabel = 'Quit' }) {
 function progressBar(done, total, { retries = 0 } = {}) {
   const wrap = h('div.run-progress', { role: 'progressbar', 'aria-valuemin': '0', 'aria-valuemax': String(total), 'aria-valuenow': String(done), 'aria-label': retries ? `Run progress, ${retries} ${retries === 1 ? 'retry' : 'retries'}` : 'Run progress' },
     h('div.run-progress-track', h('div.run-progress-fill', { style: { transform: `scaleX(${total ? done / total : 0})` } })),
-    h('span.run-progress-n.mono.fs-1', `${done} of ${total} done`, retries ? h('span.run-progress-retry', ` · +${retries} ${retries === 1 ? 'retry' : 'retries'}`) : null),
+    h('span.run-progress-n.mono.fs-1', `${done} of ${total} done`, retries ? h('span.run-progress-retry', ` · ${retries} ${retries === 1 ? 'retry' : 'retries'}`) : null),
   );
   return wrap;
 }
@@ -838,12 +838,14 @@ function mountCardRun(host, { kind, id, seed }) {
   renderItem();
 
   function renderHead() {
-    // r1: a re-queued review is shown as a retry, not as a longer page ("3 of 17 done · +1 retry").
+    // page r2: one denominator for the whole page — every item played (retries included) over the queue
+    // ("16 of 20 done · 3 retries"), so the bar moves on a retry and the Summary's "/ 20" is the same 20.
+    // (r1 counted only first plays, which froze the head at "13 of 17" for three consecutive retries.)
     const retries = kind === 'page' ? queue.filter((it) => it.requeued).length : 0;
-    const done = kind === 'page' ? queue.filter((it) => it.done && !it.requeued).length : results.length;
+    const done = kind === 'page' ? queue.filter((it) => it.done).length : results.length;
     headSlot.replaceChildren(runHead({
       title: run.title, subtitle: run.subtitle, back: run.back,
-      right: progressBar(done, queue.length - retries, { retries }),
+      right: progressBar(done, queue.length, { retries }),
       quitLabel: kind === 'page' ? 'Quit' : 'Back',
     }));
   }
@@ -1083,13 +1085,14 @@ function mountBlitz(host, { id, seed }) {
     answers.replaceChildren();
     answers.dataset.type = e.type;
     if (e.type === 'mc') {
+      // page r2: `data-ok` lets a wrong tap mark the pressed option ✗ AND the right one ✓ (never colour-only).
       graderOptions(e).forEach((opt, k) => {
-        answers.append(h('button.btn.blitz-opt', { type: 'button', onclick: () => submit(e, opt.text) },
+        answers.append(h('button.btn.blitz-opt', { type: 'button', dataset: { ok: String(!!opt.ok) }, onclick: (ev) => submit(e, opt.text, ev.currentTarget) },
           h('span.blitz-key.mono', String(k + 1)), h('span.blitz-opt-text', { html: mathfmt(opt.text) })));
       });
     } else if (e.type === 'asn') {
       [['A', 'Always'], ['S', 'Sometimes'], ['N', 'Never']].forEach(([letter, word]) => {
-        answers.append(h('button.btn.blitz-asn', { type: 'button', onclick: () => submit(e, letter) },
+        answers.append(h('button.btn.blitz-asn', { type: 'button', dataset: { ok: String(letter === String(e.part?.answer ?? '').toUpperCase()) }, onclick: (ev) => submit(e, letter, ev.currentTarget) },
           h('span.blitz-key.mono', letter), h('span.blitz-word', word)));
       });
     } else {
@@ -1117,7 +1120,14 @@ function mountBlitz(host, { id, seed }) {
     for (const el of answers.querySelectorAll('button, input')) el.disabled = inputLocked;
   }
 
-  function submit(e, raw) {
+  /** page r2: mark the pressed option and the right one for the lockout (S5 wrong = shake the offending part). */
+  function markOptions(pressed, ok) {
+    const right = answers.querySelector('button[data-ok="true"]');
+    if (pressed) { pressed.dataset.state = ok ? 'ok' : 'bad'; pressed.append(h('span.blitz-mark', { 'aria-hidden': 'true' }, ok ? '✓' : '✗')); }
+    if (!ok && right && right !== pressed) { right.dataset.state = 'ok'; right.append(h('span.blitz-mark', { 'aria-hidden': 'true' }, '✓')); }
+  }
+
+  function submit(e, raw, pressed = null) {
     // `inputLocked` covers the 250 ms auto-advance window as well as the 1.2 s wrong-answer lockout:
     // without it a keystroke in that window would grade the same item twice.
     if (destroyed || round.state.ended || round.locked() || inputLocked) return;
@@ -1136,6 +1146,7 @@ function mountBlitz(host, { id, seed }) {
     drawClock(snap);
     drawStrikes();
     if (snap.ended) { flash.textContent = snap.reason === 'strikes' ? 'Three in a row — round over.' : "Time."; flash.dataset.tone = 'bad'; setLocked(true); return endRound(); }
+    markOptions(pressed, ok);
     if (ok) {
       flash.textContent = '✓';
       flash.dataset.tone = 'ok';
@@ -1184,13 +1195,13 @@ function mountBlitz(host, { id, seed }) {
     const k = String(ev.key).toLowerCase();
     if (e.type === 'asn') {
       const letter = { a: 'A', s: 'S', n: 'N', 1: 'A', 2: 'S', 3: 'N' }[k];
-      if (letter) { ev.preventDefault(); submit(e, letter); }
+      if (letter) { ev.preventDefault(); submit(e, letter, [...answers.querySelectorAll('.blitz-asn')].find((b) => b.querySelector('.blitz-key')?.textContent === letter) ?? null); }
       return;
     }
     if (e.type === 'mc') {
       const i2 = '123456789'.indexOf(k);
       const opts = graderOptions(e);
-      if (i2 >= 0 && i2 < opts.length) { ev.preventDefault(); submit(e, opts[i2].text); }
+      if (i2 >= 0 && i2 < opts.length) { ev.preventDefault(); submit(e, opts[i2].text, answers.querySelectorAll('.blitz-opt')[i2] ?? null); }
     }
   };
   document.addEventListener('keydown', onKey);
@@ -1207,6 +1218,7 @@ function mountBlitz(host, { id, seed }) {
 /* ------------------------------------------------------------------ the Summary */
 
 const RARITY_ORDER = ['platinum', 'gold', 'silver', 'bronze'];
+const RARITY_GLYPH = { platinum: '★', gold: '●', silver: '◐', bronze: '○' };
 
 function renderSummary(host, ctx) {
   const { kind, run, results, sum, before, after, tilesBefore, tilesAfter, outcome, save, elapsedMs } = ctx;
@@ -1228,9 +1240,12 @@ function renderSummary(host, ctx) {
   const isBlitz = kind === 'blitz';
   const b = outcome.blitz ?? null;
   const roundS = Math.round((run.limitMs ?? 0) / 1000);
+  // page r2: "right in 60 s" was untrue after a 3-strike end at 0:23 — the hero names the seconds actually played.
+  const playedS = b?.reason === 'time' ? roundS : Math.max(1, Math.round(elapsedMs / 1000));
+  const retries = isPage ? (run.items ?? []).filter((it) => it && it.requeued).length : 0;
   const heroNum = h('span.sum-xp-num.mono', '0');
   const stats = h('div.sum-stats',
-    h('div.sum-xp', heroNum, h('span.sum-xp-label.muted', isBlitz ? `right in ${roundS} s` : 'XP this run')),
+    h('div.sum-xp', heroNum, h('span.sum-xp-label.muted', isBlitz ? `right in ${playedS} s` : 'XP this run')),
     h('dl.sum-facts', ...(isBlitz
       ? [
         fact('Answered', String(b?.answered ?? sum.count), `${b?.wrong ?? sum.missed} wrong`),
@@ -1239,7 +1254,7 @@ function renderSummary(host, ctx) {
       ]
       : [
         fact('Flawless', `${sum.clean} / ${sum.count}`, 'first try, no hints'),
-        fact('Cleared', `${sum.cleared} / ${sum.count}`, sum.missed ? `${sum.missed} went to the solution` : 'nothing revealed'),
+        fact('Cleared', `${sum.cleared} / ${sum.count}`, (sum.missed ? `${sum.missed} went to the solution` : 'nothing revealed') + (retries ? ` · ${retries} retried` : '')),
         fact('Time', fmtClock(elapsedMs), sum.count ? `${fmtClock(Math.round(sum.ms / Math.max(1, sum.count)))} per item` : ''),
       ])),
   );
@@ -1271,7 +1286,7 @@ function renderSummary(host, ctx) {
           // `data-foil` (the platinum edge) stays platinum-only.
           h('span.tile-sheen', { 'aria-hidden': 'true', style: { animationDelay: `${420 + k * 90}ms` } }),
         ),
-        h('span.sum-tile-cap.fs-1.muted', `${mintLabel(m)} · ${mintCaption(m)}`),
+        h('span.sum-tile-cap.fs-1.muted', h('span.sum-tile-name', mintLabel(m)), h('span.sum-tile-move', `${RARITY_GLYPH[m.to] ?? ''} ${m.to}`)),   // page r2: two short lines under a 60 px tile
       ))),
     );
   }
@@ -1341,7 +1356,7 @@ function renderSummary(host, ctx) {
   const goal = save.settings?.dailyGoal ?? 400;
   const plan = h('div.sum-plan',
     h('p.fs-2', h('span.mono', `${num(d.xp, 0)} / ${goal}`), ' XP today', d.goalMet ? h('span.chip', { dataset: { tone: 'accent' } }, 'goal met') : null),
-    h('p.muted.fs-1', daysUntilTest(save.settings?.testDate) == null ? 'No test date set.' : `Next: ${next.label}`),
+    h('p.muted.fs-1', daysUntilTest(save.settings?.testDate) == null ? 'No test date set.' : `Next: ${String(next.label ?? '').replace(/^RUN NEXT(?: · )?/, '') || 'a Page'}`),   // page r2: the Home button label, not its prefix
   );
 
   const actions = h('div.run-actions',

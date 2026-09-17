@@ -825,10 +825,13 @@ body:has(.sw-pill:not([hidden])) .set-msg { top: calc(var(--header-h) + 64px); }
 .sum-fail { color: var(--warn); }
 
 .sum-mint h2, .sum-hist h2, .sum-skills h2, .sum-readiness h2 { margin: 0 0 8px; }
-.sum-tiles { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 12px; }
-.sum-tiles > li { display: grid; gap: 4px; justify-items: center; }
+/* page r2: a fixed 60 px grid (5 per row at 375 → 10 tiles in 2 rows, all on screen while they flip); the
+   caption is two 11 px lines under the tile ("FAC 16)" / "◐ silver") so no tile is pushed by its neighbour's text. */
+.sum-tiles { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, 60px); gap: 12px 10px; justify-content: start; }
+.sum-tiles > li { display: grid; gap: 4px; justify-items: center; width: 60px; }
 .sum-tile { width: 60px; height: 60px; pointer-events: none; }
-.sum-tile-cap { text-align: center; }
+.sum-tile-cap { text-align: center; width: 60px; font-size: 11px; line-height: 1.15; white-space: normal; overflow-wrap: anywhere; display: grid; gap: 1px; }
+.sum-tile-move { font-family: var(--font-mono); }
 
 .sum-hist-list { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 8px; }
 .sum-hist-list li { display: inline-flex; align-items: center; gap: 6px; }

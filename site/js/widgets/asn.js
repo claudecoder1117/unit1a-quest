@@ -113,7 +113,15 @@ export function mount(el, part = {}, ctx = {}) {
     }
     const state = stateOf(res);
     root.dataset.state = state;
-    line.set(state, cleanMsg(res, state === 'ok' ? 'Correct' : ''));
+    // content r2: when the chips are about to be asked, the full reason line would print the correct chip
+    // verbatim two lines above the question — so the verdict stage shows only the letters ("Not Always.
+    // Sometimes.") and the reason line arrives with the chip verdict (res.stage === 'reason' carries it).
+    const short = res.askReason && res.stage !== 'reason' && res.kind === 'wrong' && res.verdict && res.answer;
+    // card r2: the reflective chip after a wrong verdict is graded on its own line — the RIGHT chip reads
+    // "✓ Right reason. Sometimes — …" (the reason line arrives here), not a second ✗ under a settled miss.
+    // Only the line's glyph changes; root.dataset.state stays 'bad' (the pips and the part box read that).
+    const lineState = res.stage === 'reason' && !res.verdictOk && res.reasonOk ? 'ok' : state;
+    line.set(lineState, short ? `Not ${LETTERS[res.verdict]}. ${LETTERS[res.answer]}.` : cleanMsg(res, state === 'ok' ? 'Correct' : ''));
 
     if (res.stage === 'reason' || stage === 'reason') {
       for (const b of chipRow.children) {
@@ -142,7 +150,8 @@ export function mount(el, part = {}, ctx = {}) {
     if (res.disputed && res.kind !== 'malformed') {
       flag.hidden = false;
       flag.textContent = '';
-      flag.append(h('span.w-asn-flag-g', { 'aria-hidden': 'true' }, '⚑'), h('span', `${res.disputed} — graded as the teacher's answer.`));
+      // content r2: grading clause first and the letter named, so the note can't be skimmed as "…A — graded".
+      flag.append(h('span.w-asn-flag-g', { 'aria-hidden': 'true' }, '⚑'), h('span', `Graded ${res.answer} (the teacher's answer). ${res.disputed}.`));
     }
     if (res.askReason && stage !== 'reason' && res.kind !== 'malformed') openChips();
   }

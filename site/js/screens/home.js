@@ -14,8 +14,26 @@ import { getState, update } from '../store.js';
 import { todayISO, daysUntilTest, addDays, weekday } from '../days.js';
 import { readiness, logForecast, weakSpots, skillStates, coverageCount, sparkline } from '../readiness.js';
 import { housekeep } from '../schedule.js';
-import { nextAction, startPage, resumePage, bossReady } from '../page.js';
-import { fillPlanStrip, composeOpts } from '../plan.js';   // T14: the S7 plan fills the #plan-strip slot below
+// home r2 (visual QA): page.js and plan.js are LAZY. page.js drags data/cards.js (233 KB) + data/templates.js →
+// every js/gen/* (311 KB) onto Home's static graph, and a cold 3G-class open measured 7.7 s to the CTA against
+// S9 #1's "< 1 s". Home now paints the hero, today's stats, the weak spots and the fallback plan pills from
+// readiness.js alone, with a button-shaped CTA placeholder; the composed queue and the S7 plan strip land when
+// the two modules resolve (one tick on Wi-Fi / the SW cache). The bindings below are filled by `heavy()`.
+let nextAction = null, startPage = null, resumePage = null, bossReady = null;   // page.js
+let fillPlanStrip = null, composeOpts = null;                                   // plan.js — T14: the S7 plan fills #plan-strip
+let heavyP = null;
+const heavyReady = () => nextAction != null && fillPlanStrip != null;
+const heavy = () => (heavyP ??= Promise.all([import('../page.js'), import('../plan.js')]).then(([p, pl]) => {
+  ({ nextAction, startPage, resumePage, bossReady } = p);
+  ({ fillPlanStrip, composeOpts } = pl);
+  return true;
+}).catch((err) => { console.error('home: page/plan failed to load', err); heavyP = null; return false; }));
+// Warm the two screens a fresh student reaches next (the run screen and the card engine) — once, 1.5 s after
+// the composed CTA is on screen, so the first tap is instant and nothing races Home's own critical path
+// (moved here from screens/index.js in home r2; the SW caches them for the second visit).
+let warmed = false;
+const warmNext = () => { if (warmed) return; warmed = true; setTimeout(() => { import('./run.js').catch(() => {}); import('./card.js').catch(() => {}); }, 1500); };
+if (typeof window !== 'undefined') heavy();   // start the fetch the moment this module evaluates, not after the first render
 // W4 integration (notes/T14.md Requests → T10): every Page this screen starts is composed with the PLAN's
 // opts, so a lowered day really does get one tier-4 item instead of two (the strip promises it in print).
 // `q` is deliberately NOT forwarded: page.js derives the identical target from its own qFor (pinned in
@@ -26,9 +44,9 @@ const planOpts = (save, D) => { const { q, ...rest } = composeOpts(save, { D });
 const DOW = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
 
 /** A real <svg> (SVG namespace) from markup — h('svg') would create an HTMLUnknownElement whose circles never draw. */
-function svg(viewBox, inner) {
+function svg(viewBox, inner, attrs = '') {
   const t = document.createElement('template');
-  t.innerHTML = `<svg viewBox="${viewBox}" aria-hidden="true" focusable="false">${inner}</svg>`;
+  t.innerHTML = `<svg viewBox="${viewBox}" aria-hidden="true" focusable="false"${attrs ? ' ' + attrs : ''}>${inner}</svg>`;
   return t.content.firstElementChild;
 }
 const RING_R = 40, RING_C = 2 * Math.PI * RING_R;          // 88 px ring, stroke 6
@@ -153,8 +171,10 @@ function skillRail(state) {
 function heroBlock(state, rd, today) {
   const cov = coverageCount(state);
   const D = daysUntilTest(state.settings?.testDate, today);
+  // home r2: while provisional the number rests on N of 19 skills — a 2-answer quit and an 8/8 ace both read 57,
+  // so the hero says over how many (the summary and Settings already did; this is where the number lives all week).
   const mockLine = rd.provisional
-    ? h('p.rd-note.muted.fs-1', rd.label)
+    ? h('p.rd-note.muted.fs-1', `provisional · ${rd.tested} of ${rd.skillsTotal} skills tested — take a Mock to lock\u00a0it`)
     : h('p.rd-note.muted.fs-1', `locked by ${rd.mock.kind === 'mock' ? 'Mock' : rd.mock.kind === 'baseline' ? 'Baseline' : 'Night Before'} · ${pct(rd.mock.accuracy)}`);
   const spark = sparkline(state, 7);
   const sparkEl = spark.length >= 2 ? sparklineSvg(spark) : null;
@@ -164,7 +184,10 @@ function heroBlock(state, rd, today) {
       h('p#rd-h.eyebrow.muted', 'Readiness'),
       h('p.rd-band', { dataset: { band: rd.band.key } }, rd.band.label),
       mockLine,
-      h('p.rd-terms.mono.fs-1.muted', `mastery ${pct(rd.M)} · binder ${cov.cleared}/${cov.total}${D != null && D >= 0 ? ` · T−${D}` : ''}`),
+      // home r2: nowrap terms (the line wraps only at a separator) and no T−N — the header chip shows it.
+      h('p.rd-terms.mono.fs-1.muted',
+        h('span.rd-term', !rd.provisional ? `mastery ${pct(rd.M)}` : rd.tested === 0 ? 'no skill tested yet' : `mastery ${pct(rd.M)} of ${rd.tested} tested`), ' · ',
+        h('span.rd-term', `binder ${cov.cleared}/${cov.total}`)),
       sparkEl,
     ),
   );
@@ -178,10 +201,15 @@ function sparklineSvg(points) {
   // home r1: a bare 96×24 stroke read as a rendering glitch — a baseline, an end dot and a caption make it a chart.
   const first = points[0].r, last = points[n - 1].r;
   return h('div.rd-spark', { role: 'img', 'aria-label': `Readiness over the last ${n} days: ${points.map(p => p.r).join(', ')}` },
+    // integration r2: at 375 the fixed 96 px chart + nowrap caption overran the hero column (the "22 → 38" spilled
+    // past the card). preserveAspectRatio="none" lets the svg shrink sideways only; non-scaling strokes keep the
+    // 2 px line, and the end dot is a round-capped zero-length stroke (the Stats sparkline's trick) so it never
+    // squashes into an ellipse.
     svg(`0 0 ${w} ${hgt}`,
       `<line class="spark-base" x1="2" y1="${hgt - 2}" x2="${w - 2}" y2="${hgt - 2}"/>` +
       `<path d="${d}"/>` +
-      `<circle class="spark-dot" cx="${xs(n - 1).toFixed(1)}" cy="${ys(last).toFixed(1)}" r="2.5"/>`),
+      `<path class="spark-dot" d="M ${xs(n - 1).toFixed(1)} ${ys(last).toFixed(1)} h 0.01"/>`,
+      'preserveAspectRatio="none"'),
     h('span.spark-cap.mono', `${n} day${n === 1 ? '' : 's'} · ${first} → ${last}`));
 }
 
@@ -190,6 +218,7 @@ function render(el, state, today) {
   const rd = readiness(state);
   setHeader({ readiness: rd.r, provisional: rd.provisional });
   const D = daysUntilTest(state.settings?.testDate, today);
+  if (!heavyReady()) { renderLight(el, state, rd, today, D); heavy().then((ok) => { if (el.isConnected) render(el, getState(), todayISO()); if (ok) warmNext(); }); return; }
   const pageOpts = planOpts(state, D);                              // W4: the S7 plan's tier-4 cap
   const act = nextAction(state, { today, compose: pageOpts });
   const ip = resumePage(state);
@@ -219,7 +248,8 @@ function render(el, state, today) {
     const est = Math.round(act.page.queue.reduce((t, it) => t + ({ 1: 0.5, 2: 1.5, 3: 3, 4: 5 }[it.tier] ?? 1.5), 0));
     if (breakdown) sub.push(breakdown);
     sub.push(`~${est} min`, `seed ${m.seedTag}`);
-    if (m.warn) sub.push(`plan wants ${m.q} new a day — holding at 12`);
+    // home r2: the "plan wants N new a day — holding at 12" line is gone — meta.q IS the held target, so it could
+    // only ever print 12 vs 12 while the strip beneath said 18 (S9 #10). The strip's warn line is the one statement.
     if (m.carried.length) sub.push(`${m.carried.length} hard item${m.carried.length === 1 ? '' : 's'} carried to the next page`);
   } else if (act.kind === 'resume' && ip) {
     sub.push(`started ${new Date(ip.startedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`, `${ip.queue.filter(q => q.done).length} answered`);
@@ -250,6 +280,22 @@ function render(el, state, today) {
   );
   // NOT `.screen` (that caps the whole grid at 680 px) — `.with-rail` lays out the 680 column + 320 rail (T01)
   el.replaceChildren(h('section.home.with-rail', { 'aria-label': 'Today' }, col, skillRail(state)));
+}
+
+/** home r2: the first paint — everything readiness.js can say, plus a CTA placeholder and the fallback plan pills. */
+function renderLight(el, state, rd, today, D) {
+  const primary = h('span.btn.btn-primary.home-primary', { role: 'status', 'aria-busy': 'true', dataset: { kind: 'loading' } }, 'Loading today’s page…');
+  const secondary = h('nav.home-links', { 'aria-label': 'More' },
+    h('a.btn', { href: '#/binder' }, 'Binder'), h('a.btn', { href: '#/mock' }, 'Mock'), h('a.btn', { href: '#/stats' }, 'Stats'), h('a.btn', { href: '#/sheet' }, 'Sheet'));
+  const col = h('div.col',
+    heroBlock(state, rd, today),
+    h('div.home-cta', primary),
+    planStrip(state, today, D),
+    h('section.card.home-today', { 'aria-label': 'Today' }, goalMeter(state, today), streakArc(state.streak ?? { count: 0, best: 0 }), levelRing(state.xp ?? 0)),
+    weakList(state),
+    secondary,
+  );
+  el.replaceChildren(h('section.home.with-rail', { 'aria-label': 'Today', dataset: { loading: 'true' } }, col, skillRail(state)));
 }
 
 /** screens['/today'] — (params, query, ctx) => (el) => cleanup */

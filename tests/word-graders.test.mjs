@@ -71,7 +71,7 @@ test('stripMarkup / hasMarkup: plain-text spellings for aria and copy', () => {
 // =====================================================================================
 
 const asn01 = { id: 'asn-01', type: 'asn', answer: 'S', reason: 'could be right (90°) or obtuse', distractors: ['every angle under 180° is acute', 'acute means under 90°, and 180° is over 90°'] };
-const qz04 = { id: 'qz-04', type: 'asn', answer: 'S', disputed: 'Quizlet says S; arguably A', reason: "Quizlet's key; ⚑ arguably A", distractors: ['a ray can leave the plane', 'rays are never coplanar'] };
+const qz04 = { id: 'qz-04', type: 'asn', answer: 'S', disputed: 'Quizlet says S — and S is right (a line and a ray can be skew); an earlier draft flagged it as A', reason: "Quizlet's key; ⚑ arguably A", distractors: ['a ray can leave the plane', 'rays are never coplanar'] };
 const bonus = { id: 'bonus-01', type: 'asn', answer: 'A' };
 
 test('asn: parse every accepted verdict spelling', () => {
@@ -190,12 +190,12 @@ test('asn: disputed qz-04 grades the teacher letter (S) and carries the ⚑ note
   const s = asn.grade(qz04, 'S');
   assert.equal(s.ok, true);
   assert.equal(s.flag, true);
-  assert.equal(s.disputed, 'Quizlet says S; arguably A');
+  assert.equal(s.disputed, 'Quizlet says S — and S is right (a line and a ray can be skew); an earlier draft flagged it as A');
   const a = asn.grade(qz04, 'A');
   assert.equal(a.ok, false, 'A is not accepted — the teacher answer is never changed');
   assert.equal(a.kind, 'wrong');
   assert.equal(a.flag, true);
-  assert.equal(a.disputed, 'Quizlet says S; arguably A');
+  assert.equal(a.disputed, 'Quizlet says S — and S is right (a line and a ray can be skew); an earlier draft flagged it as A');
   assert.equal(asn.grade(asn01, 'S').flag, false);
 });
 

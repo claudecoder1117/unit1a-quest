@@ -234,7 +234,7 @@ export function mount(el, part = {}, ctx = {}) {
 
   // ---- entry column -----------------------------------------------------------------------------
   const input = h('input.w-pairs-input.mono', {
-    type: 'text', id: `${id}-in`, placeholder: `∠${options[0]?.name ?? 'GFC'}`,
+    type: 'text', id: `${id}-in`, placeholder: '∠ABC',   // page r2: never a figure name — ∠JGY was half the answer
     autocomplete: 'off', autocapitalize: 'characters', autocorrect: 'off', spellcheck: 'false',
     enterkeyhint: 'done', inputmode: 'text', 'aria-describedby': `${id}-hint`,
   });
@@ -292,6 +292,15 @@ export function mount(el, part = {}, ctx = {}) {
       if (flashed) for (const k of flashed.keys) setWedgeState(svg, k, flashed.state);
       if (state.pending) setWedgeState(svg, state.pending, 'selected');
       for (const k of linked) setWedgeState(svg, k, 'linked');
+      // card r2: the state is also a data attribute on the wedge group + its button (QA and CSS can read
+      // it; the fill classes stay the paint) — flash colour wins over selected over linked.
+      for (const w of svg.querySelectorAll(WEDGE_SELECTOR)) {
+        const k = w.dataset.name;
+        const st = flashed && flashed.keys.includes(k) ? flashed.state : state.pending === k ? 'selected' : linked.includes(k) ? 'linked' : '';
+        w.dataset.state = st;
+        const b = w.querySelector('.fig-wedge-hit');
+        if (b) b.dataset.state = st;
+      }
     }
     // the pills carry the persistent memory, so the list alone is a complete answer path
     const used = new Set();
@@ -302,6 +311,29 @@ export function mount(el, part = {}, ctx = {}) {
       b.classList.toggle('is-linked', linked.includes(key));
     }
   }
+
+  // card r2: when the figure is the SCREEN's (the paper above this widget), the verdict in the widget's msg
+  // slot lands a screen and a half below a wedge tap on a phone — and a wrong pair is charged the moment it
+  // lands (card.js pairsInput). So the one-line teaching is mirrored into a one-row strip right under the
+  // figure: the msg slot stays the record, the strip is where the eyes are. It goes muted on the next pick
+  // (`data-stale`) and is refreshed by the next pair.
+  const FIG_GLYPH = { ok: '✓', bad: '✗', almost: '!' };
+  let figMsg = null;
+  function figNote(state, text) {
+    if (!svg || ownsFigure) return;
+    if (!figMsg) {
+      const anchor = svg.closest?.('.card-figure') || svg.parentElement;
+      if (!anchor || !anchor.parentElement) return;
+      figMsg = h('p.w-pairs-figmsg', { role: 'status', 'aria-live': 'polite', dataset: { state: '', stale: 'false' } },
+        h('span.w-msg-glyph', { 'aria-hidden': 'true' }), h('span.w-pairs-figmsg-t'));
+      anchor.insertAdjacentElement('afterend', figMsg);
+    }
+    figMsg.dataset.state = state || '';
+    figMsg.dataset.stale = 'false';
+    figMsg.firstElementChild.textContent = text ? FIG_GLYPH[state] ?? '' : '';
+    figMsg.lastElementChild.replaceChildren(label(text));
+  }
+  const figStale = () => { if (figMsg) figMsg.dataset.stale = 'true'; };
 
   /** Flash the verdict colour on the two wedges just judged, then hand the figure back. */
   function flashPair(pair, ok) {
@@ -352,6 +384,7 @@ export function mount(el, part = {}, ctx = {}) {
     if (next.event === 'pending' || next.event === 'cleared') {
       syncWedges();
       line.clear();
+      figStale();
       undoBtn.disabled = !state.picks.length && state.pending == null;
       fire.input({ part, picks: raw(), pending: state.pending });
       return;
@@ -360,6 +393,7 @@ export function mount(el, part = {}, ctx = {}) {
       syncWedges();
       const [a, b] = next.pair;
       line.set('almost', `${nameOf(a)} + ${nameOf(b)} — already used, pick a different pair. That one is free.`);
+      figNote('almost', `${nameOf(a)} + ${nameOf(b)} — already used, pick a different pair. That one is free.`);
       const i = state.picks.findIndex((p) => pairKeyOf(p[0], p[1]) === pairKeyOf(a, b));
       flash(chips.querySelector(`.w-pairs-chip[data-i="${i}"]`), 'almost');
       return;
@@ -370,7 +404,9 @@ export function mount(el, part = {}, ctx = {}) {
     const r = last?.results?.[last.results.length - 1];
     if (r) {
       const st = stateOf(r);
-      line.set(st, last.ok ? `${r.msg} — ${progressText(last.valid, count)}.` : r.msg);
+      const text = last.ok ? `${r.msg} — ${progressText(last.valid, count)}.` : r.msg;
+      line.set(st, text);
+      figNote(st, text);
       flash(chips.querySelector(`.w-pairs-chip[data-i="${last.results.length - 1}"]`), st);
       flashPair(next.pair, r.ok);
     }
@@ -382,7 +418,7 @@ export function mount(el, part = {}, ctx = {}) {
     if (locked) return;
     const tokens = splitTyped(text);
     if (!tokens.length) {
-      hint.textContent = 'Type an angle name like ∠GFC, then press Enter.';
+      hint.textContent = `Type an angle name like ∠${options[0]?.name ?? 'ABC'}, then press Enter.`;   // page r2: a name this figure has
       hint.dataset.state = 'almost';
       return;
     }
@@ -515,6 +551,7 @@ export function mount(el, part = {}, ctx = {}) {
       hint.textContent = 'Three letters, vertex in the middle.';
       showPending();
       line.clear();
+      if (figMsg) { figMsg.remove(); figMsg = null; }
       regrade();
     },
     undo() {
@@ -540,8 +577,10 @@ export function mount(el, part = {}, ctx = {}) {
     destroy() {
       ac.abort();
       clearTimeout(flashTimer);
+      if (figMsg) { figMsg.remove(); figMsg = null; }
       if (svg) {
         clearWedgeStates(svg);
+        for (const w of svg.querySelectorAll(WEDGE_SELECTOR)) { delete w.dataset.state; const b = w.querySelector('.fig-wedge-hit'); if (b) delete b.dataset.state; }
         svg.classList.remove('fig-locked');
         for (const b of svg.querySelectorAll('.fig-wedge-hit')) { b.setAttribute('tabindex', '0'); b.removeAttribute('aria-disabled'); }
         if (ownsFigure) svg.remove();
