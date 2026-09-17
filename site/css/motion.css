@@ -47,3 +47,29 @@
   .levelup.is-in .levelup-rank { animation: none; }
 }
 /* === /T09 === */
+
+/* === T16 === Run screen motion (COMPOSED S1 "Page ends on a Summary … tiles minted (flip + foil sheen —
+   the one flourish), skill bars animating old→new"). Transform/opacity only; the sheen is the single
+   gradient S5 allows and it plays once. base.css zeroes every duration under prefers-reduced-motion, and
+   the explicit block below also parks each animation on its finished frame so nothing is left mid-flip. */
+@keyframes t16-mint-flip {
+  0%   { transform: rotateY(-90deg) scale(.86); opacity: 0; }
+  60%  { transform: rotateY(12deg) scale(1.04); opacity: 1; }
+  100% { transform: none; opacity: 1; }
+}
+.sum-tile { animation: t16-mint-flip 460ms var(--ease) both; transform-style: preserve-3d; }
+
+/* The foil sheen is T11's own `.tile-sheen` (screens.css) — one gradient in the app, not two. All this
+   block does is hold it back until the flip has landed, and stretch it so it reads on a 60 px tile. */
+.sum-tile .tile-sheen { animation-duration: 820ms; animation-delay: 420ms; animation-fill-mode: both; }
+
+.sum-bar-fill { transition: transform 600ms var(--ease); }
+.blitz-meter-fill { transition: transform 120ms linear; }
+.blitz-flash { transition: color var(--dur-1) var(--ease); }
+
+@media (prefers-reduced-motion: reduce) {
+  .sum-tile { animation: none; transform: none; opacity: 1; }
+  .sum-tile .tile-sheen { animation: none; opacity: .5; }
+  .sum-bar-fill, .blitz-meter-fill { transition: none; }
+}
+/* === /T16 === */

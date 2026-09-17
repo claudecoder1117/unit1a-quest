@@ -146,6 +146,9 @@ export function mount(el, group = {}, ctx = {}) {
       lock: (on) => box.lock(on),
       isEmpty: () => box.isBlank(),
       values: () => ({ roots: box.value() }),
+      // W4 integration (notes/T13.md Requests → T08a): restore what `values()` snapshotted, so a
+      // resumed Mock comes back with the stage AND its answers on screen, not just in the save.
+      setValues(v) { if (v && typeof v.roots === 'string') box.set(v.roots); },
       feedback(res) {
         const state = stateOf(res);
         box.setState(state, '');
@@ -199,6 +202,14 @@ export function mount(el, group = {}, ctx = {}) {
       lock: (on) => { for (const r of rows) r.lock(on); for (const b of chipEls) b.disabled = !!on; },
       isEmpty: () => rows.every((r) => r.isBlank()) && !reason,
       values: () => ({ keep: rows.map((r) => r.value()), reason }),
+      setValues(v) {                                                    // W4 integration — see buildRoots
+        if (!v || typeof v !== 'object') return;
+        if (Array.isArray(v.keep)) v.keep.forEach((val, i) => { if (val && rows[i]) rows[i].set(val, false); });
+        if (v.reason) {
+          reason = v.reason;
+          for (const b of chipEls) b.setAttribute('aria-checked', String(b.textContent === v.reason));
+        }
+      },
       feedback(res) {
         const state = stateOf(res);
         (res.roots || []).forEach((r, i) => {
@@ -328,6 +339,22 @@ export function mount(el, group = {}, ctx = {}) {
       lock: (on) => { for (const t of tabs) { for (const c of Object.values(t.cells)) c.control.lock(on); t.xField?.lock(on); } },
       isEmpty: () => tabs.every((t) => Object.values(t.cells).every((c) => c.control.isBlank()) && (!t.xField || t.xField.isBlank())),
       values: () => tabs.map(rowOf).filter(Boolean),
+      setValues(v) {                                                    // W4 integration — see buildRoots
+        if (!Array.isArray(v)) return;
+        for (const row of v) {
+          if (!row || typeof row !== 'object') continue;
+          const x = row[xKey];
+          let t = tabs.find((o) => !o.isAdd && String(o.value ?? o.text) === String(x));
+          if (!t && addTab && String(x ?? '').trim()) { t = addTab; t.xField?.set(x); }
+          if (!t) continue;
+          for (const [k, cell] of Object.entries(t.cells)) {
+            const val = row[k];
+            if (val == null || val === '') continue;
+            if (cell.kind === 'seg') cell.control.set(String(val), false);
+            else cell.control.set(val);
+          }
+        }
+      },
       pips: () => ({ total: expected || tabs.length || 1, filled: tabs.filter((t) => t.btn.dataset.state === 'ok').length }),
       feedback(res) {
         const submitted = tabs.map((t) => [t, rowOf(t)]).filter(([, r]) => r);
@@ -386,8 +413,32 @@ export function mount(el, group = {}, ctx = {}) {
     return true;
   }
 
+  /**
+   * W4 integration (notes/T13.md Requests → T08a). Put back the snapshot `values()` returns:
+   * `{ stage, found, roots:{roots}, reject:{keep, reason}, cases:[rows] }`. `found` is restored FIRST
+   * because the reject rows and the case tabs are built from it. Every other widget restores from
+   * `ctx.values`; this was the last one that did not, so a resumed Mock showed empty later stages.
+   */
+  function restoreValues(v) {
+    if (!v || typeof v !== 'object') return;
+    if (Array.isArray(v.found) && v.found.length) found = v.found.slice();
+    const want = order.indexOf(v.stage);
+    const upto = want < 0 ? 0 : want;
+    for (let i = 0; i <= upto; i++) {
+      const s = stages[i];
+      if (!s) continue;
+      build(s);
+      s.ui?.setValues?.(v[s.key]);
+    }
+    if (upto > 0) {
+      for (let i = 0; i < upto; i++) { const s = stages[i]; if (s.ui?.text) summarize(s, s.ui.text() || '✓'); }
+      setStage(upto, { focus: false });
+    }
+  }
+
   build(stages[0]);
   setStage(0, { focus: false });
+  restoreValues(ctx.values);
 
   return handle({
     el: root, part: group, type: 'rootcase',

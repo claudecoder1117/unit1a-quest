@@ -5,6 +5,7 @@ import { load, update, subscribe, flags, getState } from './store.js';
 import { daysUntilTest } from './days.js';
 import { screens } from './screens/index.js';
 import { xpForLevel, levelFor, rankFor } from './xp.js';   // T09/Wave 3: the S4 ladder lives in one file
+import { readiness as readinessOf } from './readiness.js';   // W4 integration: the ring is the SHELL's, not a screen's
 
 export const APP_VERSION = (typeof self !== 'undefined' && self.APP_VERSION) || 'dev';
 
@@ -217,6 +218,12 @@ function syncHeaderFromState(s) {
     testDate: s.settings?.testDate ?? null,
     tminus: daysUntilTest(s.settings?.testDate),
   });
+  // W4 integration: the Readiness ring used to be pushed by each screen that happened to compute it
+  // (Home, Binder, Stats, Settings, the Card, Run, Night). A deep link straight to #/mock, #/boss/:id or
+  // a report therefore showed "—" while the app knew the number perfectly well. Readiness is a pure
+  // function of the save, so the shell derives it here and no screen has to remember; the screens' own
+  // setHeader({readiness}) calls stay valid and write the same value.
+  try { const r = readinessOf(s); hdr.readiness = r.r; hdr.provisional = r.provisional; } catch { /* keep the last */ }
   renderHeader();
 }
 

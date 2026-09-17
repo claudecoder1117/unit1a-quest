@@ -160,13 +160,18 @@ export function bossReady(save) {
   const out = [];
   for (const b of bosses) {
     if (save?.trophies?.[`boss:${b.id}`]) continue;
-    const ok = b.modules.every(mid => {
-      const m = moduleById[mid];
-      if (!m) return false;
+    const mods = b.modules.map(mid => moduleById[mid]);
+    if (mods.some(m => !m)) continue;
+    // A module with neither originals nor family tiles is GENERATOR-ONLY (M3 "Comp/Supp Sprint" is the
+    // one: all of its work is Variants, so there is nothing to clear). It is vacuously satisfied.
+    // W4 integration: requiring content per module made B1 (M1 + M3) unreachable forever — a whole boss
+    // a real student could never meet, since M3 can never be "cleared". The gate is now: every module
+    // that HAS content is fully cleared, and at least one module of the boss has content.
+    const ok = mods.every(m => {
       if (m.originals.length && !m.originals.every(id => isCleared(save?.cards?.[id]))) return false;
       if (m.families.length && !m.families.every(f => familyRarity(save?.variants?.[f]) != null)) return false;
-      return m.originals.length > 0 || m.families.length > 0;
-    });
+      return true;
+    }) && mods.some(m => m.originals.length > 0 || m.families.length > 0);
     if (ok) out.push({ id: b.id, name: b.name, elite: b.elite });
   }
   return out;
@@ -228,6 +233,10 @@ export function composePage(save, opts = {}) {
   const rng = mulberry32(seed);
   const qInfo = qFor(save, { D });
   const q = Number.isInteger(opts.q) ? Math.max(0, Math.min(LIMITS.qMax, opts.q)) : qInfo.target;
+  // W4 integration (notes/T14.md Requests → T10): when the plan LOWERS the day's target it also promises
+  // "tier-4 to one a day" in print on the plan strip. `plan.composeOpts(save)` puts that number in
+  // `opts.tier4`; honouring it here is what makes the promise true. Absent → the S1 default (2).
+  const tier4Max = Number.isInteger(opts.tier4) ? Math.max(0, opts.tier4) : LIMITS.tier4;
 
   const used = new Set();
   const queue = [];
@@ -235,7 +244,7 @@ export function composePage(save, opts = {}) {
   let tier4 = 0;
   const take = (item) => {
     if (!item || used.has(item.id)) return false;
-    if (item.tier >= 4 && tier4 >= LIMITS.tier4) { carried.push(item); return false; }
+    if (item.tier >= 4 && tier4 >= tier4Max) { carried.push(item); return false; }
     used.add(item.id);
     if (item.tier >= 4) tier4++;
     queue.push(item);
@@ -328,7 +337,7 @@ export function composePage(save, opts = {}) {
   const weakCount = weak.length === 0 ? 0 : weak.length === 1 ? LIMITS.weakMin : LIMITS.weakMax;
   for (let i = 0, w = 0; i < weakCount; i++) {
     const s = weak[i % weak.length];
-    const template = templateForSkill(s.id, save, rng.fork(`weak|${s.id}|${i}`), { avoidTier4: tier4 >= LIMITS.tier4 });
+    const template = templateForSkill(s.id, save, rng.fork(`weak|${s.id}|${i}`), { avoidTier4: tier4 >= tier4Max });
     if (template) {
       const item = variantItem(template, `${tag}-w${w++}`, 'weak');
       if (take(item)) counts.weak++;
@@ -407,7 +416,7 @@ export function missedOriginals(save) {
  * nextAction(save) → { kind, label, href, page? } — Home's one primary button (S1): the next correct action.
  * kinds: resume · post · morning · night · warmup · boss · mock · missed · page
  */
-export function nextAction(save, { now = Date.now(), today = todayISO(new Date(now)) } = {}) {
+export function nextAction(save, { now = Date.now(), today = todayISO(new Date(now)), compose = null } = {}) {
   const D = daysUntilTest(save?.settings?.testDate, today);
   const testAt = testAtOf(save);
   const post = (testAt != null && now > testAt + 90 * MIN_MS) || (D != null && D < 0);
@@ -425,7 +434,9 @@ export function nextAction(save, { now = Date.now(), today = todayISO(new Date(n
   const fullMocks = (save?.runs ?? []).filter(r => runKind(r) === 'mock' && r.status === 'done').length;
   if (D != null && D <= 4 && goalMet && !daily?.mockDone && !latestMock(save)) return { kind: 'mock', label: `Mock #${fullMocks + 1}`, href: '#/mock' };
   if (goalMet && missedOriginals(save).length) return { kind: 'missed', label: 'Drill what you missed', href: '#/run/missed' };
-  const page = composePage(save, { now, today });
+  // `compose` lets the caller preview the page it is about to START with the same opts (W4: Home hands
+  // this `plan.composeOpts(save)`, so the "~N min / seed" line describes the queue the button will build).
+  const page = composePage(save, { ...(isObj(compose) ? compose : null), now, today });
   return { kind: 'page', label: pageLabel(page), href: '#/run/page', page };
 }
 

@@ -15,6 +15,13 @@ import { todayISO, daysUntilTest, addDays, weekday } from '../days.js';
 import { readiness, logForecast, weakSpots, skillStates, coverageCount, sparkline } from '../readiness.js';
 import { housekeep } from '../schedule.js';
 import { nextAction, startPage, resumePage, bossReady } from '../page.js';
+import { fillPlanStrip, composeOpts } from '../plan.js';   // T14: the S7 plan fills the #plan-strip slot below
+// W4 integration (notes/T14.md Requests → T10): every Page this screen starts is composed with the PLAN's
+// opts, so a lowered day really does get one tier-4 item instead of two (the strip promises it in print).
+// `q` is deliberately NOT forwarded: page.js derives the identical target from its own qFor (pinned in
+// tests/integration-w4.test.mjs), while an EXPLICIT q switches off page.js's session budget — which turned
+// a 25-item page into a 33-item, 44-minute one. The day's target spreads over the day's Pages (S1).
+const planOpts = (save, D) => { const { q, ...rest } = composeOpts(save, { D }); return rest; };
 
 const DOW = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
 
@@ -177,15 +184,20 @@ function render(el, state, today) {
   const rd = readiness(state);
   setHeader({ readiness: rd.r, provisional: rd.provisional });
   const D = daysUntilTest(state.settings?.testDate, today);
-  const act = nextAction(state, { today });
+  const pageOpts = planOpts(state, D);                              // W4: the S7 plan's tier-4 cap
+  const act = nextAction(state, { today, compose: pageOpts });
   const ip = resumePage(state);
   const boss = bossReady(state)[0] ?? null;
+  // W4 integration (notes/T12.md Requests → T10): the intro is worth reading ONCE. After the student has
+  // a run of that boss on the save, link straight into the fight (`?start=1`); the plain link still
+  // resumes an interrupted run, which is why it stays the first-time link.
+  const bossHref = (id) => `#/boss/${id}${(state.runs ?? []).some(r => r?.kind === `boss:${id}`) ? '?start=1' : ''}`;
 
-  const primary = h('a.btn.btn-primary.home-primary', { href: act.href, dataset: { kind: act.kind } }, act.label);
+  const primary = h('a.btn.btn-primary.home-primary', { href: act.kind === 'boss' && boss ? bossHref(boss.id) : act.href, dataset: { kind: act.kind } }, act.label);
   primary.addEventListener('click', (ev) => {
     if (act.kind !== 'page') return;
     ev.preventDefault();
-    update(s => { startPage(s); });
+    update(s => { startPage(s, planOpts(s, D)); });          // W4: honour the plan's lowering
     navigate('/run/page');
   });
   const sub = [];
@@ -205,9 +217,9 @@ function render(el, state, today) {
   else if (act.kind === 'missed') sub.push('every original you did not get first try, until you do');
 
   const secondary = h('nav.home-links', { 'aria-label': 'More' },
-    act.kind !== 'page' && act.kind !== 'resume' && D !== 0 && D !== 1 ? h('a.btn', { href: '#/run/page', onclick: (ev) => { ev.preventDefault(); update(s => { startPage(s); }); navigate('/run/page'); } }, 'Run a page') : null,
+    act.kind !== 'page' && act.kind !== 'resume' && D !== 0 && D !== 1 ? h('a.btn', { href: '#/run/page', onclick: (ev) => { ev.preventDefault(); update(s => { startPage(s, planOpts(s, D)); }); navigate('/run/page'); } }, 'Run a page') : null,
     ip && act.kind !== 'resume' ? h('a.btn', { href: '#/run/page' }, 'Continue page') : null,
-    boss && act.kind !== 'boss' ? h('a.btn', { href: `#/boss/${boss.id}` }, `Boss: ${boss.name}`) : null,
+    boss && act.kind !== 'boss' ? h('a.btn', { href: bossHref(boss.id) }, `Boss: ${boss.name}`) : null,
     h('a.btn', { href: '#/binder' }, 'Binder'),
     h('a.btn', { href: '#/mock' }, 'Mock'),
     h('a.btn', { href: '#/stats' }, 'Stats'),
@@ -217,7 +229,7 @@ function render(el, state, today) {
   const col = h('div.col',
     heroBlock(state, rd, today),
     h('div.home-cta', primary, sub.length ? h('p.home-cta-sub.muted.fs-1', sub.join(' · ')) : null),
-    planStrip(state, today, D),
+    fillPlanStrip(planStrip(state, today, D), state, { today }),   // T14 (the call below is the fallback)
     h('section.card.home-today', { 'aria-label': 'Today' }, goalMeter(state, today), streakArc(state.streak ?? { count: 0, best: 0 }), levelRing(state.xp ?? 0)),
     weakList(state),
     secondary,

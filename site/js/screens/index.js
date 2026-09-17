@@ -26,13 +26,28 @@ import { getState, update } from '../store.js';  // T11
 import { install as installTrophies } from '../trophies.js';   // T11
 
 import { mountCard, mountVariant } from './card.js';   // T09
+import { mountOnboard } from './onboard.js';     // T14
+import { mountSheet } from './sheet.js';         // T14
+import { mountRun } from './run.js';             // T16
+import { mountBoss } from './boss.js';           // T12
+import { mountMock } from './mock.js';           // T13
+import { mountReport } from './report.js';       // T13
 import * as sound from '../sound.js';            // W3 integration: T15's synth, subscribed to the bus below
 
 export const screens = {};
 screens['/card/:id'] = mountCard; screens['/variant/:template'] = mountVariant;   // T09
 screens['/today'] = mountHome;   // T10
+screens['/run/:kind/:id?'] = mountRun;           // T16
+screens['/boss/:id'] = mountBoss;                // T12
+screens['/mock'] = mountMock;                    // T13
+screens['/mock/report/:n'] = mountReport;        // T13
 
 screens['/settings'] = mountSettings;            // T15
+screens['/onboard'] = mountOnboard;              // T14
+screens['/sheet'] = mountSheet;                  // T14
+// T16: run.js has taken this pattern over (notes/T14.md: "when T16's run.js lands"). It delegates
+// night · morning · post back to night.js's mountRunKind and jump to onboard.js's mountJump, so those
+// four screens are still T14's — there is just one registration and one mount point (S1, 13 routes).
 screens['/binder'] = mountBinder;                // T11
 screens['/stats'] = mountStats;                  // T11
 

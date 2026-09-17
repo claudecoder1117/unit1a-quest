@@ -378,6 +378,10 @@ export function createCardView(host, source = {}, opts = {}) {
 
   function renderPaper(item) {
     paperNo.textContent = item.numbering || '';
+    // W4 integration: `.card-no` lives in the paper's 44 px left gutter, which fits "10)" but not the five
+    // AP-1 warm-up cards whose teacher number is a whole phrase ("Warm up! — item 2"). Those painted on
+    // top of the stem. A long number drops into the flow above the stem instead (CSS, T09 block).
+    paper.dataset.no = !item.numbering ? 'none' : String(item.numbering).length > 4 ? 'long' : 'short';
     if (item.instruction) { instrEl.textContent = String(item.instruction); instrEl.hidden = false; }
     stemEl.innerHTML = mathfmt(item.stem);
     if (item.note) { noteEl.textContent = String(item.note); noteEl.hidden = false; }
@@ -650,7 +654,10 @@ export function createCardView(host, source = {}, opts = {}) {
       if (!o.sandbox && o.save !== false) update((s) => { decayAll(s.skills); applyOutcome(s.skills, st.item.skills, scoreFor({ wrong: true }), { at: Date.now(), dueReview: false }); });
     }
     bus.emit('card:wrong', { id: st.item.id, part: part.id, n, tags: res.tags ?? [] });
-    if (n === 2) revealHint(0, { auto: true });                         // second miss: misconception line + H1 auto-shown
+    // Second miss: misconception line + H1 auto-shown — but only where the ladder is actually on screen.
+    // W4 integration (notes/T12.md Requests): in a Boss / an `hints:false` run the ladder is hidden, and
+    // this used to record `hintsUsed` for a hint the student never saw.
+    if (n === 2 && !hintWrap.hidden) revealHint(0, { auto: true });
     if (n >= 2) offerSolution();
     if (n >= MAX_WRONG) showSolution({ forced: true, part });          // third miss: the full worked solution, 0 XP, Bronze
   }

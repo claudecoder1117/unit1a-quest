@@ -20,7 +20,8 @@ import { h, navigate, setHeader } from '../app.js';
 import { getState, subscribe } from '../store.js';
 import { readiness } from '../readiness.js';
 import { sheets, sheetById, numbering } from '../../data/sheets.js';
-import { moduleOf, moduleById, familyById } from '../../data/modules.js';
+import { moduleOf, moduleById, familyById, bosses } from '../../data/modules.js';
+import { bossReady } from '../page.js';   // W4 integration (notes/T12.md / T16.md Requests → T11)
 import { tileRarity, familyRarity, foilRule, foilProgress, foilClass, generatorOf, familyTemplates, FAMILY_PLATINUM_GOLD, FAMILY_PLATINUM_DAYS } from '../rarity.js';
 import { coverage, rarityHistogram, sheetOriginals } from '../trophies.js';
 
@@ -188,6 +189,12 @@ export function mountBinder(params, query) {
     const onPopOutside = (e) => { if (pop && !pop.contains(e.target) && e.target !== popFor) closePop(); };
     const onPopDismiss = () => closePop();
 
+    /** The bosses this module belongs to that are ready to fight right now (W4 integration). */
+    function readyBossesFor(moduleId) {
+      const ready = new Set(bossReady(getState()).map(b => b.id));
+      return bosses.filter(b => ready.has(b.id) && (b.modules ?? []).includes(moduleId));
+    }
+
     function openPop(anchor, id) {
       closePop();
       const save = getState();
@@ -227,6 +234,12 @@ export function mountBinder(params, query) {
         h('div.bnd-pop-actions',
           t.fam ? null : h('a.btn.btn-primary', { href: `#/card/${id}`, onclick: () => closePop() }, 'Open card'),
           ...tmpl.map(tid => h('a.btn', { href: `#/variant/${tid}`, onclick: () => closePop() }, `Infinite · ${templateLabel(tid)}`)),
+          t.module && moduleById[t.module]?.jump && !t.placed ? h('a.btn', { href: `#/run/jump/${t.module}`, onclick: () => closePop() }, `JUMP HERE · ${moduleById[t.module].name}`) : null,   // T14 (S1 "JUMP HERE per module")
+          // W4 integration: the Binder is where a module lives, so its two module-scoped runs start here
+          // too — BLITZ (M1/M3/M9 only, notes/T16.md) and the Boss the module belongs to, once it is ready
+          // (notes/T12.md). A boss that is not ready is not offered at all rather than offered and refused.
+          t.module && moduleById[t.module]?.blitz ? h('a.btn', { href: `#/run/blitz/${t.module}`, onclick: () => closePop() }, `BLITZ · ${Math.round(moduleById[t.module].blitz)} s`) : null,
+          ...(t.module ? readyBossesFor(t.module).map(b => h('a.btn', { href: `#/boss/${b.id}`, onclick: () => closePop() }, `BOSS · ${b.name}`)) : []),
           tmpl.length ? null : h('span.muted.fs-1', 'No Infinite set — this one returns as a spaced review.'),
         ),
       );
