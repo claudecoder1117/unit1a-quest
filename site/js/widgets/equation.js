@@ -152,12 +152,14 @@ export function mount(el, part = {}, ctx = {}) {
   const skipBtn = skippable
     ? h('button.btn.btn-ghost.w-eq-skip', { type: 'button', onclick: () => api.skip(!skipped) }, 'Skip setup')
     : null;
-  const actions = (addBtn || skipBtn) ? h('div.w-eq-actions', addBtn, skipBtn) : null;
   const msg = msgLine();
+  // card r1: the reserved result line shares the row with "Skip setup" (msg left, buttons right) so the
+  // box does not end in a 47 px blank band under a right-aligned button.
+  const actions = (addBtn || skipBtn) ? h('div.w-eq-actions', msg.el, addBtn, skipBtn) : null;
   const split = h('p.w-eq-split', { hidden: true });
 
   // Node.append() turns a null child into the text "null" — build the list and filter it.
-  root.append(...[head, fields, ownKeys ? keys.el : null, hintEl, actions, msg.el, split].filter(Boolean));
+  root.append(...[head, fields, ownKeys ? keys.el : null, hintEl, actions, actions ? null : msg.el, split].filter(Boolean));
   el.append(root);
 
   let locked = false;
@@ -224,7 +226,7 @@ export function mount(el, part = {}, ctx = {}) {
     clear() { f1.clear(); f2.clear(); msg.clear(); split.hidden = true; root.dataset.kind = ''; hint(); return api; },
     isEmpty: () => skipped || (f1.isBlank() && (!open2 || f2.isBlank())),
     focus() { if (!locked && !skipped) (f1.isBlank() || !open2 ? f1 : f2).focus(); return api; },
-    pips: () => ({ total: 1, filled: api.isEmpty() ? 0 : 1 }),
+    pips: () => ({ total: 1, filled: root.dataset.kind === 'correct' ? 1 : 0 }),   // card r1: filled only once the setup is graded right (S9 #5)
     /** open the second box (a system item, or a grader result that asked for two equations) */
     openSecond() {
       if (open2) return api;

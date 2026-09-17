@@ -52,8 +52,8 @@ export function mods() {
 /* ------------------------------------------------------------------ constants */
 
 export const AUTOSAVE_MS = 5000;          // S6: "every 5 s inside a Mock"
-export const AMBER_MS = 5 * 60 * 1000;    // timer turns amber with 5 minutes left
-export const PULSE_MS = 60 * 1000;        // …and pulses in the last minute
+export const AMBER_MS = 60 * 1000;        // S5 Motion / S9 #6: the clock turns --warn for the last 60 s …
+export const PULSE_MS = 10 * 1000;        // … and --bad with a 1 Hz opacity pulse for the last 10 s (r1: was 5 min / 1 min)
 export const TICK_MS = 250;
 export const SCRATCH_MAX = 1000;          // CAPS.workChars — the store clips at 1 KB, so never cut silently
 export const XP_SUBMIT = 150;             // S4 "Mock submitted +150"
@@ -486,6 +486,47 @@ export function createMockView(host, opts = {}) {
     const late = spec.kind === 'mock' && localHour() >= LATE_HOUR;
 
     const card = h('article.mock-rules');
+
+    // r1: an OPEN paper gets its own card — with ITS ordinal in the heading and Resume as the first thing
+    // on screen — instead of a fresh "Mock #n+1" rules card with the resume block below the fold.
+    if (stale || resumable) {
+      const rk = kindOf(runKind(resume.run));
+      const no = resume.run.no ?? idx;
+      const sstat = runStatus(resume.run);
+      const nameOf = (r) => (rk.kind === 'baseline' ? 'Baseline' : `Mock #${no}`);
+      if (stale) {
+        card.append(
+          h('p.mock-eyebrow.muted.fs-1', 'Out of time'),
+          h('h1.mock-title', `${nameOf()} · time's up`),
+          h('p.mock-sub', `Your ${rk.label.toLowerCase()} ran out of time while the tab was closed — it will be graded exactly as it stood: ${sstat.answered}/${sstat.total} answered.`));
+        const b = h('button.btn.btn-primary.mock-start', { type: 'button' }, 'Grade it and see the report');
+        on(b, 'click', () => finishStale(resume.n));
+        card.append(b);
+      } else {
+        const left = remainingMs(resume.run);
+        const k = clamp((Number(resume.run.idx) || 0) + 1, 1, sstat.total || 1);
+        card.append(
+          h('p.mock-eyebrow.muted.fs-1', 'Exam conditions'),
+          h('h1.mock-title', `${nameOf()} · in progress`),
+          h('p.mock-resume-stats',
+            h('span', h('span.mono', fmtClock(left)), ' left'),
+            h('span', h('span.mono', `${sstat.answered}/${sstat.total}`), ' answered'),
+            sstat.flagged ? h('span', h('span.mono', String(sstat.flagged)), ' flagged') : null,
+            h('span', 'back on question ', h('span.mono', String(k)))),
+          h('p.mock-sub.muted', 'The clock kept running while the tab was closed. No hints, no feedback until you submit — same paper, same seed.'));
+        const b = h('button.btn.btn-primary.mock-start', { type: 'button' }, `Resume · ${fmtClock(left)} left`);
+        on(b, 'click', () => enterRun(resume.n));
+        card.append(b);
+        const b2 = h('button.btn.btn-ghost', { type: 'button' }, 'Submit it as it stands');
+        on(b2, 'click', () => doSubmit(resume.n, { auto: false, force: true }));
+        card.append(b2);
+      }
+      card.append(h('p.mock-back', h('a.btn.btn-ghost', { href: '#/today' }, 'Not now')));
+      root.append(card);
+      root.setAttribute('aria-busy', 'false');
+      return;
+    }
+
     card.append(
       h('p.mock-eyebrow.muted.fs-1', spec.kind === 'baseline' ? 'Day one' : 'Exam conditions'),
       h('h1.mock-title', spec.kind === 'baseline' ? 'Baseline' : `Mock #${idx}`),
@@ -509,34 +550,6 @@ export function createMockView(host, opts = {}) {
       'The clock is wall-clock: it keeps running if you close the tab, and submits for you at 0:00.',
     ]) rules.append(h('li', line));
     card.append(rules);
-
-    if (stale) {
-      card.append(h('p.mock-warn', { dataset: { tone: 'warn' } },
-        `Your last ${kindOf(runKind(resume.run)).label} ran out of time while the tab was closed — it will be graded as it stood.`));
-      const b = h('button.btn.btn-primary.mock-start', { type: 'button' }, 'Grade it and see the report');
-      on(b, 'click', () => finishStale(resume.n));
-      card.append(b);
-      root.append(card);
-      root.setAttribute('aria-busy', 'false');
-      return;
-    }
-
-    if (resumable) {
-      const left = remainingMs(resume.run);
-      const sstat = runStatus(resume.run);
-      card.append(h('p.mock-resume',
-        h('strong', `${kindOf(runKind(resume.run)).label} #${resume.run.no} is still open`),
-        h('span.muted', ` — ${fmtClock(left)} left · ${sstat.answered}/${sstat.total} answered`)));
-      const b = h('button.btn.btn-primary.mock-start', { type: 'button' }, `Resume · ${fmtClock(left)} left`);
-      on(b, 'click', () => enterRun(resume.n));
-      card.append(b);
-      const b2 = h('button.btn.btn-ghost', { type: 'button' }, 'Submit it as it stands');
-      on(b2, 'click', () => doSubmit(resume.n, { auto: false, force: true }));
-      card.append(b2);
-      root.append(card);
-      root.setAttribute('aria-busy', 'false');
-      return;
-    }
 
     // --- predict your score (S7 "Before start: Predict your score slider") ---
     const r0 = (() => { try { return readiness(save).r; } catch { return 70; } })();
@@ -823,7 +836,21 @@ export function createMockView(host, opts = {}) {
     // A new question starts at the top of the page: the sticky bar sits under the header, so scrolling
     // the body "into view" would slide the item's own head (section, label, points) underneath it.
     try { window.scrollTo({ top: 0, behavior: 'auto' }); } catch { /* no window */ }
-    if (focus) handles[0]?.w?.focus?.();
+    // r1: on a phone the first field is NOT auto-focused — a Next tap used to raise the key-row dock (and
+    // the OS keyboard) for a field that sat below the fold under the figure; the field gets focus on the
+    // student's own tap. Focus moves to the item head for screen readers instead. On a laptop the first
+    // field keeps focus, scrolled into view when the figure pushed it under the fold.
+    if (focus && !isPhone()) {
+      handles[0]?.w?.focus?.();
+      const a = doc.activeElement;
+      if (a && body.contains(a) && isTextField(a)) {
+        const r = a.getBoundingClientRect();
+        if (r.bottom > window.innerHeight - (dock?.height?.() ?? 0) - 12) a.scrollIntoView({ block: 'center' });
+      }
+    } else if (focus) {
+      head.tabIndex = -1;
+      try { head.focus({ preventScroll: true }); } catch { /* no focus */ }
+    }
   }
 
   /**
@@ -1003,8 +1030,8 @@ export function createMockView(host, opts = {}) {
     const state = left <= 0 ? 'out' : left <= PULSE_MS ? 'pulse' : left <= AMBER_MS ? 'amber' : 'ok';
     if (clockEl.dataset.t !== state) {
       clockEl.dataset.t = state;
-      if (state === 'amber') announce('5 minutes left');
-      if (state === 'pulse') announce('1 minute left');
+      if (state === 'amber') announce('1 minute left');
+      if (state === 'pulse') announce('10 seconds left');
     }
     if (left <= 0) doSubmit(st.n, { auto: true });
   }
@@ -1033,8 +1060,10 @@ export function createMockView(host, opts = {}) {
     if (inField) return;
     if (e.key.toLowerCase() === 'f') { e.preventDefault(); toggleFlag(); }
     else if (e.key.toLowerCase() === 'm') { e.preventDefault(); toggleMap(); }
-    else if (e.key === 'ArrowRight' || e.key.toLowerCase() === 'n') { e.preventDefault(); go(st.idx + 1); }
-    else if (e.key === 'ArrowLeft' || e.key.toLowerCase() === 'p') { e.preventDefault(); go(st.idx - 1); }
+    // r1: no letter shortcuts for prev/next — `N` is the ASN widget's "Never" (S5 keyboard contract) and
+    // used to jump to the next question with the item left blank. ← / → navigate.
+    else if (e.key === 'ArrowRight') { e.preventDefault(); go(st.idx + 1); }
+    else if (e.key === 'ArrowLeft') { e.preventDefault(); go(st.idx - 1); }
   }
 
   /* ---------------- submit ---------------- */

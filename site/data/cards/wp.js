@@ -543,7 +543,7 @@ export const wpCards = [
     hints: [
       'Complement = 90 − x. "The product of" means multiply: x(90 − x) = 344 — a quadratic, so expect two roots.',
       'Set up: x(90 − x) = 344 → 90x − x² = 344 → 0 = x² − 90x + 344. Factor: two numbers with product 344 and sum −90.',
-      'Set each factor to 0 — both roots are valid angles (each is the other’s complement). Take the smaller root and find its supplement, 180 − it.',
+      '0 = (x − 86)(x − 4) — set each factor to 0. Both roots are valid angles (each is the other’s complement); take the smaller one and find its supplement, 180 − it.',
     ],
     solution: [
       { say: 'Let x be the angle; its complement is 90 − x', math: 'angle = x,  comp = 90 − x' },

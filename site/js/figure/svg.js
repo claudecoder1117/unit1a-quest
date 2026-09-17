@@ -27,7 +27,7 @@ const ARROW = 11;              // arrowhead length in viewBox units
 const DOT_INSET = 22;          // dots sit this far inside the arrow tip on figures that draw dots
 const LABEL_GAP = 16;          // point letter distance from its dot / tip
 const PT_FS = 15, EXPR_FS = 13;
-const WEDGE_MIN = 60, WEDGE_MAX = 96, BAND = 40, MIN_CHORD = 46;
+const WEDGE_MIN = 60, WEDGE_MAX = 140, BAND = 58, MIN_CHORD = 60;   // card r1: every wedge hit ≥ 44 px at 375 (the figure is ≈ 0.77 px per vb there; S9 #9)
 const RAY_MARGIN = 6, ARC_MARGIN = 4, LABEL_GAP_BOX = 6;   // expression labels keep this much clear air
 const CHIP_TEXT = 'Not to scale';
 

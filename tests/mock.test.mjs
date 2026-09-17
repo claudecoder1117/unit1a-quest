@@ -572,3 +572,37 @@ test('no Math.random and no DOM reached by the Mock modules (they import under n
   }
   assert.equal(typeof M.buildPlanIsUndefined, 'undefined');
 });
+
+/* === mock r1 (visual QA fixer, round 1) === */
+test('r1: the Mock clock turns amber for the last 60 s and pulses for the last 10 s (S5 Motion, S9 #6)', () => {
+  // Was 5 min / 1 min — a red pulsing clock for a whole minute of a 40-minute paper contradicts
+  // "nothing rushes thinking". S9 #6: "last 60 s --warn, last 10 s --bad with a 1 Hz opacity pulse".
+  assert.equal(M.AMBER_MS, 60_000);
+  assert.equal(M.PULSE_MS, 10_000);
+  assert.ok(M.PULSE_MS < M.AMBER_MS);
+});
+
+test('r1: the Mock has no N / P letter shortcuts (N is the ASN widget\'s "Never") — arrows navigate', async () => {
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(new URL('../site/js/screens/mock.js', import.meta.url), 'utf8');
+  const onKey = src.slice(src.indexOf('function onKey('), src.indexOf('/* ---------------- submit'));
+  assert.ok(onKey.includes("'ArrowRight'") && onKey.includes("'ArrowLeft'"), 'arrow keys still navigate');
+  assert.equal(/toLowerCase\(\) === '[np]'/.test(onKey), false, 'no n / p letter shortcuts in the Mock');
+});
+
+test('r1: the report never labels an answer with a raw part id', () => {
+  for (const t of ['cloze', 'mc', 'build', 'pairs', 'cls', 'asn', 'equation', 'roots', 'reject', 'cases', 'explain', 'strip', 'factored', 'multi', 'num'])
+    assert.equal(typeof R.PART_LABEL[t], 'string', `PART_LABEL.${t}`);
+  assert.equal(typeof R.PART_LABEL.default, 'string');
+  for (const [k, v] of Object.entries(R.PART_LABEL)) assert.notEqual(v.toLowerCase(), k, `label for ${k} is not the id`);
+});
+
+test('r1: an open Mock renders its own resume card first (no section table, no predict slider)', async () => {
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(new URL('../site/js/screens/mock.js', import.meta.url), 'utf8');
+  const rules = src.slice(src.indexOf('function renderRules('), src.indexOf('function predWord('));
+  const resumeAt = rules.indexOf('if (stale || resumable)');
+  const secsAt = rules.indexOf("h('ul.mock-secs')");
+  assert.ok(resumeAt > 0 && secsAt > resumeAt, 'the resume / expired branch returns before the section table is built');
+  assert.ok(rules.includes('· in progress'), 'the open run keeps ITS ordinal in the heading');
+});

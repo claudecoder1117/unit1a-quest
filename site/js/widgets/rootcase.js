@@ -176,7 +176,7 @@ export function mount(el, group = {}, ctx = {}) {
       list.append(h('div.w-rej-row', h('span.w-rej-x', `${parts.roots?.var || 'x'} = ${r.text}`), rows[i].wrap));
     });
 
-    const chips = reasonMenu(part);
+    const chips = reasonMenu(part, { roots: roots.map((r) => r.text) });   // card r1: chips that name an unfound root, or say "both" of one, are dropped
     const chipBox = h('div.w-chips', { role: 'radiogroup', 'aria-label': 'Reason' });
     let reason = null;
     const chipEls = chips.map((c) => {
@@ -460,9 +460,9 @@ export function mount(el, group = {}, ctx = {}) {
       if (s.key === 'roots') {
         if (Array.isArray(res.found) && res.found.length) found = res.found.slice();
         // correct → next stage; a SECOND subset (kind 'wrong') → advance with what was found (S3)
-        if (res.ok || (res.code === 'subset' && res.kind === 'wrong')) advance();
+        if (res.ok || (res.code === 'subset' && res.kind === 'wrong')) { advance(); line.clear(); root.dataset.state = ''; }   // card r1: the stage-1 line never sits under stage 2
       } else if (s.key === 'reject' && res.ok) {
-        advance();
+        advance(); line.clear(); root.dataset.state = '';
       }
     },
     lock(on = true) {

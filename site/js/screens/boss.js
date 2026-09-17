@@ -529,17 +529,29 @@ export function createBossRun(host, bossId, opts = {}) {
     root.dataset.phase = st.phase;
   }
 
-  function showMiss(line, { heart = true } = {}) {
-    missBox.replaceChildren(
-      h('p.boss-miss-line', h('strong', heart ? 'Heart lost. ' : 'No heart lost. '), line.text),
+  /** r1: the miss line lives in the dock (`.w-dock-body`, right above the key row and Submit) while a
+   *  Card is mounted — that is where the student is looking when a heart goes — and at the top of the
+   *  screen otherwise. The Card engine's dock.destroy() detaches its body, so re-home on every show. */
+  function placeMiss() {
+    const body = typeof document !== 'undefined' ? document.querySelector('#dock .w-dock-body') : null;
+    if (body) { if (missBox.parentNode !== body) body.append(missBox); }
+    else if (missBox.parentNode !== root) root.insertBefore(missBox, stageHost);
+  }
+  function showMiss(line, { heart = true, setup = false, extra = null } = {}) {
+    placeMiss();
+    missBox.classList.toggle('is-setup', setup);
+    missBox.replaceChildren(...[
+      h('p.boss-miss-line', heart == null ? null : h('strong', heart ? 'Heart lost. ' : 'No heart lost. '), line.text),
+      extra,
       line.drill ? h('a.btn.btn-ghost.boss-drill', { href: line.drill }, `Drill 5: ${line.skillName}`) : null,
-    );
+    ].filter(Boolean));
     missBox.hidden = false;
+    if (typeof document !== 'undefined' && stageHost.contains(document.activeElement)) keepInView(document.activeElement);
     missBox.classList.remove('is-in');
     if (!reduceMotion()) requestAnimationFrame(() => missBox.classList.add('is-in'));
     else missBox.classList.add('is-in');
   }
-  const clearMiss = () => { missBox.hidden = true; missBox.replaceChildren(); };
+  const clearMiss = () => { missBox.hidden = true; missBox.classList.remove('is-setup'); missBox.replaceChildren(); };
 
   /** S5: the heart shatters — four shards, 300 ms, transform/opacity only. */
   function shatter(index) {
@@ -591,13 +603,60 @@ export function createBossRun(host, bossId, opts = {}) {
     }
     const before = st.hearts;
     st.hearts = Math.max(0, st.hearts - 1);
-    if (st.hearts < before) shatter(st.hearts);
-    drawHearts();
+    drawHearts();                                    // r1: draw the new state FIRST — drawHearts() rebuilds the pips, …
+    if (st.hearts < before) shatter(st.hearts);      // … so the shards must be appended to the pip that will stay
     showMiss(line);
     if (st.hearts === 0) setTimeout(() => offerContinue(), reduceMotion() ? 0 : 360);
   }));
   cleanups.push(bus.on('card:cleared', () => keepCombo()));
   cleanups.push(bus.on('card:solution', () => keepCombo()));
+
+  /* ---- r1: a BLANK B4 setup is not a dead end (S3: "a wrong or blank setup costs no heart but forfeits
+     flawless"). The engine grades an empty required box as `malformed` (free, no progress); here that
+     offers an explicit way past it — skip the setup, keep the hearts, lose the flawless bonus. ---- */
+  cleanups.push(bus.on('card:graded', (ev) => {
+    if (st.destroyed || st.phase !== 'run' || !st.cur || !ev || ev.id !== st.cur.item.id) return;
+    if (ev.kind !== 'malformed' || !st.curEq.has(ev.part)) return;
+    const entry = (st.view?.state?.entries ?? []).find((e) => e.group?.id === ev.part && !e.finished);
+    if (!entry) return;
+    let raw = null;
+    try { raw = entry.w?.raw?.(); } catch { raw = null; }
+    if (String(raw ?? '').trim() !== '') return;     // a malformed attempt, not an empty one
+    const skip = h('button.btn.btn-ghost.boss-skip-setup', { type: 'button' }, 'Skip the setup ', h('span.muted.fs-1', '(no heart · flawless gone)'));
+    on(skip, 'click', () => skipSetup(entry));
+    showMiss({ text: 'The setup box is empty. Type the equation, or leave it blank and answer the question:' }, { heart: null, setup: true, extra: skip });
+  }));
+  function skipSetup(entry) {
+    if (st.destroyed || st.phase !== 'run' || !st.view || entry.finished) return;
+    entry.finished = true; entry.ok = false; entry.revealed = false; entry.skipped = true;
+    entry.box.dataset.state = 'skipped';
+    try { entry.w.lock(true); } catch { /* proxy */ }
+    st.setupMiss = true;
+    writeProgress();
+    try { flush(); } catch { /* memory store */ }
+    showMiss({ text: `Setup skipped: ${boss.name} grades the equation setup, so the flawless bonus is gone — the hearts are untouched.` }, { heart: false, setup: true });
+    const next = (st.view.state?.entries ?? []).find((e) => !e.finished);
+    if (next?.w?.focus) { try { next.w.focus(); } catch { /* not focusable */ } }
+  }
+
+  /* ---- r1: keep the focused answer box above the dock and below the sticky head (S9 #9: input + key
+     row + Submit visible at 375 with the keyboard open). The Card engine auto-focuses the first box
+     after its widgets land; `scrollTo(0, 0)` in mountItem has already run by then. ---- */
+  function keepInView(t) {
+    if (!t || !(t.tagName === 'INPUT' || t.tagName === 'TEXTAREA') || typeof window === 'undefined') return;
+    requestAnimationFrame(() => {
+      if (!t.isConnected) return;
+      const r = t.getBoundingClientRect();
+      const dockH = document.getElementById('dock')?.offsetHeight ?? 0;
+      const topH = head.getBoundingClientRect().bottom;
+      const vh = window.innerHeight;
+      let dy = 0;
+      if (r.bottom > vh - dockH - 12) dy = r.bottom - (vh - dockH - 12);
+      else if (r.top < topH + 8) dy = r.top - (topH + 8);
+      if (Math.abs(dy) > 1) window.scrollBy({ top: dy, behavior: reduceMotion() ? 'auto' : 'smooth' });
+    });
+  }
+  on(stageHost, 'focusin', (e) => keepInView(e.target));
 
   /* ---- items ---- */
   /** Short enough for the result table at 375 px, long enough to say which item it was. */

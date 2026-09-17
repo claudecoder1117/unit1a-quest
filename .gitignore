@@ -11,3 +11,6 @@ qa/node_modules/
 
 # QA screenshots written at the repo root by qa/shot.mjs (the tool default) — never part of the artifact
 /*.png
+
+# fixer / integrator scratch shots (QA PNGs) — never part of the artifact
+scratchpad/

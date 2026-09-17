@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import {
   LIMITS, pageSeed, seedHex, pageIndexFor, isFirstPage, qFor, newCardPool, renameFor, bossReady, spreadSkills,
   composePage, pageLabel, missedOriginals, nextAction, startPage, resumePage, currentItem, markItem, requeueReview, finishPage, describeQueue,
+  MAX_REQUEUE,   // r1
 } from '../site/js/page.js';
 import { applyOutcome, recordRematch, freezeVariant, DAY_MS, HOUR_MS } from '../site/js/schedule.js';
 import { fresh, pack, unpack, migrate, applyCaps } from '../site/js/store.js';
@@ -361,5 +362,36 @@ describe('nextAction — the primary button (S1)', () => {
     s.variants = { 'fam-quad-a1': { clearsGold: 1, goldDays: [TODAY] }, 'fam-quad-a2': { clearsGold: 1, goldDays: [TODAY] }, 'fam-quad-ctx': { clearsGold: 1, goldDays: [TODAY] }, 'fam-sys': { clearsGold: 1, goldDays: [TODAY] } };
     assert.ok(bossReady(s).some(b => b.id === 'B3'));
     assert.equal(composePage(s, { now: NOW }).meta.boss.id, 'B3', 'the Page carries the prompt');
+  });
+});
+
+/* ---------------- r1: the review re-queue is bounded ---------------- */
+describe('r1: a review that keeps failing is re-queued once, never forever', () => {
+  test('a review missed twice appears at most twice in the queue; a voluntary reveal is not re-queued', () => {
+    const s = mk();
+    ['voc-01', 'voc-02', 'not-01', 'fac-01', 'asn-01', 'ang-wu-1'].forEach((id, i) => clear(s, id, { now: NOW - 3 * DAY_MS, due: NOW - (6 - i) * DAY_MS }));
+    const ip = startPage(s, { now: NOW });
+    const id = ip.queue[0].id;
+    const n0 = ip.queue.length;
+    assert.equal(MAX_REQUEUE, 1);
+    const miss = { id, cleared: false, solutionShown: true, reason: 'third-wrong', xp: 0 };
+    // miss #1 → one retry copy after the review block
+    const copy = requeueReview(s, { idx: 0, result: miss });
+    markItem(s, miss, { idx: 0 });
+    assert.ok(copy && copy.requeued === 1);
+    assert.equal(ip.queue.length, n0 + 1);
+    // miss #2 on the copy → no third copy
+    const at = ip.queue.indexOf(copy);
+    assert.equal(requeueReview(s, { idx: at, result: miss }), null, 'the copy is not re-queued again');
+    markItem(s, miss, { idx: at });
+    assert.equal(ip.queue.filter(it => it.id === id).length, 2, 'at most twice');
+    assert.equal(ip.queue.length, n0 + 1, 'the page does not keep growing');
+    // a voluntary "Show solution" (reason 'revealed') on a fresh review is not retried in this Page
+    const revealed = { id: ip.queue[1].id, cleared: false, solutionShown: true, reason: 'revealed', xp: 0 };
+    assert.equal(requeueReview(s, { idx: 1, result: revealed }), null);
+    // a stored result is read when none is passed
+    ip.queue[2].result = revealed;
+    assert.equal(requeueReview(s, { idx: 2 }), null);
+    assert.equal(ip.queue.length, n0 + 1);
   });
 });

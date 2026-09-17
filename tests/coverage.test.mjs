@@ -288,7 +288,7 @@ test('coverage: every asn-*/qz-* part has a reason + exactly 2 distinct distract
     assert.ok(bank, `${c.id}: no bank entry in data/asn.js`);
     assert.equal(p.reason, bank.reason, `${c.id}: reason ≠ bank`);
     assert.deepEqual([...p.distractors], [...bank.distractors], `${c.id}: distractors ≠ bank`);
-    if (c.id === 'qz-04') assert.equal(p.disputed, 'Quizlet says S; arguably A', 'qz-04 ⚑ note (Global rule 5)');
+    if (c.id === 'qz-04') assert.equal(p.disputed, 'Quizlet says S — and S is right (a line and a ray can be skew); an earlier draft flagged it as A', 'qz-04 ⚑ note (Global rule 5)');
     else assert.equal(p.disputed, undefined, `${c.id}: only qz-04 is disputed`);
   }
   assert.equal(REASON_IDS.length, 54);
@@ -313,7 +313,7 @@ test('coverage: every asn-*/qz-* part has a reason + exactly 2 distinct distract
   }
 });
 
-test('coverage: asn/qz stems are byte-equal to content/SOURCE.md §4/§5; bonus stems match modulo the 8 documented expansions', () => {
+test('coverage: asn/qz stems are byte-equal to content/SOURCE.md §4/§5; bonus stems match modulo the 2 notation-markup stems', () => {
   const s4 = [...SOURCE.matchAll(/^(\d+)\. (.+?) — (Always|Sometimes|Never)/gm)].map((m) => ({ n: +m[1], stem: m[2], letter: m[3][0] }));
   const s5 = [...SOURCE.matchAll(/^- (.+?) — ([ASN])\b/gm)].map((m) => ({ stem: m[1], letter: m[2] }));
   assert.equal(s4.length, 36);
@@ -328,7 +328,7 @@ test('coverage: asn/qz stems are byte-equal to content/SOURCE.md §4/§5; bonus 
   const items = bonusLine.replace(/^Out-of-scope \(bonus, triangles\/parallel\/skew\): /, '').replace(/\.$/, '').split(/;\s+/)
     .map((s) => /^(.+?) — ([ASN])$/.exec(s.trim())).filter(Boolean).map((m) => ({ stem: m[1], letter: m[2] }));
   assert.equal(items.length, 33);
-  const EXPANDED = new Set(['bonus-04', 'bonus-05', 'bonus-10', 'bonus-11', 'bonus-12', 'bonus-16', 'bonus-32', 'bonus-33']);  // notes/T06d.md open issue 4
+  const EXPANDED = new Set(['bonus-05', 'bonus-10']);  // the two stems that carry §0 notation markup ({seg AB}, {ang ABC}) where the Quizlet has plain words
   bonusCards.forEach((c, i) => {
     if (EXPANDED.has(c.id)) return;
     assert.equal(c.stem.replace(/\.$/, ''), items[i].stem, `${c.id}: stem ≠ SOURCE §5 bonus`);

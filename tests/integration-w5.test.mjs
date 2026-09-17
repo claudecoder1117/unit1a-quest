@@ -69,7 +69,10 @@ test('W5 §A2: one clean placement item can no longer erase a 55-card module', a
 
   await t.test('the summary does not call a withheld module "placed"', () => {
     const s = src('site/js/screens/onboard.js');
-    assert.match(s, /placedSet\.has\(c\.module\) \? 'placed' : 'first try'/, 'the row label follows the save, not the outcome');
+    // home r1: the clean-row label moved into `cleanSub(c)` (it also explains an M4 item whose sibling cluster
+    // is still needed); the rule is unchanged — 'placed' only when the SAVE says the module was placed.
+    assert.match(s, /if \(placedSet\.has\(c\.module\)\) return 'placed';/, 'the row label follows the save, not the outcome');
+    assert.match(s, /if \(placeWithheld\(c\.module\)\) return 'first try';/, 'a withheld module is never called placed');
     assert.match(s, /stayed in the plan on purpose/, 'and the screen says why');
   });
 });

@@ -18,7 +18,8 @@
 
 import { h, navigate, setHeader } from '../app.js';
 import { getState, subscribe } from '../store.js';
-import { readiness } from '../readiness.js';
+import { readiness, isCleared } from '../readiness.js';
+import { mathfmt, stripMarkup } from '../mathfmt.js';
 import { sheets, sheetById, numbering } from '../../data/sheets.js';
 import { moduleOf, moduleById, familyById, bosses } from '../../data/modules.js';
 import { bossReady } from '../page.js';   // W4 integration (notes/T12.md / T16.md Requests → T11)
@@ -64,6 +65,35 @@ function groupIds(ids) {
 }
 
 const isFamily = (id) => id.startsWith('fam-');
+
+/**
+ * What a tile says about itself in one line (list rows, the tile sheet). For the term / definition /
+ * fact cards the stem is a constant ("Vocabulary — §0 term 1 of 23.") and the information is in `src`
+ * ("§0 term 1 of 23: point"), so the row shows the term; the packet's repeated instruction prefixes are
+ * dropped so the row carries what differs. Mini-markup stays in — render it with `mathfmt`.
+ */
+const ROW_PREFIXES = [
+  /^Given the following diagram[^:]*:\s*/i,
+  /^In the following diagram,\s*/i,
+  /^Solve by factoring:\s*/i,
+  /^Factor each completely\.\s*/i,
+  /^Complete the definition\.\s*/i,
+];
+export function tileText(card, id) {
+  if (!card) return id;
+  const src = String(card.src ?? '');
+  if (/^(voc|def|fact)-/.test(id) && /:\s*\S/.test(src)) return src.replace(/^[^:]*:\s*/, '');
+  let t = String(card.stem ?? '').replace(/\s+/g, ' ').trim();
+  for (const re of ROW_PREFIXES) t = t.replace(re, '');
+  return t || src || id;
+}
+
+/** A module the plan can still place: JUMP HERE means nothing on a module already cleared through. */
+function moduleOpen(save, moduleId) {
+  const m = moduleById[moduleId];
+  if (!m) return false;
+  return (m.originals ?? []).some(cid => !isCleared(save?.cards?.[cid]));
+}
 
 /** Everything a tile needs, from the save alone. */
 function tileInfo(save, id) {
@@ -212,7 +242,7 @@ export function mountBinder(params, query) {
           h('span.bnd-pop-title', title),
           h('button.icon-btn.bnd-pop-x', { type: 'button', 'aria-label': 'Close', onclick: () => closePop({ refocus: true }) }, '✕'),
         ),
-        card?.stem ? h('p.bnd-pop-stem.muted', card.stem.replace(/\{[a-z]+ ([A-Z]+)\}/g, '$1').slice(0, 160)) : null,
+        card?.stem ? h('p.bnd-pop-stem.muted', { html: mathfmt(String(card.stem)) }) : null,   // real notation (S9 #3); clamped by CSS, never cut inside a token
         h('p.bnd-pop-rule', t.rule),
         t.cls === 'family'
           ? h('p.bnd-pop-prog.mono', `${t.prog.have} / ${FAMILY_PLATINUM_GOLD} Gold Variants · ${t.prog.days} of ${FAMILY_PLATINUM_DAYS} days`)
@@ -234,7 +264,8 @@ export function mountBinder(params, query) {
         h('div.bnd-pop-actions',
           t.fam ? null : h('a.btn.btn-primary', { href: `#/card/${id}`, onclick: () => closePop() }, 'Open card'),
           ...tmpl.map(tid => h('a.btn', { href: `#/variant/${tid}`, onclick: () => closePop() }, `Infinite · ${templateLabel(tid)}`)),
-          t.module && moduleById[t.module]?.jump && !t.placed ? h('a.btn', { href: `#/run/jump/${t.module}`, onclick: () => closePop() }, `JUMP HERE · ${moduleById[t.module].name}`) : null,   // T14 (S1 "JUMP HERE per module")
+          t.module && moduleById[t.module]?.jump && !t.placed && moduleOpen(save, t.module) ? h('a.btn', { href: `#/run/jump/${t.module}`, onclick: () => closePop() }, `JUMP HERE · ${moduleById[t.module].name}`) : null,   // T14 (S1 "JUMP HERE per module"); never on a module already cleared through
+          t.module && moduleById[t.module]?.jump && !t.placed && !moduleOpen(save, t.module) ? h('span.muted.fs-1', `${moduleById[t.module].name} cleared — nothing left to jump.`) : null,
           // W4 integration: the Binder is where a module lives, so its two module-scoped runs start here
           // too — BLITZ (M1/M3/M9 only, notes/T16.md) and the Boss the module belongs to, once it is ready
           // (notes/T12.md). A boss that is not ready is not offered at all rather than offered and refused.
@@ -262,10 +293,21 @@ export function mountBinder(params, query) {
       const r = anchor.getBoundingClientRect();
       const w = Math.min(340, vw - 32);
       el.style.width = `${w}px`;
-      const left = Math.max(16, Math.min(vw - w - 16, r.left + r.width / 2 - w / 2));
-      const below = r.bottom + 8;
+      const headerH = (parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--header-h')) || 56) + 8;
       const eh = el.offsetHeight || 260;
-      const top = below + eh > vh - 8 ? Math.max(8, r.top - eh - 8) : below;
+      const clampTop = (y) => Math.max(headerH, Math.min(y, vh - eh - 8));
+      let left, top;
+      if (vw >= 1024 && r.right + 8 + w <= vw - 16) {
+        // laptop: beside the tile, in the empty gutter to its right — the sheet stays attached to what was pressed
+        left = r.right + 8;
+        top = clampTop(r.top);
+      } else {
+        left = Math.max(16, Math.min(vw - w - 16, r.left + r.width / 2 - w / 2));
+        const below = r.bottom + 8;
+        const above = r.top - eh - 8;
+        // below if it fits, else above if it fits, else clamped beside the anchor — never pinned to the corner
+        top = below + eh <= vh - 8 ? below : above >= headerH ? above : clampTop(below);
+      }
       el.style.left = `${Math.round(left)}px`;
       el.style.top = `${Math.round(top)}px`;
     }
@@ -327,14 +369,17 @@ export function mountBinder(params, query) {
     function rowEl(save, id) {
       const t = tileInfo(save, id);
       const card = cardsMod?.byId?.[id] ?? null;
-      const stem = t.fam ? (familyById[id]?.name ?? '') : (card?.stem ?? '').replace(/\{[a-z]+ ([A-Z]+)\}/g, '$1');
+      const text = t.fam ? (familyById[id]?.name ?? '') : (card ? tileText(card, id) : '');
       const tid = t.fam ? infiniteTemplates(id)[0] : null;
       const href = t.fam ? (tid ? `#/variant/${tid}` : '#/binder') : `#/card/${id}`;
+      const glyph = t.rarity === 'platinum' ? '★' : t.rarity === 'gold' ? '●' : t.rarity === 'silver' ? '◐' : t.rarity === 'bronze' ? '○' : '—';
       return h('li.bnd-row', { dataset: { rarity: t.rarity ?? (t.attempts ? 'seen' : 'none'), placed: String(t.placed) } },
-        h('a.bnd-row-main', { href },
+        h('a.bnd-row-main', { href, title: stripMarkup(text || id) },
           h('span.bnd-row-num.mono', t.num),
-          h('span.bnd-row-stem', stem || id),
-          h('span.tile-chip', { dataset: { rarity: t.rarity ?? 'none' } }, t.rarity ? RARITY_LABEL[t.rarity] : '—'),
+          h('span.bnd-row-stem', { html: mathfmt(text || id) }),          // real notation (S9 #3), two lines then a clamp
+          h('span.tile-chip', { dataset: { rarity: t.rarity ?? 'none' }, 'aria-label': t.rarity ? RARITY_LABEL[t.rarity] : 'not cleared' },
+            h('span.tile-chip-word', t.rarity ? RARITY_LABEL[t.rarity] : '—'),
+            h('span.tile-chip-glyph', { 'aria-hidden': 'true' }, glyph)),
         ),
         h('button.icon-btn.bnd-row-more', {
           type: 'button', 'aria-label': `Details for ${t.num}`,

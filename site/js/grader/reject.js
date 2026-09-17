@@ -41,7 +41,7 @@ const ALIASES = {
   'angle-over-180': /(>|over|more\s+than|greater\s+than|exceeds?|above)\s*180|180\s*<|over-?180/,
   'zero-angle': /zero\s+angle|angle\s+(of\s+)?(zero|0)\b|=\s*0°?$|zero-?angle/,
   'not-a-solution': /(does\s*n['’o]?t|doesn'?t|not)\s+(a\s+)?(satisf|solution|work|solve)|not-?(a-)?solution/,
-  'both-valid': /\bboth\b|\ball\s+(roots\s+)?(valid|work)|both-?valid/,
+  'both-valid': /\bboth\b|\ball\s+(roots\s+)?(valid|work)|both-?valid|^valid\b|(measures?|values?)\s+(come|comes|stay|stays)\s+positive/,
   'neither': /\bneither\b|\bnone\b|reject\s+both/,
 };
 
@@ -88,20 +88,34 @@ export function expectedReason(part = {}) {
  * seven (deduplicated by meaning), in a deterministic order seeded by the part id. Both-valid items always
  * carry the "−1/2 is negative so reject it"-style distractor the content provides.
  */
-export function menu(part = {}) {
+export function menu(part = {}, opts = {}) {
   const items = [];
   const seen = new Set();
-  const add = (text) => {
+  // card r1: when the roots stage ended with ONE root found (a second-subset miss), a chip that names a
+  // root the student has not seen would leak it, and "both …" / "neither" are nonsense for a single root.
+  // `opts.roots` (the found roots as text) drops those and offers a singular "valid" wording instead.
+  const found = Array.isArray(opts.roots) ? opts.roots.map((r) => toVal(r)).filter((v) => v !== null) : null;
+  const known = [...listOf(part.valid), ...listOf(part.rejected ?? part.invalid)];
+  const unseen = found ? known.filter((k) => !found.some((f) => numEquals(f, k.value, 1e-9))) : [];
+  const single = !!found && found.length === 1 && known.length > 1;
+  const leaks = (t) => {
+    const n = normText(t);
+    if (unseen.some((k) => { const txt = normText(typeof k.raw === 'string' ? k.raw : show(k.raw)); return txt && new RegExp(`(^|[^0-9./])${txt.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![0-9./])`).test(n); })) return true;
+    return single && /\bboth\b|\bneither\b|\ball\s+(roots|of them)\b/.test(n);
+  };
+  const add = (text, force = false) => {
     const t = String(text ?? '').trim();
     if (!t) return;
+    if (!force && leaks(t)) return;
     const key = normText(t);
     if (seen.has(key)) return;
     seen.add(key);
     items.push({ text: t });
   };
-  if (part.reason) add(part.reason);
-  for (const d of (Array.isArray(part.distractors) ? part.distractors : [])) add(typeof d === 'string' ? d : d && d.text);
   const expected = expectedReason(part);
+  if (part.reason) add(part.reason);
+  if (single && expected === 'both-valid' && !items.length) add('valid — every measure comes out positive', true);
+  for (const d of (Array.isArray(part.distractors) ? part.distractors : [])) add(typeof d === 'string' ? d : d && d.text);
   for (const r of REASONS) {
     if (r.id === expected && part.reason) continue; // the item's own wording already stands for this one
     add(r.text);

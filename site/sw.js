@@ -27,6 +27,7 @@ const PRECACHE = [
   'css/components.css',
   'css/figure.css',
   'css/motion.css',
+  'css/polish.css',
   'css/screens.css',
   'css/theme.css',
   'css/widgets.css',

@@ -26,6 +26,15 @@ import {
   calibration, elapsedMs, fmtSpan, isMockRun, missRows, perSkill, planOf, runKind, mods,
 } from './mock.js';
 
+/** r1: what the report calls each part of your answer when the item gives the part no label of its own. */
+export const PART_LABEL = {
+  cloze: 'Your blanks', mc: 'Your pick', build: 'Your notation', notation: 'Your notation', pairs: 'Your pairs',
+  cls: 'Your classification', classify: 'Your classification', asn: 'Your verdict', verdict: 'Your verdict',
+  equation: 'Your equation', setup: 'Your equation', roots: 'Your roots', reject: 'Keep / reject', keep: 'Keep / reject',
+  cases: 'Your cases', explain: 'Your explanation', strip: 'Your steps', factored: 'Your factoring',
+  multi: 'Your answers', ratio: 'Your ratio', num: 'Your answer', term: 'Your answer', default: 'Your answer',
+};
+
 /* ------------------------------------------------------------------ lookup (pure) */
 
 /**
@@ -236,11 +245,15 @@ export function createReportView(host, opts = {}) {
 
     /* your answer, part by part */
     const ans = h('dl.report-answers');
-    for (const p of item.parts || []) {
+    const partsList = item.parts || [];
+    for (const p of partsList) {
       const mine = item.raw?.[p.id];
-      const label = built.parts.find(x => x.id === p.id)?.label || p.id;
+      // r1: most parts carry no author label — never show the internal id ('cloze', 'mc', 'xy'…) on the one
+      // screen meant to teach. A single-part item needs no label at all.
+      const built0 = built.parts.find(x => x.id === p.id);
+      const label = built0?.label || PART_LABEL[p.type || built0?.type] || (partsList.length > 1 ? PART_LABEL.default : '');
       ans.append(
-        h('dt.report-a-k', label, p.share ? h('span.muted.fs-1', ' · 40 % of this question (the setup)') : null),
+        label || p.share ? h('dt.report-a-k', label, p.share ? h('span.muted.fs-1', ' · 40 % of this question (the setup)') : null) : null,
         h('dd.report-a-v', { dataset: { s: p.credit >= 1 ? 'ok' : p.credit > 0 ? 'part' : 'bad' } },
           p.kind === 'blank'
             ? h('span.muted.fs-1', 'left blank')

@@ -304,6 +304,11 @@ export function createSequence(host, cfg = {}) {
     const item = items[i];
     teardownView();
     drawProgress();
+    // home r1: the previous item was answered at the bottom of the page, so without this the next stem
+    // mounts under the sticky head (stemTop −95…−221 px measured). The head keeps the progress bar in
+    // view, so top-of-page is the right place. `.ob-run-stage { overflow-anchor: none }` (polish.css)
+    // stops Chrome's scroll anchoring from re-applying the old offset when the card parts mount async.
+    window.scrollTo({ top: 0, behavior: 'auto' });
     footer.replaceChildren(cfg.footer?.(i, item) ?? '');
     if (item.label) subEl.textContent = `${item.label}${item.blurb ? ' — ' + item.blurb : ''}`;
     const index = i;
@@ -481,15 +486,26 @@ function placementSummary(el, save, { onBaseline, onToday }) {
   const withheld = [...new Set(PLACEMENT_CLUSTERS
     .filter(c => results[c.key] === 'clean' && !placedSet.has(c.module) && placeWithheld(c.module))
     .map(c => c.module))];
+  // home r1: a clean item whose module needs its sibling cluster clean too (M4: linear AND ratio) says so,
+  // instead of a bare "first try" beside another row's "placed".
+  const cleanSub = (c) => {
+    if (placedSet.has(c.module)) return 'placed';
+    if (placeWithheld(c.module)) return 'first try';
+    const sibling = PLACEMENT_CLUSTERS.find(o => o.module === c.module && o.key !== c.key);
+    if (!sibling) return 'first try';
+    const sib = results[sibling.key];
+    const what = sibling.label.replace(/ word problem$/, '').toLowerCase();
+    return sib === 'clean' ? 'first try' : sib ? `first try · the ${what} item too` : `first try · needs the ${what} item too`;
+  };
   const rows = PLACEMENT_CLUSTERS.filter(c => results[c.key]).map(c => h('li.ob-result-row', { dataset: { outcome: results[c.key] } },
     h('span.ob-result-mark', { 'aria-hidden': 'true' }, results[c.key] === 'clean' ? '✓' : results[c.key] === 'retry' ? '·' : '✗'),
     h('span.ob-result-name', c.label),
-    h('span.muted.fs-1', results[c.key] === 'clean' ? (placedSet.has(c.module) ? 'placed' : 'first try') : results[c.key] === 'retry' ? 'second try' : 'start here')));
+    h('span.muted.fs-1', results[c.key] === 'clean' ? cleanSub(c) : results[c.key] === 'retry' ? 'second try' : 'start here')));
 
   el.append(h('section.screen.ob-step', { 'aria-labelledby': 'ob-h4' },
     h('p.ob-eyebrow.muted.fs-1', 'Placement done'),
     h('h1#ob-h4', `Readiness ${rd.r}`),
-    h('p.muted', rd.provisional ? 'Provisional — the Baseline below turns it into a real number.' : `Locked by ${rd.mock?.kind ?? 'a mock'}.`),
+    h('p.muted', rd.provisional ? `Provisional — over the ${rd.tested} of ${rd.skillsTotal} skills tested so far. The Baseline below turns it into a real number.` : `Locked by ${rd.mock?.kind ?? 'a mock'}.`),
     h('div.card.ob-card',
       h('h2.fs-3', `${p.answered ?? 0} of ${p.total ?? PLACEMENT_FULL} answered`),
       h('ul.ob-results', rows),
@@ -565,6 +581,7 @@ export function mountOnboard(params, query) {
 
     function runPlacement(D) {
       teardown();
+      window.scrollTo(0, 0);   // home r1: "Start · 8 problems" sits below the fold — item 1 must not inherit that scroll
       const save = getState();
       const items = placementItems(save, { D });
       const total = items.length;

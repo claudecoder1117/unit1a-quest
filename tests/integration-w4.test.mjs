@@ -149,7 +149,9 @@ test('W4: onboard.js and run.js write the same JUMP placement (notes/T16.md Requ
 test('W4: the Wave-4 call sites exist', async (t) => {
   await t.test('a hidden hint ladder records no hint (notes/T12.md Requests → T09)', () => {
     const card = src('site/js/screens/card.js');
-    assert.match(card, /if \(n === 2 && !hintWrap\.hidden\) revealHint\(0, \{ auto: true \}\)/,
+    // card r1: the call also passes the offending `entry` so the auto-H1 is rendered inline in that part box
+    // (phones); the guard `!hintWrap.hidden` is the thing this test pins.
+    assert.match(card, /if \(n === 2 && !hintWrap\.hidden\) revealHint\(0, \{ auto: true(, entry)? \}\)/,
       'the second-miss auto-hint must respect a Boss / hints:false run');
   });
 

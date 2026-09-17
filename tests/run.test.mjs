@@ -561,3 +561,105 @@ test('T16: no Math.random, and every seed is reproducible', async (t) => {
     assert.deepEqual([...out].sort(), [...src].sort());
   });
 });
+
+/* ================================================================= r1: renamed reviews are one model */
+
+test('r1 (S4): a renamed figure review is ONE model — figure, stem, side list and grader agree', async (t) => {
+  const { renameFor } = await import('../site/js/page.js');
+  const { resolve, angles, pairs } = await import('../site/js/figure/model.js');
+  const { getFigure } = await import('../site/data/figures.js');
+  const { grade } = await import('../site/js/grader/pairs.js');
+  const lettersOf = (s) => new Set((String(s ?? '').match(/\{[a-z]+\s+([A-Z]{1,3})\}|∠([A-Z]{3})|\b[A-Z]{1,3}\b/g) ?? [])
+    .map((m) => m.replace(/^\{[a-z]+\s+|\}$|^∠/g, '')).filter((w) => !/^(A|ASN|XP|NOT|DOC|AND|OR)$/.test(w)).flatMap((w) => [...w]));   // all-caps prose words are not letters
+
+  await t.test('every pairs card, many maps: the letters the student reads ⊆ the letters drawn', () => {
+    const ids = ALL_CARDS.filter((c) => c.figure?.id && (c.parts || []).some((p) => p?.type === 'pairs')).map((c) => c.id);
+    assert.ok(ids.length >= 5, ids.join(' '));
+    let checked = 0;
+    for (const id of ids) {
+      for (let k = 1; k <= 12; k++) {
+        const card = cardById[id];
+        const rename = renameFor(card, mulberry32(k * 7919 + id.length));
+        assert.ok(rename, `${id} gets a rename`);
+        const rc = R.renameCard(card, rename);
+        const model = resolve(getFigure(rc.figure.id), rc.figure);
+        const drawn = new Set([model.vertex, ...model.rays.map((r) => r.n)]);
+        const listed = angles(model).map((a) => a.name);
+        for (const n of listed) for (const ch of n) assert.ok(drawn.has(ch), `${id} list ${n} ⊆ figure ${[...drawn].join('')}`);
+        const texts = [rc.stem, rc.note, ...rc.hints, ...rc.solution.flatMap((s) => [s.say, s.math]), ...rc.parts.map((p) => p.prompt)];
+        for (const s of texts) for (const ch of lettersOf(s)) assert.ok(drawn.has(ch), `${id} (${JSON.stringify(rename)}): "${s}" names ${ch}, not drawn in ${[...drawn].join('')}`);
+        assert.notEqual(rc.note, card.note, 'the "printed figure labels the left point G" note is about the original letters');
+        checked++;
+      }
+    }
+    assert.equal(checked, ids.length * 12);
+  });
+
+  await t.test('the grader accepts the renamed names and rejects the memorised originals', () => {
+    const card = cardById['ang-wu-2'];
+    const rename = renameFor(card, mulberry32(5));
+    const rc = R.renameCard(card, rename);
+    const model = resolve(getFigure('F1'), rc.figure);
+    const [a, b] = pairs(model, 'complementary')[0];
+    const part = rc.parts[0];
+    assert.equal(grade(part, [[`∠${a}`, `∠${b}`]], { figure: rc.figure, card: rc }).ok, true, 'a pair read off the renamed figure');
+    const orig = grade(part, [['∠BFC', '∠CFD']], { figure: rc.figure, card: rc });
+    assert.notEqual(orig.ok, true, 'the printed-letter answer no longer names angles of this figure');
+    // the two-letter F→G / D→F chain of this map is renamed in ONE pass: "FG and FD" → "GR and GF"
+    assert.equal(rename.F, 'G'); assert.equal(rename.D, 'F');
+    assert.match(rc.solution[0].say, /GR and GF are opposite rays/);
+    assert.match(rc.stem, /Point G is on \{line YW\} and \{line RF\}/);
+  });
+
+  await t.test('renameLetters leaves prose alone: the article A, ASN, XP, DOC, lower-case words', () => {
+    const map = { A: 'L', B: 'T', C: 'J', D: 'Y', E: 'H', F: 'G', G: 'L' };
+    assert.equal(R.renameLetters('A non-adjacent pair also works: ∠GFE is vertical to ∠CFD.', map), 'A non-adjacent pair also works: ∠LGH is vertical to ∠JGY.');
+    assert.equal(R.renameLetters('Point A is on {line AD}; ASN, XP and DOC stay; ray FC; G-F-D is straight; {m BFD} = 90°', map),
+      'Point L is on {line LY}; ASN, XP and DOC stay; ray GJ; L-G-Y is straight; {m TGY} = 90°');
+    assert.equal(R.renameLetters('no letters here', map), 'no letters here');
+    assert.equal(R.renameCard(cardById['wp-07'], { A: 'Z' }), cardById['wp-07'], 'no figure → the card itself');
+  });
+});
+
+test('r1: a Page resumed after a quit still summarises the WHOLE page', async (t) => {
+  const { startPage, resumePage, markItem } = await import('../site/js/page.js');
+  const { applyOutcome, DAY_MS } = await import('../site/js/schedule.js');
+  const s = save0();
+  s.settings.testDate = '2026-09-22';
+  ['voc-01', 'voc-02', 'not-01', 'fac-01'].forEach((id, i) => { const rec = applyOutcome(s, id, 'clean', { now: NOW - 3 * DAY_MS }); rec.cleared = true; rec.rarity = 'gold'; rec.due = NOW - (5 - i) * DAY_MS; });
+  const ip = startPage(s, { now: NOW });
+  assert.ok(ip.queue.length >= 3);
+
+  await t.test('pageResults reads the results the queue already holds, in queue order', () => {
+    assert.deepEqual(R.pageResults(ip.queue), [], 'nothing answered yet');
+    const r1 = { id: ip.queue[0].id, cleared: true, firstTry: true, hints: 0, clean: true, rarity: 'gold', xp: 30, elapsedMs: 4000, n: 1, role: ip.queue[0].role, skill: ip.queue[0].skill, tier: ip.queue[0].tier };
+    const r2 = { id: ip.queue[1].id, cleared: false, solutionShown: true, rarity: 'bronze', xp: 0, elapsedMs: 9000, n: 2, role: ip.queue[1].role, skill: ip.queue[1].skill, tier: ip.queue[1].tier };
+    markItem(s, r1, { idx: 0 }); markItem(s, r2, { idx: 1 });
+    // "unmount, mount again": a fresh read of the save
+    const back = resumePage(s);
+    const seeded = R.pageResults(back.queue);
+    assert.equal(seeded.length, 2);
+    assert.deepEqual(seeded.map((r) => r.id), [r1.id, r2.id]);
+    // answer one more after the remount → the Summary counts all three
+    const r3 = { id: back.queue[2].id, cleared: true, firstTry: true, hints: 0, clean: true, rarity: 'gold', xp: 20, elapsedMs: 3000, n: 3, role: back.queue[2].role, skill: back.queue[2].skill, tier: back.queue[2].tier };
+    markItem(s, r3, { idx: 2 });
+    const all = [...seeded, r3];
+    const sum = R.summarizeRun(all);
+    assert.equal(sum.count, 3); assert.equal(sum.cleared, 2); assert.equal(sum.xp, 50); assert.equal(sum.ms, 16000);
+    assert.equal(R.pageResults(resumePage(s).queue).length, 3);
+  });
+
+  await t.test('pageBefore accepts only a complete snapshot, and it survives a pack/unpack round trip', async () => {
+    const { pack, unpack } = await import('../site/js/store.js');
+    assert.equal(R.pageBefore(ip), null);
+    assert.equal(R.pageBefore({ meta: { before: { skills: [] } } }), null, 'half a snapshot is no snapshot');
+    const snap = { skills: skillStates(s), readiness: { r: 12, provisional: true }, xp: s.xp, coverage: coverageCount(s), tiles: R.tileSnapshot(s, R.tileIdsOf(ip.queue)) };
+    ip.meta = { ...ip.meta, before: snap };
+    const again = unpack(pack(s));
+    const got = R.pageBefore(resumePage(again));
+    assert.ok(got, 'the before-snapshot is persisted with the page');
+    assert.equal(got.readiness.r, 12);
+    assert.deepEqual(got.tiles, snap.tiles);
+    assert.equal(got.skills.length, skillStates(s).length);
+  });
+});

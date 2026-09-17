@@ -67,6 +67,14 @@ instead of promising a read-only flash mode the app does not have. All three low
 
 ## B. MAJOR
 
+### B0. (home r1, 2026-09-17) Provisional Readiness scored untested skills as zero — DECIDED AND FIXED
+An 8/8 aced placement landed Readiness 27 (`M` over all 19 skills with eleven at `n = 0`), so S9 #1's
+"≥ 60" was unreachable by construction. Decision: `readiness()`'s provisional branch now uses
+`masteryTermTested` (Σ w·m_shown / Σ w over skills with `n ≥ 1`); the locked formula is unchanged. S9 #1
+amended to ≥ 55 (the ace reads 57) instead of raising `PLACEMENT_M.clean` to 85 (S4/S1 say `m = 80` in four
+places and `run.js` carries a duplicate JUMP writer). Settings and the placement summary print "over N of 19
+skills tested". Pinned by `tests/home-r1.test.mjs`. See COMPOSED S10 2026-09-17b.
+
 ### B1. A heavy-review day composes ~34 minutes against S1's 10–25
 `pageMax` (20) bounds reviews + rematches + new, but the 3 weak-spot Variants, the 2-item algebra floor and
 the tier ramp ride on top of it; a 17-review day is simply long. Verified on the midweek fixture:
@@ -75,6 +83,11 @@ the tier ramp ride on top of it; a 17-review day is simply long. Verified on the
 (INTEGRATION-W4 §5 #2.)
 
 ### B2. The 51 Quizlet stems were never verified against the Quizlet
+**DONE 2026-09-17 (content audit round 1):** `source/quizlet.txt` (87 terms, TAB-separated) diffed against all 87 asn/qz/bonus
+stems. Every letter matched. 17 stems drifted in wording (qz-05/08 lost the ray arrows; bonus-04/10/11/12/15/16/19/23/24/26/27/30/31/32/33
+had been abbreviated or paraphrased) — all brought to the Quizlet wording in `site/data/cards/asn.js`, `content/SOURCE.md` §5 and
+`content/transcript.md`; `tests/coverage.test.mjs` EXPANDED set shrunk to the two notation-markup stems (bonus-05/10). Original text kept below.
+
 `quizlet.com/254286132` returns HTTP 403 to a fetch and no browser was connected in T00's or T06d's sitting,
 so `qz-01..18` and `bonus-01..33` rest on `content/SOURCE.md` §5 alone. Three bonus stems are abbreviated with
 "…" in SOURCE (`bonus-04`, `bonus-11`, `bonus-12`) and **eight were expanded from shorthand into full
@@ -86,6 +99,9 @@ Fix (10 minutes with a browser): open the set once, paste the card list into `so
 (git-ignored), diff the 51 stems. **Owner: whoever has a browser. (T00 #1, T06d #3/#4.)**
 
 ### B3. `qz-04`'s ⚑ note nudges the student toward the wrong answer
+**DONE 2026-09-17:** reworded to "Quizlet says S — and S is right (a line and a ray can be skew); an earlier draft flagged it as A"
+in `asn.js`, `content/SOURCE.md`, `content/transcript.md`, `tests/coverage.test.mjs` and COMPOSED Global rule 5 (S10 changelog line). Original text kept below.
+
 The mandated flag text says "arguably A", but the card grades **S** and S is mathematically right (a ray lies
 on a line, and a line can be skew to another line, so a line and a ray are coplanar only *sometimes*). Global
 rule 5 says a teacher/checker disagreement shows a ⚑ note and never a changed answer, so the wording was kept
@@ -94,6 +110,8 @@ T06d's suggested rewording: *"Quizlet says S — and S is right (the skew case);
 A."* **Owner: content (`content/SOURCE.md` + `site/data/cards/asn.js`). (T06d #2.)**
 
 ### B4. A blank Boss-B4 setup cannot be skipped on purpose
+**DONE 2026-09-17 (visual QA r1, boss.js only):** a blank submit on the required B4 setup now offers "Skip the setup (no heart · flawless gone)" in the dock — `notes/T12.md` §r1. Original text kept below.
+
 S3 says "a wrong or blank setup costs no heart but forfeits flawless". In B4 the slot is *required*, so a
 blank submit is `malformed` (free, no progress) and the only way past it without an answer is three
 deliberate wrongs — which reveals the whole item and books it as a miss. No heart is lost either way, so
@@ -131,7 +149,8 @@ and export-then-evict there, not here. (T01 #1.)
 
 **Content**
 
-* **79 of 213 M1 misconceptions carry no `tag`** (`site/data/cards/m1.js`). They still show their `msg`, so
+* **79 of 213 M1 misconceptions carry no `tag`** (`site/data/cards/m1.js`). *Re-checked 2026-09-17: none of the 79 fits an existing
+  catalogue key (they are point/line/plane, angle-part, bisector and fact-* confusions); left untagged on purpose until T06g adds the five keys.* They still show their `msg`, so
   the student sees the right feedback; they just never count in the Patterns panel. T06a asked T06g for five
   vocabulary keys (`confused-point-line-plane`, `confused-angle-parts`, `confused-bisector`,
   `confused-intersection-facts`, `confused-vocab`); none exists. One-line change per table once they do. (T06a #4.)

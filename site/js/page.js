@@ -47,7 +47,20 @@ export const LIMITS = Object.freeze({
   // Session budget (S1: 10–25 min): reviews + rematches + new cards are held to `pageMax`; new cards shrink
   // to make room (never below qMin — progress continues; the rest lands on the day's second Page).
   pageMax: 20,
+  // home r1 (OPEN-ISSUES B1): the item cap alone let a 17-review day compose ~34 min (weak Variants, the
+  // algebra floor and the tier ramp ride on top of pageMax). The page is also held to a MINUTE budget:
+  // once the estimate passes `minutesMax`, new cards shrink to qMin and no weak/floor Variants are added;
+  // the rest carries to the day's next Page (the split-page path). Estimate per tier, in minutes.
+  minutesMax: 25,
+  minutesPerTier: Object.freeze({ 1: 0.5, 2: 1.5, 3: 3, 4: 5 }),
+  // … and the review block itself stops filling `minutesReserve` (= qMin new cards) short of the budget, so
+  // a 17-review day still ends with a few new cards; the dues it leaves stay due for the day's next Page.
+  minutesReserve: 6,
 });
+/** Estimated minutes of a queue (the same numbers Home prints under RUN NEXT). */
+export function estimateMinutes(queue) {
+  return (queue ?? []).reduce((t, it) => t + (LIMITS.minutesPerTier[it?.tier] ?? 1.5), 0);
+}
 export const ALGEBRA_MODULES = Object.freeze(new Set(['M10', 'M11', 'M12']));
 export const MICRO_TIER = 1;
 /** S7 tier-weighted uncleared work: a 10-second ASN card is not a 5-minute diagram. */
@@ -287,15 +300,21 @@ export function composePage(save, opts = {}) {
     if (take(item)) counts.rematch++;
   }
 
-  // (3) remaining dues ≤ 12, overdue desc (already sorted)
+  // (3) remaining dues ≤ 12, overdue desc (already sorted) — and within the minute budget (home r1)
+  const minutesMax = Number.isFinite(opts.minutes) ? opts.minutes : LIMITS.minutesMax;
   for (const d of dues) {
     if (counts.due >= LIMITS.dues) break;
+    if (estimateMinutes(queue) >= minutesMax - LIMITS.minutesReserve) break;
     if (used.has(d.id)) continue;
     if (take(d)) { counts.due++; counts.review++; }
   }
 
   // (4) q new Cards — shrunk when reviews are heavy (LIMITS.pageMax), never below qMin
-  const qEff = Number.isInteger(opts.q) ? q : Math.max(Math.min(q, LIMITS.qMin), Math.min(q, LIMITS.pageMax - queue.length));
+  // home r1: the minute budget (LIMITS.minutesMax) — reviews are never dropped (S1: the block ends when every
+  // review is right), so a heavy day is paid for by the optional parts: new shrinks to qMin, weak/floor skip.
+  const overBudget = () => estimateMinutes(queue) > minutesMax;
+  const fits = (item) => estimateMinutes(queue) + (LIMITS.minutesPerTier[item?.tier] ?? 1.5) <= minutesMax;
+  const qEff = Number.isInteger(opts.q) ? q : Math.max(Math.min(q, LIMITS.qMin), Math.min(q, overBudget() ? LIMITS.qMin : LIMITS.pageMax - queue.length));
   const pool = newCardPool(save);
   const main = pool.filter(c => tierOf(c) > MICRO_TIER);
   const micro = pool.filter(c => tierOf(c) <= MICRO_TIER);
@@ -326,6 +345,7 @@ export function composePage(save, opts = {}) {
     const wantMicro = slot % microEvery === 0;
     let c = wantMicro ? (microSeq.shift() ?? mainSeq.shift()) : (mainSeq.shift() ?? microSeq.shift());
     if (!c) break;
+    if (counts.new >= LIMITS.qMin && !fits(c)) break;   // home r1: minute budget (qMin always lands)
     if (take(cardItem(c, 'new'))) counts.new++;
   }
   // first Page of a save: ≥ 3 non-M1 items
@@ -342,10 +362,12 @@ export function composePage(save, opts = {}) {
   const weak = weakSpots(save, { max: LIMITS.weakMax });
   const weakCount = weak.length === 0 ? 0 : weak.length === 1 ? LIMITS.weakMin : LIMITS.weakMax;
   for (let i = 0, w = 0; i < weakCount; i++) {
+    if (overBudget()) break;                       // home r1: minute budget
     const s = weak[i % weak.length];
     const template = templateForSkill(s.id, save, rng.fork(`weak|${s.id}|${i}`), { avoidTier4: tier4 >= tier4Max });
     if (template) {
       const item = variantItem(template, `${tag}-w${w++}`, 'weak');
+      if (item && !fits(item)) break;              // home r1: the Variant would push the page past the budget
       if (take(item)) counts.weak++;
       continue;
     }
@@ -359,10 +381,12 @@ export function composePage(save, opts = {}) {
   const quadOk = needsMet(['QUAD-SOLVE'], save);
   let alg = queue.filter(it => it.module === 'M11' || it.module === 'M12').length;
   for (let f = 0; alg < LIMITS.algebraFloor && f < LIMITS.algebraFloor * 2; f++) {
+    if (overBudget()) break;                       // home r1: minute budget (the floor returns on the next Page)
     const sys = (f + pageIndex) % 2 === 0;
     const template = sys ? 'T-sys' : 'T-quad-solve';
     const params = sys ? null : { mode: quadOk && rng.chance(0.5) ? 'a2' : 'a1' };
     const item = variantItem(template, `${tag}-f${f}`, 'floor', { params });
+    if (item && !fits(item)) break;                // home r1: minute budget
     if (take(item)) { counts.floor++; alg++; }
   }
 
@@ -389,6 +413,7 @@ export function composePage(save, opts = {}) {
     day: today, dayIndex, pageIndex, D, q, qEff, R: Math.round(qInfo.R * 10) / 10, warn: qInfo.warn, first,
     counts: roleCounts, tier4: counts.tier4, modules: chosen, carried: carried.map(it => it.id),
     boss: bossReady(save)[0] ?? null, seedTag: tag,
+    minutes: Math.round(estimateMinutes(ordered)), minutesMax,
   };
   return { seed, seedTag: tag, queue: ordered, meta };
 }
@@ -485,12 +510,19 @@ export function markItem(save, result, { idx } = {}) {
  * In the Review block a missed item is re-queued to the end of the block (S1 step 4): a copy of the item
  * at `idx` (default the current one) is inserted after the last review/rematch item, marked `requeued`.
  */
-export function requeueReview(save, { idx } = {}) {
+export function requeueReview(save, { idx, result = null } = {}) {
   const ip = resumePage(save);
   if (!ip) return null;
   const i = Number.isInteger(idx) ? idx : ip.idx;
   const it = ip.queue[i];
   if (!it || !(it.isReview || it.isRematch)) return null;
+  // r1: ONE retry per review. Every miss already books a Rematch for the next Page (card.js), so a copy
+  // that fails again has nowhere left to go but a third copy — the queue grew from 25 to 60+ items and
+  // the Page never ended. A voluntary "Show solution" is not re-queued at all: retrying the same item
+  // straight after reading its solution is copying, and the next-Page Rematch covers it.
+  if ((it.requeued ?? 0) >= MAX_REQUEUE) return null;
+  const r = result ?? it.result;
+  if (r && r.reason === 'revealed') return null;
   let last = i;
   for (let k = ip.queue.length - 1; k > i; k--) if (ip.queue[k].isReview || ip.queue[k].isRematch) { last = k; break; }
   const copy = { ...it, done: false, result: null, requeued: (it.requeued ?? 0) + 1 };
@@ -498,6 +530,9 @@ export function requeueReview(save, { idx } = {}) {
   ip.queue.forEach((q, n) => { q.n = n + 1; });
   return copy;
 }
+
+/** r1: a review is re-queued at most this many times in one Page (S1 step 4, bounded). */
+export const MAX_REQUEUE = 1;
 
 /** Close the page: clears inProgress and returns the finished queue (run.js writes the run record). */
 export function finishPage(save) {

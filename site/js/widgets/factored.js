@@ -139,7 +139,7 @@ export function mount(el, part = {}, ctx = {}) {
     clear() { f.clear(); msg.clear(); update(false); root.dataset.kind = ''; return api; },
     isEmpty: () => f.isBlank(),
     focus() { if (!locked) f.focus(); return api; },
-    pips: () => ({ total: 1, filled: f.isBlank() ? 0 : 1 }),
+    pips: () => ({ total: 1, filled: f.wrap.dataset.state === 'ok' ? 1 : 0 }),   // card r1: a pip fills on a CLEAR, not on "non-blank" (num.js pattern; S9 #5)
     /** what the answer has to expand to — for a screen that wants to echo it (never the answer itself) */
     target: targetText,
     /** the current preview: { ok, text, match, msg } */

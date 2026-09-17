@@ -35,7 +35,7 @@ import { cyrb53, mulberry32 } from '../rng.js';
 import { cards as ALL_CARDS, byId as cardById } from '../../data/cards.js';
 import { moduleById, familyById } from '../../data/modules.js';
 import { skillById, SKILL_IDS } from '../../data/skills.js';
-import { sheetById, numbering } from '../../data/sheets.js';
+import { sheetById, sheetOf, numbering } from '../../data/sheets.js';
 import { isBonus } from '../../data/source-manifest.js';
 import * as T from '../../data/templates.js';
 import { mathfmt } from '../mathfmt.js';
@@ -157,6 +157,70 @@ export function variantItem(template, seed, role = 'new', extra = {}) {
     template, seed: String(seed), params: extra.params ?? {}, forCard: extra.forCard ?? def?.forCard ?? null,
     done: false, result: null, ...extra,
   };
+}
+
+/* ------------------------------------------------------------------ renamed reviews (S4) — r1 */
+
+/**
+ * S4: "figure-card reviews re-render with letters re-shuffled so the answer cannot be typed from memory."
+ * page.js draws the map (spec letter → fresh letter, `it.rename`), but only the SVG used to honour it:
+ * the stem still said "Point F is on EC and AD", the side list still offered ∠CFD, and the grader
+ * accepted the printed letters — the figure and the question disagreed, and a student who read the
+ * figure was marked wrong. So a renamed review is now ONE renamed card: the figure spec carries the
+ * merged map (the pairs widget and grader resolve their model from `figure.rename`), and every text
+ * field — stem, instruction, hints, solution, part prompts — is rewritten with the same letters.
+ *
+ * The card's own `figure.rename` (F1: `{A:'G'}`, the printed sheet's G for the teacher's A) is folded in:
+ * both the teacher's A and the printed G map to the fresh letter, so "line AD" and "point G" agree.
+ * The "printed figure labels the left point G" note is about the ORIGINAL letters and is replaced.
+ */
+export const RENAMED_NOTE = 'Review: the letters are re-shuffled — read them off the figure, not from memory.';
+
+export function renameCard(card, rename) {
+  if (!isObj(card) || !isObj(rename) || !Object.keys(rename).length || !isObj(card.figure)) return card;
+  const base = isObj(card.figure.rename) ? card.figure.rename : {};
+  const map = {};
+  for (const [spec, fresh] of Object.entries(rename)) {
+    if (typeof fresh !== 'string' || !/^[A-Z]$/.test(fresh)) continue;
+    map[spec] = fresh;
+    if (base[spec]) map[base[spec]] = fresh;              // the printed letter names the same point
+  }
+  if (!Object.keys(map).length) return card;
+  const tx = (s) => renameLetters(s, map);
+  const fig = (f) => (isObj(f) ? { ...f, rename: { ...(isObj(f.rename) ? f.rename : {}), ...rename } } : f);
+  return {
+    ...card,
+    figure: fig(card.figure),
+    stem: tx(card.stem), instruction: tx(card.instruction),
+    note: card.note ? RENAMED_NOTE : card.note,
+    hints: Array.isArray(card.hints) ? card.hints.map(tx) : card.hints,
+    solution: Array.isArray(card.solution) ? card.solution.map((s) => (isObj(s) ? { ...s, say: tx(s.say), math: tx(s.math) } : s)) : card.solution,
+    parts: Array.isArray(card.parts) ? card.parts.map((p) => (isObj(p) ? { ...p, prompt: tx(p.prompt), figure: p.figure ? fig(p.figure) : p.figure } : p)) : card.parts,
+    renamed: true,
+  };
+}
+
+/**
+ * Rewrite the point letters of one string in ONE pass (so a letter that is both a source and a target
+ * — F→G while G→L — is never renamed twice). Handles mathfmt tokens `{ang GFC}` `{m BFD}` `{line AD}`
+ * `{seg AB}` `{ray FC}`, `∠GFC`, letter chains `G-F-D`, bare 2–3 letter names (`FG`, `GFC`; only when
+ * every letter is a figure letter, so `ASN` / `XP` / `DOC` are untouched), and single letters — except
+ * a bare `A`, which is the article unless a naming word precedes it ("Point A", "ray A", "at A").
+ */
+const RENAME_RE = /\{([a-z]+)\s+([A-Z]{1,3})\}|∠([A-Z]{3})\b|\b([A-Z](?:-[A-Z])+)\b|\b([A-Z]{2,3})\b|\b((?:[Pp]oint|line|ray|at|around|vertex|from|through|labels|and|with|to)\s+)?([A-Z])\b/g;
+export function renameLetters(s, map) {
+  if (typeof s !== 'string' || !s || !isObj(map)) return s;
+  const one = (ch) => map[ch] ?? ch;
+  const all = (str) => str.replace(/[A-Z]/g, one);
+  const every = (str) => [...str.replace(/-/g, '')].every((ch) => ch in map);
+  return s.replace(RENAME_RE, (m, tokKind, tokLetters, angLetters, chain, name, pre, single) => {
+    if (tokKind) return `{${tokKind} ${all(tokLetters)}}`;
+    if (angLetters) return `∠${all(angLetters)}`;
+    if (chain) return all(chain);
+    if (name) return every(name) ? all(name) : name;
+    if (single === 'A' && !pre) return m;
+    return (pre ?? '') + one(single);
+  });
 }
 
 /** Deterministic Fisher–Yates (no Math.random anywhere under js/ — tests/no-random.test.mjs greps). */
@@ -690,10 +754,10 @@ function runHead({ title, subtitle, back, right = null, quitLabel = 'Quit' }) {
   return head;
 }
 
-function progressBar(done, total) {
-  const wrap = h('div.run-progress', { role: 'progressbar', 'aria-valuemin': '0', 'aria-valuemax': String(total), 'aria-valuenow': String(done), 'aria-label': 'Run progress' },
+function progressBar(done, total, { retries = 0 } = {}) {
+  const wrap = h('div.run-progress', { role: 'progressbar', 'aria-valuemin': '0', 'aria-valuemax': String(total), 'aria-valuenow': String(done), 'aria-label': retries ? `Run progress, ${retries} ${retries === 1 ? 'retry' : 'retries'}` : 'Run progress' },
     h('div.run-progress-track', h('div.run-progress-fill', { style: { transform: `scaleX(${total ? done / total : 0})` } })),
-    h('span.run-progress-n.mono.fs-1', `${done} of ${total} done`),
+    h('span.run-progress-n.mono.fs-1', `${done} of ${total} done`, retries ? h('span.run-progress-retry', ` · +${retries} ${retries === 1 ? 'retry' : 'retries'}`) : null),
   );
   return wrap;
 }
@@ -746,11 +810,27 @@ function mountCardRun(host, { kind, id, seed }) {
   }
 
   /* ---- before-snapshot for the Summary ---- */
+  let resumed = false;
   {
     const save = getState();
     tileIds = tileIdsOf(queue);
-    tilesBefore = tileSnapshot(save, tileIds);
-    before = { skills: skillStates(save), readiness: readiness(save), xp: save.xp, coverage: coverageCount(save) };
+    const stored = kind === 'page' ? pageBefore(ip) : null;
+    if (stored) {
+      // r1: a Page quit ("progress is kept") and reopened ends on the Summary of the WHOLE page, not of
+      // the items since the reload — the before-snapshot was written on the first mount (S9 #10 honest).
+      resumed = true;
+      before = stored; tilesBefore = stored.tiles;
+    } else {
+      tilesBefore = tileSnapshot(save, tileIds);
+      const rd = readiness(save);
+      before = { skills: skillStates(save), readiness: { r: rd.r, provisional: !!rd.provisional }, xp: save.xp, coverage: coverageCount(save) };
+      if (kind === 'page') {
+        const snap = { ...before, tiles: tilesBefore };
+        update((s) => { const p = resumePage(s); if (p) p.meta = { ...(isObj(p.meta) ? p.meta : {}), before: snap }; });
+        ip = resumePage(getState()); queue = ip ? ip.queue : queue; run.items = queue; run.meta = ip?.meta ?? run.meta;
+      }
+    }
+    if (kind === 'page') results.push(...pageResults(queue));   // the items answered before a reload
     setHeader({ readiness: before.readiness.r, provisional: before.readiness.provisional });
   }
 
@@ -758,10 +838,12 @@ function mountCardRun(host, { kind, id, seed }) {
   renderItem();
 
   function renderHead() {
-    const done = kind === 'page' ? Math.min(idx, queue.length) : results.length;
+    // r1: a re-queued review is shown as a retry, not as a longer page ("3 of 17 done · +1 retry").
+    const retries = kind === 'page' ? queue.filter((it) => it.requeued).length : 0;
+    const done = kind === 'page' ? queue.filter((it) => it.done && !it.requeued).length : results.length;
     headSlot.replaceChildren(runHead({
       title: run.title, subtitle: run.subtitle, back: run.back,
-      right: progressBar(done, queue.length),
+      right: progressBar(done, queue.length - retries, { retries }),
       quitLabel: kind === 'page' ? 'Quit' : 'Back',
     }));
   }
@@ -794,7 +876,9 @@ function mountCardRun(host, { kind, id, seed }) {
       back: run.back,
       mode: run.mode,
       hints: run.hints !== false,
-      rename: it.rename ?? null,
+      // r1: the rename is applied to the whole card in sourceFor() (figure + stem + list + grader agree);
+      // handing card.js the map as well would only re-merge the same letters into the SVG.
+      rename: null,
       onDone: (r) => record(it, r),
       onContinue: () => advance(),
     });
@@ -808,6 +892,9 @@ function mountCardRun(host, { kind, id, seed }) {
       const raw = T.generate(it.template, it.seed, it.params ?? {});
       return { item: raw };
     }
+    // r1 (S4): a review with `rename` is ONE renamed card, not a renamed SVG under the printed stem.
+    const card = cardById[it.id];
+    if (isObj(it.rename) && card) return { id: it.id, item: renameCard(card, it.rename) };
     return { id: it.id };
   }
 
@@ -817,7 +904,7 @@ function mountCardRun(host, { kind, id, seed }) {
     if (kind === 'page') {
       update((s) => {
         // A missed REVIEW item goes to the end of the review block (S1 step 4) before the pointer moves.
-        if (!result?.cleared && (it.isReview || it.isRematch)) requeueReview(s, { idx });
+        if (!result?.cleared && (it.isReview || it.isRematch)) requeueReview(s, { idx, result: r });   // r1: once, never after a voluntary reveal
         markItem(s, r, { idx });
       });
       ip = resumePage(getState());
@@ -881,7 +968,7 @@ function mountCardRun(host, { kind, id, seed }) {
     renderSummary(host, {
       kind, run, results, sum, before, after,
       tilesBefore, tilesAfter: tileSnapshot(save, tileIds), outcome, save,
-      elapsedMs: submittedAt - startedAt,
+      elapsedMs: resumed ? sum.ms : submittedAt - startedAt,   // r1: a resumed Page's clock is its items', not the days between
     });
   }
 
@@ -894,6 +981,22 @@ function mountCardRun(host, { kind, id, seed }) {
     document.removeEventListener('visibilitychange', onHide);
     try { flush(); } catch { /* gone */ }
   };
+}
+
+/**
+ * r1: the results a Page's queue already holds (page.js markItem stores `it.result` per item), in queue
+ * order — what a remount seeds `results` with so the Summary covers the whole page after a quit/reload.
+ */
+export function pageResults(queue) {
+  return (Array.isArray(queue) ? queue : []).filter((it) => it && it.done && isObj(it.result)).map((it) => ({
+    ...it.result, n: it.n, role: it.role, skill: it.result.skill ?? it.skill ?? (it.skills || [])[0] ?? null, tier: it.result.tier ?? it.tier,
+  }));
+}
+
+/** r1: the before-snapshot the first mount of this Page wrote into `inProgress.meta.before`, or null. */
+export function pageBefore(ip) {
+  const b = ip?.meta?.before;
+  return isObj(b) && Array.isArray(b.skills) && isObj(b.readiness) && isObj(b.tiles) ? b : null;
 }
 
 /** `runs[].kind` is `kind` or `kind:id` (notes/T11.md: `boss:B4`, `upgrade:AP-1`). */
@@ -931,7 +1034,8 @@ function mountBlitz(host, { id, seed }) {
   const answers = h('div.blitz-answers');
   const flash = h('p.blitz-flash', { role: 'status', 'aria-live': 'assertive' });
   const hint = h('p.blitz-hint.muted.fs-1');
-  const stage = h('div.blitz-stage', h('div.card.blitz-card', stem, answers), flash, hint);
+  // r1: stem → flash → answers inside the card, so the "−3 s · …" line lands just above the thumb.
+  const stage = h('div.blitz-stage', h('div.card.blitz-card', stem, flash, answers), hint);
   root.append(
     runHead({
       title: run.title, subtitle: run.subtitle, back: run.back, quitLabel: 'Quit',
@@ -1159,13 +1263,15 @@ function renderSummary(host, ctx) {
         h('span.tile.sum-tile', {
           dataset: { rarity: m.to, foil: String(m.to === 'platinum'), fam: String(m.fam), delay: String(k) },
           style: { animationDelay: `${k * 90}ms` },
-          'aria-label': `${m.fam ? (familyById[m.id]?.name ?? m.id) : (numbering(m.id) || m.id)} — ${m.to}${m.from ? ` (was ${m.from})` : ''}`,
+          'aria-label': `${mintLabel(m)} — ${mintCaption(m)}`,
         },
           h('span.tile-num', m.fam ? '◆' : (numbering(m.id) || m.id)),
           h('span.tile-state', { 'aria-hidden': 'true' }, m.to === 'platinum' ? '★' : m.to === 'gold' ? '●' : m.to === 'silver' ? '◐' : '○'),
-          m.to === 'platinum' ? h('span.tile-sheen', { 'aria-hidden': 'true' }) : null,
+          // r1: EVERY mint gets the one foil sheen (S9 #7), timed to land after its own staggered flip;
+          // `data-foil` (the platinum edge) stays platinum-only.
+          h('span.tile-sheen', { 'aria-hidden': 'true', style: { animationDelay: `${420 + k * 90}ms` } }),
         ),
-        h('span.sum-tile-cap.fs-1.muted', m.from ? `${m.from} → ${m.to}` : m.to),
+        h('span.sum-tile-cap.fs-1.muted', `${mintLabel(m)} · ${mintCaption(m)}`),
       ))),
     );
   }
@@ -1180,7 +1286,7 @@ function renderSummary(host, ctx) {
         h('span.sum-bar-name', b.name),
         h('span.sum-bar-track', fill, h('span.sum-bar-ghost', { style: { transform: `scaleX(${clamp(b.to / 100, 0, 1)})` } })),
         dn,
-        h('span.sum-bar-delta.fs-1', { dataset: { tone: b.to >= b.from ? 'ok' : 'bad' } }, `${b.to >= b.from ? '+' : ''}${Math.round(b.to - b.from)}`),
+        h('span.sum-bar-delta.fs-1', { dataset: { tone: deltaTone(Math.round(b.to - b.from)) } }, deltaText(Math.round(b.to - b.from))),
       );
     })));
     requestAnimationFrame(() => requestAnimationFrame(() => {
@@ -1201,7 +1307,7 @@ function renderSummary(host, ctx) {
       h('span.mono.sum-rd-from', String(before.readiness.r)),
       h('span.sum-rd-arrow', '→'),
       h('span.mono.sum-rd-to', { dataset: { band: after.readiness.band.key } }, String(after.readiness.r)),
-      h('span.sum-rd-delta', { dataset: { tone: rDelta > 0 ? 'ok' : rDelta < 0 ? 'bad' : '' } }, `${rDelta > 0 ? '+' : ''}${rDelta}`),
+      h('span.sum-rd-delta', { dataset: { tone: deltaTone(rDelta) } }, deltaText(rDelta)),
     ),
     h('p.muted.fs-1',
       after.readiness.band.label,
@@ -1257,7 +1363,7 @@ function renderSummary(host, ctx) {
 
 function summaryTitle(kind, { sum, outcome, run }) {
   if (kind === 'page') return sum.missed === 0 && sum.count ? 'Page complete — flawless' : 'Page complete';
-  if (kind === 'blitz') return `${outcome.blitz?.score ?? 0} in ${Math.round((run.limitMs ?? 0) / 1000)} seconds`;
+  if (kind === 'blitz') return outcome.blitz?.reason === 'strikes' ? 'Three strikes' : outcome.blitz?.reason === 'time' ? 'Time.' : 'Round over';   // r1: the hero is the score
   if (kind === 'jump') return outcome.jump?.passed ? 'Placed' : 'Not placed — yet';
   if (kind === 'full36') return `Full 36 · ${sum.cleared} / ${sum.count}`;
   if (kind === 'daily') return 'Daily Challenge done';
@@ -1274,6 +1380,19 @@ function againLabel(kind) {
   if (kind === 'missed') return 'Next 5';
   return 'Run it again';
 }
+
+/** r1: a bare "0" next to the big number read like a stray digit — "±0" in --muted says "no change". */
+function deltaText(d) { return d > 0 ? `+${d}` : d < 0 ? String(d) : '±0'; }
+function deltaTone(d) { return d > 0 ? 'ok' : d < 0 ? 'bad' : 'flat'; }
+
+/** r1: a minted tile names its SHEET ("WP 1.", "ASN 3.", "AP-1 W2"), not a bare "1." (S9: placeable in the packet). */
+function mintLabel(m) {
+  if (m.fam) return familyById[m.id]?.name ?? m.id;
+  const sheet = sheetOf(m.id) ?? cardById[m.id]?.sheet ?? null;
+  const no = numbering(m.id) || m.id;
+  return sheet ? `${sheet} ${no}` : no;
+}
+function mintCaption(m) { return m.from ? `${m.from} → ${m.to}` : m.to; }
 
 function fact(label, value, note, mono = true) {
   return h('div.sum-fact', h('dt.muted.fs-1', label),

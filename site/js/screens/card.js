@@ -153,12 +153,21 @@ export function normalizeItem(raw, { kind = 'card', histLen = 0 } = {}) {
   const tier = clamp(Math.floor(num(raw.tier, 1)), 1, 4);
   let parts = Array.isArray(raw.parts) ? raw.parts.filter(Boolean) : [];
   let pickIndex = null;
+  let stem = String(raw.stem ?? raw.prompt ?? '');
   if (raw.pick === 'one' && parts.length > 1) { pickIndex = histLen % parts.length; parts = [parts[pickIndex]]; }
+  // card r1: a rotated (pick:'one') card whose stem is only an index label ("Vocabulary — §0 term 1 of 23.")
+  // puts the mounted part's QUESTION on the paper instead — the paper is the packet, not a table of
+  // contents — and the widget drops its own prompt line so the question is asked once. `src` keeps the
+  // §0 index for the Binder.
+  if (pickIndex != null && parts[0]?.prompt && /^(vocabulary|notation|definitions?|facts?)\s*[—–-]\s*§\s*\d+\s+term\s+\d+\s+of\s+\d+\.?$/i.test(stem.trim())) {
+    stem = String(parts[0].prompt);
+    parts = [{ ...parts[0], prompt: '' }];
+  }
   const hints = (Array.isArray(raw.hints) ? raw.hints : []).map((x) => String(x ?? '')).filter(Boolean).slice(0, 3);
   const solution = (Array.isArray(raw.solution) ? raw.solution : []).filter((s) => s && (s.say || s.math)).map((s) => ({ say: s.say ?? '', math: s.math ?? '' }));
   return {
     id: raw.id, kind, tier, par: num(raw.par, PAR_DEFAULT[tier]), skills: Array.isArray(raw.skills) ? raw.skills.slice() : [],
-    sheet: raw.sheet ?? null, module: raw.module ?? null, stem: String(raw.stem ?? raw.prompt ?? ''), note: raw.note ?? null,
+    sheet: raw.sheet ?? null, module: raw.module ?? null, stem, note: raw.note ?? null,
     instruction: raw.instruction ?? null, figure: raw.figure ?? null, parts, pickIndex, hints, solution,
     misconceptions: Array.isArray(raw.misconceptions) ? raw.misconceptions : [],
     template: raw.template ?? null, seed: raw.seed ?? null, seedTag: raw.seedTag ?? null, templateVersion: raw.templateVersion ?? null,
@@ -254,7 +263,16 @@ export function createCardView(host, source = {}, opts = {}) {
   const side = h('div.card-side');
   const scratchId = `scratch-${String(source.id || source.template || 'v').replace(/[^a-z0-9-]/gi, '')}`;
   const scratch = h('textarea.card-scratch', { id: scratchId, maxlength: String(SCRATCH_MAX), rows: '4', placeholder: 'show work…', spellcheck: 'false', autocapitalize: 'off', autocomplete: 'off' });
-  const scratchWrap = h('div.card-scratch-wrap', h('label.card-side-h', { for: scratchId }, 'Scratch ', h('span.muted.fs-1', '— show your work (S)')), scratch);
+  // card r1: on phones Scratch is collapsed behind a 44 px toggle row (S key / tap opens it); the ≥ 1024 rail
+  // keeps the plain label + textarea. `data-open` drives both (CSS in polish.css "card r1").
+  const scratchToggle = h('button.card-scratch-toggle', { type: 'button', 'aria-expanded': 'false', 'aria-controls': scratchId }, h('span.card-side-h', 'Scratch'), h('span.muted.fs-1', ' — show your work (S)'), h('span.card-scratch-caret', { 'aria-hidden': 'true' }, '▾'));
+  const scratchWrap = h('div.card-scratch-wrap', { dataset: { open: 'false' } }, h('label.card-side-h.card-scratch-label', { for: scratchId }, 'Scratch ', h('span.muted.fs-1', '— show your work (S)')), scratchToggle, scratch);
+  function openScratch(open = true, { focus = false } = {}) {
+    scratchWrap.dataset.open = String(!!open);
+    scratchToggle.setAttribute('aria-expanded', String(!!open));
+    if (open && focus) scratch.focus();
+  }
+  scratchToggle.addEventListener('click', () => openScratch(scratchWrap.dataset.open !== 'true', { focus: scratchWrap.dataset.open !== 'true' }));
   const hintBtn = h('button.btn.card-hint-btn', { type: 'button' }, 'Hint');
   const hintList = h('ol.hint-list', { 'aria-live': 'polite' });
   const hintWrap = h('div.hint-ladder', h('div.card-side-h', 'Hints ', h('span.muted.fs-1', '(H) — cost XP quality, never an attempt')), hintList, hintBtn);
@@ -276,7 +294,12 @@ export function createCardView(host, source = {}, opts = {}) {
   submitBtn.addEventListener('pointerdown', (e) => e.preventDefault());   // keep focus (and the OS keyboard) in the field
   submitBtn.addEventListener('mousedown', (e) => e.preventDefault());
   const contBtn = h('button.btn.btn-primary.card-continue', { type: 'button', hidden: true }, 'Continue ', h('span.fs-1', '↵ / N'));
-  dock.actions.append(submitBtn, contBtn);
+  // card r1: below 1024 px the hint ladder sits under the parts, so the dock carries a thumb-zone Hint button
+  // (mirrors hintBtn; hidden ≥ 1024 by CSS, hidden everywhere when the ladder is off — Boss / hints:false).
+  const dockHint = h('button.btn.card-dock-hint', { type: 'button', hidden: true }, 'Hint');
+  dockHint.addEventListener('pointerdown', (e) => e.preventDefault());
+  dockHint.addEventListener('mousedown', (e) => e.preventDefault());
+  dock.actions.append(dockHint, submitBtn, contBtn);
   dock.keys.el.hidden = true;                      // shown while a text input inside the parts has focus
   let keysTimer = 0;
   let lastFocused = null;                          // the entry the student last touched (the dock Submit grades it)
@@ -343,7 +366,7 @@ export function createCardView(host, source = {}, opts = {}) {
 
     renderHead(item, rec0);
     renderPaper(item);
-    if (o.kind === 'card' && rec0?.work) scratch.value = String(rec0.work).slice(0, SCRATCH_MAX);
+    if (o.kind === 'card' && rec0?.work) { scratch.value = String(rec0.work).slice(0, SCRATCH_MAX); openScratch(true); }
     renderHints(item);
 
     const groups = composeParts(item.parts).map((g) => (isSetupSlot(g) ? { ...g, optional: true } : g));
@@ -407,11 +430,38 @@ export function createCardView(host, source = {}, opts = {}) {
 
   /* ---- hints (S3: H1 relationship, H2 setup, H3 one step from the end) ---- */
   function renderHints(item) {
-    if (o.hints === false || o.mode === 'boss' || !item.hints.length) { hintWrap.hidden = true; return; }
+    if (o.hints === false || o.mode === 'boss' || !item.hints.length) { hintWrap.hidden = true; dockHint.hidden = true; return; }
     hintBtn.textContent = '';
     hintBtn.append(`Hint 1 of ${item.hints.length}`, h('span.muted.fs-1', ` · ${HINT_NAMES[0]}`));
+    syncDockHint();
   }
   on(hintBtn, 'click', () => revealNextHint());
+  on(dockHint, 'click', () => revealNextHint());
+  /** card r1: the dock's Hint mirrors the ladder button ("Hint 2/3", disabled when the ladder is spent). */
+  function syncDockHint() {
+    if (hintWrap.hidden || st.done) { dockHint.hidden = true; return; }
+    const n = st.item?.hints.length ?? 0;
+    const next = st.hintOpen.findIndex((x) => !x);
+    dockHint.hidden = false;
+    dockHint.disabled = next < 0 || next >= n;
+    dockHint.textContent = '';
+    dockHint.append(dockHint.disabled ? 'No hints left' : 'Hint ', dockHint.disabled ? null : h('span.mono.fs-1', `${next + 1}/${n}`));
+    dockHint.setAttribute('aria-label', dockHint.disabled ? 'No hints left' : `Hint ${next + 1} of ${n} (H)`);
+  }
+  /** card r1: the hint ALSO lands inside the part box the student is working in (the ladder stays the record),
+   *  so the auto-H1 after a second miss is where the eyes are, not 400 px above the field on a phone. */
+  function inlineHint(i, auto, entry = null) {
+    const e = entry || activeEntry() || requiredEntries().find((x) => !x.finished) || null;
+    if (!e || !st.item) return;
+    const wrap = e.inline || (e.inline = h('div.card-inline', { role: 'note' }));
+    if (!wrap.isConnected) e.box.append(wrap);
+    const row = h('div.card-inline-hint', { dataset: { n: String(i + 1) } },
+      h('span.hint-tag.mono', `H${i + 1}`),
+      h('span.hint-text', { html: mathfmt(st.item.hints[i]) }),
+      auto ? h('span.hint-auto.muted.fs-1', 'shown after a second miss — counts as a hint') : null);
+    wrap.append(row);
+    requestAnimationFrame(() => row.classList.add('is-in'));
+  }
 
   function revealNextHint({ auto = false } = {}) {
     if (st.done || !st.item || hintWrap.hidden) return false;
@@ -420,7 +470,7 @@ export function createCardView(host, source = {}, opts = {}) {
     return revealHint(i, { auto });
   }
 
-  function revealHint(i, { auto = false } = {}) {
+  function revealHint(i, { auto = false, entry = null } = {}) {
     if (st.hintOpen[i] || !st.item || i >= st.item.hints.length) return false;
     st.hintOpen[i] = true;
     st.hints = st.hintOpen.filter(Boolean).length;
@@ -433,6 +483,8 @@ export function createCardView(host, source = {}, opts = {}) {
     const next = i + 1;
     if (next < st.item.hints.length) { hintBtn.textContent = ''; hintBtn.append(`Hint ${next + 1} of ${st.item.hints.length}`, h('span.muted.fs-1', ` · ${HINT_NAMES[next]}`)); }
     else { hintBtn.disabled = true; hintBtn.textContent = 'No more hints'; }
+    inlineHint(i, auto, entry);                    // card r1: also inside the part box (phones)
+    syncDockHint();
     if (i >= 1 && !o.sandbox) setCombo(0);        // H2 / H3 reset the combo; H1 holds (S4)
     bus.emit('card:hint', { id: st.item.id, hint: i + 1, auto });
     return true;
@@ -539,6 +591,15 @@ export function createCardView(host, source = {}, opts = {}) {
     const res = M.G.grade(part, raw, gctx);
     w.setFeedback(res);
     entry.lastRes = res;
+    // card r1 — S3 "Submit is idempotent": the same wrong answer submitted again (the student taps the big
+    // sticky Submit "to be sure", or a strip's next slot is still blank so the grader re-reports the slot it
+    // already revealed) re-shows the line but is never charged again — no combo / mastery / error / hint /
+    // solution side effects. Only a CHANGED answer is a new attempt.
+    if (res.kind === 'wrong' && isRepeatWrong(entry, part, res, raw)) {
+      const ev0 = { id: st.item.id, part: part.id, kind: res.kind, ok: res.ok, free: true, repeat: true };
+      bus.emit('card:graded', ev0);
+      return res;
+    }
     partCounters(entry, part, res);
     afterGrade(entry, part, res, { isLast, raw });
     drawPips();
@@ -610,6 +671,7 @@ export function createCardView(host, source = {}, opts = {}) {
     }
     if (res.kind === 'wrong') {
       entry.wrongs++;
+      rememberWrong(entry, part, res, raw);                             // card r1: the same wrong setup is logged once
       logError(part, res, raw);
       if (entry.wrongs >= MAX_WRONG) revealSetup(entry, part);
     }
@@ -640,10 +702,30 @@ export function createCardView(host, source = {}, opts = {}) {
     if (last && last.kind === 'wrong') { chargeWrong(entry, entry.group, { ...r, kind: 'wrong', tags: last.tags ?? r.tags ?? [], msg: last.msg }, entry.w.raw()); drawPips(); }
   }
 
+  /** card r1 — the fingerprint of a charged wrong answer (part + raw), so the same one is never charged twice. */
+  function rawKey(raw) {
+    try { return JSON.stringify(raw ?? null); } catch { return String(raw); }
+  }
+  function rememberWrong(entry, part, res, raw) {
+    entry.lastChargedRaw = rawKey(raw);
+    entry.lastChargedPart = part;
+    if (part.type === 'strip' && res?.reveal?.id) {
+      (entry.chargedSlots ||= new Set()).add(res.reveal.id);
+      // the strip grader skips these when it picks the newest slot, so a blank next slot answers
+      // "Next: x =" (free) instead of re-reporting the miss it already revealed
+      entry.ctx.state.charged = [...entry.chargedSlots];
+    }
+  }
+  function isRepeatWrong(entry, part, res, raw) {
+    if (part.type === 'strip' && res?.reveal?.id && entry.chargedSlots?.has(res.reveal.id)) return true;
+    return entry.lastChargedRaw != null && entry.lastChargedPart === part && entry.lastChargedRaw === rawKey(raw);
+  }
+
   function chargeWrong(entry, part, res, raw) {
     const key = part.id || entry.group.id || String(st.entries.indexOf(entry));
     st.wrongs[key] = (st.wrongs[key] || 0) + 1;
     entry.wrongs++;
+    rememberWrong(entry, part, res, raw);
     const n = st.wrongs[key];
     nudge();
     bus.emit('sfx', 'wrong');
@@ -657,7 +739,7 @@ export function createCardView(host, source = {}, opts = {}) {
     // Second miss: misconception line + H1 auto-shown — but only where the ladder is actually on screen.
     // W4 integration (notes/T12.md Requests): in a Boss / an `hints:false` run the ladder is hidden, and
     // this used to record `hintsUsed` for a hint the student never saw.
-    if (n === 2 && !hintWrap.hidden) revealHint(0, { auto: true });
+    if (n === 2 && !hintWrap.hidden) revealHint(0, { auto: true, entry });
     if (n >= 2) offerSolution();
     if (n >= MAX_WRONG) showSolution({ forced: true, part });          // third miss: the full worked solution, 0 XP, Bronze
   }
@@ -851,6 +933,7 @@ export function createCardView(host, source = {}, opts = {}) {
   function lockAll() {
     for (const e of st.entries) { try { e.w.lock(true); } catch { /* proxy */ } if (!e.finished) e.box.dataset.state = e.optional ? 'skipped' : 'locked'; }
     hintBtn.disabled = true;
+    dockHint.hidden = true;                                            // card r1
     solBtn.hidden = true;
     submitBtn.hidden = true;
     contBtn.hidden = false;
@@ -890,8 +973,8 @@ export function createCardView(host, source = {}, opts = {}) {
     const actions = h('div.card-result-actions');
     if (item.solution.length && r.cleared) actions.append(h('button.btn', { type: 'button', onclick: () => openSolution({ all: false }) }, 'Worked solution'));
     if (o.kind === 'variant') actions.append(h('button.btn', { type: 'button', onclick: () => anotherVariant() }, 'Another ◆'));
-    actions.append(h('button.btn.btn-primary', { type: 'button', onclick: () => continueNow() }, 'Continue'));
-    result.append(actions);
+    // card r1: the dock's sticky "Continue ↵ / N" is the one Continue — the strip no longer repeats it.
+    if (actions.children.length) result.append(actions);
     result.hidden = false;
     requestAnimationFrame(() => { result.classList.add('is-in'); okTick.classList.add('is-draw'); });
     if (!reduceMotion()) setTimeout(() => result.scrollIntoView({ block: 'nearest', behavior: 'smooth' }), 60);
@@ -1021,7 +1104,7 @@ export function createCardView(host, source = {}, opts = {}) {
     } else if (k === 'h') {
       if (!st.done) { e.preventDefault(); revealNextHint(); }
     } else if (k === 's') {
-      if (!liveAsn() && !st.done) { e.preventDefault(); scratch.focus(); }
+      if (!liveAsn() && !st.done) { e.preventDefault(); openScratch(true, { focus: true }); }
     } else if (k === 'escape') {
       if (!solution.hidden && st.cleared) { e.preventDefault(); solution.hidden = true; }
       else if (t && t.blur) t.blur();

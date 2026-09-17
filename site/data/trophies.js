@@ -208,7 +208,7 @@ list.push(def('predicted-it', 'runs', 'Called It',
 
 list.push(def('night-owl-no', 'runs', 'Not a Night Owl',
   'Finish the Night Before run before 22:00.',
-  ctx => ctx.someRun(r => ctx.kindOf(r) === 'night' && r.status === 'done'
+  ctx => ctx.someRun(r => ctx.kindOf(r) === 'night' && r.status === 'done' && ctx.nightCounted(r)   // binder r1: an empty run is not a night
     && ctx.localHour(r.submittedAt) !== null && ctx.localHour(r.submittedAt) < 22)));
 
 /* ---- bosses ---- */

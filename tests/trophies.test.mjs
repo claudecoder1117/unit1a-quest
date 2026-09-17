@@ -90,7 +90,7 @@ const FIXTURES = {
   'flawless-page': (s) => addRun(s, { kind: 'page', items: items(10), xp: 540 }),
   'mock-90': (s) => addRun(s, { kind: 'mock', acc: 0.95, items: items(20) }),
   'predicted-it': (s) => addRun(s, { kind: 'mock', acc: 0.8, pred: 78, items: items(20) }),
-  'night-owl-no': (s) => addRun(s, { kind: 'night', submittedAt: new Date(2026, 8, 16, 20, 30, 0).getTime() }),
+  'night-owl-no': (s) => addRun(s, { kind: 'night', answered: 8, submittedAt: new Date(2026, 8, 16, 20, 30, 0).getTime() }),   // binder r1: a night counts only past the work floor
 
   'streak-3': (s) => { s.streak.best = 3; return s; },
   'streak-7': (s) => { s.streak.count = 7; return s; },
@@ -176,7 +176,7 @@ test('trophies: predicates are exact — a fixture does not earn its neighbour',
   const off = addRun(save(), { kind: 'mock', acc: 0.8, pred: 74, items: items(20) });
   assert.ok(!check(off).includes('predicted-it'));
   // Night Before finished at 22:10 is not "not a night owl"
-  const late = addRun(save(), { kind: 'night', submittedAt: new Date(2026, 8, 16, 22, 10, 0).getTime() });
+  const late = addRun(save(), { kind: 'night', answered: 8, submittedAt: new Date(2026, 8, 16, 22, 10, 0).getTime() });
   assert.ok(!check(late).includes('night-owl-no'));
   // a page with one non-clean item is not flawless
   const scrappy = addRun(save(), { kind: 'page', items: [...items(9), { credit: 1, attempt: 2, clean: false }] });
@@ -449,4 +449,20 @@ test('toast: is a no-op without a DOM and keeps the S4 duration', () => {
   assert.equal(toast('hello', { doc: null }), null);
   assert.equal(toastTrophy('first-blood', { doc: null }), null);
   assert.equal(toastTrophy('not-a-trophy', { doc: null }), null);
+});
+
+/* binder r1: three taps and "Hand it in" with nothing answered is neither a streak day nor a trophy (S9 #10) */
+test('trophies: night-owl-no needs a night that counted — an empty run earns nothing', () => {
+  const at = new Date(2026, 8, 16, 20, 30, 0).getTime();
+  const empty = addRun(save(), { kind: 'night', answered: 0, items: [], startedAt: at - 20_000, submittedAt: at });
+  assert.ok(!check(empty).includes('night-owl-no'), 'nothing answered');
+  const thin = addRun(save(), { kind: 'night', answered: 3, startedAt: at - 4 * 60_000, submittedAt: at });
+  assert.ok(!check(thin).includes('night-owl-no'), 'three items in four minutes is under the floor');
+  const long = addRun(save(), { kind: 'night', answered: 3, startedAt: at - 12 * 60_000, submittedAt: at });
+  assert.ok(check(long).includes('night-owl-no'), 'some answered and ten minutes of work counts');
+  const full = addRun(save(), { kind: 'night', answered: 8, startedAt: at - 60_000, submittedAt: at });
+  assert.ok(check(full).includes('night-owl-no'), 'eight answered counts');
+  // an older record without `answered` falls back to its item list
+  const legacy = addRun(save(), { kind: 'night', items: items(8), submittedAt: at });
+  assert.ok(check(legacy).includes('night-owl-no'));
 });

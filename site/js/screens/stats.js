@@ -75,53 +75,64 @@ function barRows(rows, { max = null, fmt = n0, empty = 'Nothing yet.' } = {}) {
 }
 
 /**
- * A sparkline over `points` = [{x-label, value|null}]. Nulls break the line (a day with no data is
- * not a zero). Draws at viewBox 0 0 300 60 and scales to the column.
+ * A sparkline over `points` = [{day, value|null}]. Nulls break the line (a day with no data is not a
+ * zero). Reads as a chart, not a stub: a baseline with one faint tick per day (an empty day is "not
+ * logged", not blank space), the first and last dates under the box, the value printed at the head
+ * dot. With fewer than four logged points a line would be a guess, so it prints the points as a list.
+ * The SVG stretches horizontally (`preserveAspectRatio="none"`) — strokes are non-scaling and the dots
+ * are round-capped zero-length strokes, so nothing turns into an ellipse at 1280 px.
  */
-function sparkline(points, { min = 0, max = 100, label = '', empty = 'No points logged yet.' } = {}) {
+function sparkline(points, { min = 0, max = 100, label = '', empty = 'No points logged yet.', unit = '' } = {}) {
   const W = 300, H = 60, P = 4;
-  const vals = points.map(p => p.value);
-  const known = vals.filter(v => Number.isFinite(v));
+  const known = points.filter(p => Number.isFinite(p.value));
   if (!known.length) return h('p.muted.fs-1', empty);
-  const lo = Math.min(min, ...known), hi = Math.max(max, ...known);
+  const today = points[points.length - 1]?.day;
+  const fmtPt = (p) => `${p.day === today ? 'today' : shortDate(p.day)} ${n0(p.value)}${unit}`;
+  if (known.length < 4) {
+    return h('p.st-spark-list.fs-1', { 'aria-label': label || 'trend' },
+      ...known.flatMap((p, i) => [i ? h('span.muted', ' · ') : null, h('span.mono', fmtPt(p))]),
+      h('span.muted', ` — ${known.length} logged day${known.length === 1 ? '' : 's'}; the line draws at four.`));
+  }
+  const lo = Math.min(min, ...known.map(p => p.value)), hi = Math.max(max, ...known.map(p => p.value));
   const span = hi - lo || 1;
   const x = (i) => P + (points.length <= 1 ? (W - 2 * P) / 2 : (i * (W - 2 * P)) / (points.length - 1));
   const y = (v) => H - P - ((v - lo) / span) * (H - 2 * P);
+  const NS = 'http://www.w3.org/2000/svg';
+  const mk = (tag, attrs) => { const n = document.createElementNS(NS, tag); for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, String(v)); return n; };
+  const svg = mk('svg', { viewBox: `0 0 ${W} ${H}`, class: 'st-spark', role: 'img', preserveAspectRatio: 'none', 'aria-label': label || 'trend' });
+  svg.append(mk('line', { x1: P, y1: H - P, x2: W - P, y2: H - P, class: 'st-spark-base' }));
+  points.forEach((p, i) => svg.append(mk('line', { x1: x(i).toFixed(1), y1: H - P, x2: x(i).toFixed(1), y2: H - P - 4, class: 'st-spark-tick', 'data-logged': String(Number.isFinite(p.value)) })));
   const segs = [];
   let cur = [];
   points.forEach((p, i) => {
-    if (Number.isFinite(p.value)) cur.push(`${x(i).toFixed(1)},${y(p.value).toFixed(1)}`);
+    if (Number.isFinite(p.value)) cur.push([x(i), y(p.value)]);
     else if (cur.length) { segs.push(cur); cur = []; }
   });
   if (cur.length) segs.push(cur);
+  const dot = (cx, cy, cls) => mk('polyline', { points: `${cx.toFixed(1)},${cy.toFixed(1)} ${(cx + 0.01).toFixed(1)},${cy.toFixed(1)}`, class: cls });
+  for (const seg of segs) {
+    if (seg.length === 1) { svg.append(dot(seg[0][0], seg[0][1], 'st-spark-dot')); continue; }
+    svg.append(mk('polyline', { points: seg.map(([a, b]) => `${a.toFixed(1)},${b.toFixed(1)}`).join(' '), class: 'st-spark-line' }));
+  }
   const lastI = points.map(p => Number.isFinite(p.value)).lastIndexOf(true);
-  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
-  svg.setAttribute('class', 'st-spark');
-  svg.setAttribute('role', 'img');
-  svg.setAttribute('preserveAspectRatio', 'none');
-  svg.setAttribute('aria-label', label || 'trend');
-  for (const s of segs) {
-    if (s.length === 1) {
-      const c = document.createElementNS(svg.namespaceURI, 'circle');
-      const [cx, cy] = s[0].split(',');
-      c.setAttribute('cx', cx); c.setAttribute('cy', cy); c.setAttribute('r', '2.5');
-      c.setAttribute('class', 'st-spark-dot');
-      svg.append(c);
-      continue;
-    }
-    const pl = document.createElementNS(svg.namespaceURI, 'polyline');
-    pl.setAttribute('points', s.join(' '));
-    pl.setAttribute('class', 'st-spark-line');
-    svg.append(pl);
-  }
+  const wrap = h('div.st-spark-wrap');
   if (lastI >= 0) {
-    const c = document.createElementNS(svg.namespaceURI, 'circle');
-    c.setAttribute('cx', x(lastI).toFixed(1)); c.setAttribute('cy', y(points[lastI].value).toFixed(1));
-    c.setAttribute('r', '3'); c.setAttribute('class', 'st-spark-head');
-    svg.append(c);
+    svg.append(dot(x(lastI), y(points[lastI].value), 'st-spark-head'));
+    const px = x(lastI) / W, py = y(points[lastI].value) / H;
+    wrap.append(h('span.st-spark-val.mono', {
+      'aria-hidden': 'true',
+      style: { left: `${(px * 100).toFixed(1)}%`, top: `${(py * 100).toFixed(1)}%` },
+      dataset: { side: px > 0.8 ? 'left' : 'right' },
+    }, `${n0(points[lastI].value)}${unit}`));
   }
-  return svg;
+  wrap.prepend(svg);
+  const first = points[0], last = points[points.length - 1];
+  return h('div.st-spark-box',
+    wrap,
+    h('div.st-spark-axis.fs-1.muted', { 'aria-hidden': 'true' },
+      h('span', shortDate(first.day)),
+      h('span', `${known.length} of ${points.length} days logged`),
+      h('span', last.day === today ? 'today' : shortDate(last.day))));
 }
 
 function section(id, title, ...body) {
@@ -279,7 +290,7 @@ export function mountStats() {
           const seen = ft.filter(p => Number.isFinite(p.value));
           return h('div',
             h('div.st-readi-spark', sparkline(ft, {
-              min: 0, max: 100, label: 'First-try percent over the last 14 days',
+              min: 0, max: 100, label: 'First-try percent over the last 14 days', unit: '%',
               empty: 'No graded submits logged yet — this line is the share you get right on the first try.',
             })),
             seen.length ? h('p.fs-1.muted',

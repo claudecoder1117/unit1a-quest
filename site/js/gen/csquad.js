@@ -234,7 +234,7 @@ function buildItem(drawn, ask) {
   } else {
     misconceptions.push({
       part: 'x', answer: fmt(drawn.values.angle), tag: 'forgot-second-root',
-      msg: 'Dividing both sides by x throws away a root — factor the x out instead and set BOTH factors to 0.',
+      msg: 'Dividing both sides by x throws away a root — factor instead and set BOTH factors to 0.',
     });
   }
   if (spec.asks.length > 1) {

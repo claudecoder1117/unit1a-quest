@@ -276,7 +276,12 @@ function route() {
   document.title = `${ROUTE_META[m.pattern]?.[0] ?? 'The Packet'} · The Packet`;
   try {
     const r = handler(m.params, query, { view, state: getState(), path });
-    if (r !== undefined) mount(view, r); else { view.classList.remove('view-enter'); void view.offsetWidth; view.classList.add('view-enter'); }
+    if (r && typeof r.then === 'function') {
+      // home r1: lazy screens (screens/index.js) resolve to their render once the module has loaded.
+      const mine = current;
+      r.then((rr) => { if (current === mine) { if (rr !== undefined) mount(view, rr); window.scrollTo(0, 0); } })
+        .catch((e) => { if (current !== mine) return; console.error('route', path, e); mount(view, el => { el.append(h('section.screen.placeholder', h('h1', 'Something broke on this screen'), h('p.muted.mono', String(e?.message || e)), h('p', h('a.btn', { href: '#/today' }, 'Back to Today')))); }); });
+    } else if (r !== undefined) mount(view, r); else { view.classList.remove('view-enter'); void view.offsetWidth; view.classList.add('view-enter'); }
   } catch (e) {
     console.error('route', path, e);
     mount(view, el => { el.append(h('section.screen.placeholder', h('h1', 'Something broke on this screen'), h('p.muted.mono', String(e?.message || e)), h('p', h('a.btn', { href: '#/today' }, 'Back to Today')))); });

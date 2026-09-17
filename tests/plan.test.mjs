@@ -771,3 +771,48 @@ test('S7 cheat sheet: personalised lines first, then the fixed sheet', async (t)
     assert.equal(fixed, sheetData.FIXED);
   });
 });
+
+/* ------------------------------------------------------------------ binder r1: Night Before honesty + notation */
+
+import { readFileSync } from 'node:fs';
+import { tileText } from '../site/js/screens/binder.js';
+import { nightCounted, NIGHT_FLOOR } from '../site/js/trophies.js';
+
+test('binder r1: the Night Before sheet preview renders mini-markup, never prints it raw', () => {
+  const s = JSON.parse(readFileSync(new URL('../qa/fixtures/midweek.json', import.meta.url), 'utf8'));
+  const raw = sheetData.personalLines(s, { max: 4 });
+  assert.ok(raw.some(l => /\{(ray|seg|line|ang|m) /.test(l.text)), 'the fixture carries notation markup');
+  const lines = night.sheetPreviewLines(s);
+  assert.equal(lines.length, raw.length);
+  for (const l of lines) {
+    assert.ok(!l.text.includes('{') && !l.title.includes('{'), `raw markup leaked: ${l.text}`);
+  }
+  assert.ok(lines.some(l => l.text.includes('class="mf mf-ray"')), 'the ray is a real overline span, as #/sheet draws it');
+});
+
+test('binder r1: the mini-mock scores the FIRST submit and never a retry', () => {
+  assert.deepEqual(night.miniVerdict({ graded: 0, result: null }), { answered: false, firstTry: false }, 'no submit = skipped');
+  assert.deepEqual(night.miniVerdict({ graded: 1, result: null }), { answered: true, firstTry: false }, 'a submit then hand-in counts, wrong');
+  assert.deepEqual(night.miniVerdict({ graded: 2, result: { cleared: true, firstTry: true } }), { answered: true, firstTry: true });
+  assert.deepEqual(night.miniVerdict({ graded: 2, result: { cleared: true, firstTry: false } }), { answered: true, firstTry: false }, 'retried to green is still a miss');
+  assert.deepEqual(night.miniVerdict({ graded: 1, result: { cleared: false, firstTry: false } }), { answered: true, firstTry: false });
+});
+
+test('binder r1: a night counts only past the work floor (8 answered, or some answered and 10 minutes)', () => {
+  assert.equal(NIGHT_FLOOR.items, 8);
+  assert.equal(nightCounted({ answered: 0, startedAt: 0, submittedAt: 60 * 60_000 }), false);
+  assert.equal(nightCounted({ answered: 2, startedAt: 0, submittedAt: 5 * 60_000 }), false);
+  assert.equal(nightCounted({ answered: 2, startedAt: 0, submittedAt: NIGHT_FLOOR.ms }), true);
+  assert.equal(nightCounted({ answered: 8, startedAt: 0, submittedAt: 1000 }), true);
+});
+
+test('binder r1: list rows say what the tile is — the term for vocab, the problem for the rest, markup kept', async () => {
+  const { byId } = await import('../site/data/cards.js');
+  assert.equal(tileText(byId['voc-01'], 'voc-01'), 'point');
+  assert.equal(tileText(byId['def-01'], 'def-01'), 'point');
+  assert.ok(!tileText(byId['quad-01'], 'quad-01').startsWith('Solve by factoring'), 'the constant instruction is dropped');
+  assert.ok(/x²|x\^2/.test(tileText(byId['quad-01'], 'quad-01')), 'the equation stays');
+  assert.ok(!tileText(byId['fac-01'], 'fac-01').startsWith('Factor each'));
+  assert.ok(/\{seg AC\}/.test(tileText(byId['ang-04'], 'ang-04')), 'mini-markup is kept for mathfmt, not stripped to bare letters');
+  assert.equal(tileText(null, 'x-1'), 'x-1');
+});

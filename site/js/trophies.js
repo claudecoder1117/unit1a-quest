@@ -158,6 +158,21 @@ export function localHour(ms) {
   return Number.isNaN(d.getTime()) ? null : d.getHours();
 }
 
+/**
+ * The Night Before counts (daily goal, `night-owl-no`) only when it was WORK (S9 #10 "Honest"): at least
+ * `NIGHT_FLOOR.items` answered across its blocks, or some answered and `NIGHT_FLOOR.ms` on the clock.
+ * `run.answered` is the cross-block total night.js writes; older records fall back to their item list.
+ * Three taps and "Hand it in" on an empty mini-mock is neither a streak day nor a trophy.
+ */
+export const NIGHT_FLOOR = Object.freeze({ items: 8, ms: 10 * 60 * 1000 });
+export function nightCounted(run) {
+  if (!isObj(run)) return false;
+  const answered = Number.isFinite(run.answered) ? run.answered : (Array.isArray(run.items) ? run.items.length : 0);
+  if (answered >= NIGHT_FLOOR.items) return true;
+  const ms = num(run.submittedAt) - num(run.startedAt);
+  return answered > 0 && ms >= NIGHT_FLOOR.ms;
+}
+
 /* ------------------------------------------------------------------ ctx */
 
 /**
@@ -243,6 +258,7 @@ export function makeCtx(save) {
     won: wonRun,
     flawless: flawlessRun,
     localHour,
+    nightCounted,
   };
   return ctx;
 }

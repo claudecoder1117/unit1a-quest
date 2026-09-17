@@ -230,7 +230,7 @@ const ang04 = {
     { say: 'Whole sides: AC = 19 + 19 = 38, CE = 38, AE = 8.', math: 'P = 38 + 38 + 8 = 84' },
   ],
   misconceptions: [
-    { part: 'm', answer: '5', tag: 'forgot-second-root', msg: '(m − 5)(m + 2) = 0 has two roots — list both, then decide which one to keep.' },
+    { part: 'm', answer: '5', tag: 'forgot-second-root', msg: 'That\'s one root — a quadratic has two. Set the other factor to 0, list both, then decide which one to keep.' },
     { part: 'keep', answer: 'keep -2', tag: 'kept-invalid-root', msg: 'm = −2 makes CB = 3(−2) + 4 = −2 — a side cannot have negative length.' },
     { part: 'keep', answer: 'reject 5', tag: 'rejected-valid-root', msg: 'm = 5 gives CB = 19 and DE = 19 — positive lengths, so 5 is the one to keep.' },
     { part: 'rest', answer: '19', tag: 'arithmetic', msg: '19 is the half-side CB. BA = n − 1 equals 19, so n is one more than that.' },
@@ -308,8 +308,8 @@ const ang05 = {
     { say: 'Both roots give positive measures, so both cases are real and both must be stated.', math: 'AH bisects ∠MAC only when x = −8' },
   ],
   misconceptions: [
-    { part: 'x', answer: '-8', tag: 'forgot-second-root', msg: '(x + 8)(x + 1) = 0 has two roots — set the other factor to 0 as well.' },
-    { part: 'x', answer: '-1', tag: 'forgot-second-root', msg: '(x + 8)(x + 1) = 0 has two roots — set the other factor to 0 as well.' },
+    { part: 'x', answer: '-8', tag: 'forgot-second-root', msg: 'That\'s one root — there\'s another. Set the other factor to 0 as well.' },
+    { part: 'x', answer: '-1', tag: 'forgot-second-root', msg: 'That\'s one root — there\'s another. Set the other factor to 0 as well.' },
     { part: 'x', answer: '8', tag: 'sign-flip', msg: 'x + 8 = 0 gives x = −8, not 8. Check the sign when you move the 8 across.' },
     { part: 'x', answer: '1', tag: 'sign-flip', msg: 'x + 1 = 0 gives x = −1, not 1.' },
     { part: 'cases', answer: '-8', tag: 'missing-case', msg: 'Two roots means two cases — the x = −1 case (4° and 18°) has to be worked and stated too, even though the answer there is no.' },
@@ -350,7 +350,7 @@ const ang06 = {
   misconceptions: [
     { part: 'm', answer: '30', tag: 'gave-complement', msg: '30 is the complement — the angle itself is x = 60.' },
     { part: 'm', answer: '120', tag: 'gave-supplement', msg: '120 is the supplement — the angle itself is x = 60.' },
-    { part: 'm', answer: '52.5', tag: 'wrong-side-supp', msg: '"30 less than five times the complement" is 5(90 − x) − 30, and it equals the SUPPLEMENT 180 − x — check which side each piece is on.' },
+    { part: 'm', answer: '75', tag: 'wrong-side-supp', msg: '75 comes from 180 − x = 5(90 − x) + 30. "30 less than" means subtract: 180 − x = 5(90 − x) − 30.' },
     { part: 'setup', answer: '180-x=5(90-x)+30', tag: 'wrong-side-supp', msg: '"30 less than" means subtract 30 from the five-times piece: 180 − x = 5(90 − x) − 30.' },
   ],
   verified: true,
@@ -413,7 +413,7 @@ const ang08 = {
   misconceptions: [
     { part: 'supp', answer: '30', tag: 'gave-angle', msg: 'x = 30 is the angle — the question asks for its supplement, 180 − x.' },
     { part: 'supp', answer: '60', tag: 'gave-complement', msg: '60 is the complement — the question asks for the supplement, 180 − 30.' },
-    { part: 'supp', answer: '120', tag: 'reversed-ratio', msg: 'That comes from 2(90 − x)·… reversed — the supplement is the 5, the complement the 2: 2(180 − x) = 5(90 − x).' },
+    { part: 'supp', answer: '120', tag: 'gave-complement', msg: '120 is the supplement of the complement (180 − 60). The question wants the supplement of the ANGLE: 180 − 30 = 150.' },
     { part: 'setup', answer: '5(180-x)=2(90-x)', tag: 'reversed-ratio', msg: 'Supplement : complement = 5 : 2 cross-multiplies to 2(180 − x) = 5(90 − x) — the 5 pairs with the complement side.' },
   ],
   verified: true,
@@ -447,7 +447,7 @@ const ang09 = {
     { say: 'x = 0 is a zero angle (and makes both products 0) — reject it.', math: 'angle = 50°   (complement 40°, supplement 130°)' },
   ],
   misconceptions: [
-    { part: 'x', answer: '50', tag: 'forgot-second-root', msg: 'Dividing both sides by x threw away x = 0. Factor 9x(x − 50) = 0 instead — list both roots, then reject the one that is not an angle.' },
+    { part: 'x', answer: '50', tag: 'forgot-second-root', msg: 'Dividing both sides by x throws away a root. Factor instead and set BOTH factors to 0 — list both roots, then reject the one that is not an angle.' },
     { part: 'keep', answer: 'keep 0', tag: 'kept-invalid-root', msg: 'An angle of 0° is not an angle — and it makes both products 0, so the ratio is meaningless. Reject it.' },
     { part: 'keep', answer: 'reject 50', tag: 'rejected-valid-root', msg: '50° has a complement of 40° and a supplement of 130°, all positive — keep it.' },
     { part: 'angle', answer: '40', tag: 'gave-complement', msg: '40 is the complement — the question asks for the angle, x = 50.' },
@@ -496,8 +496,8 @@ const ang10 = {
     { say: 'Both roots give positive angle measures (m∠BFC = 81 and 84.5), so both are kept — the teacher\'s key lists both.', math: 'x = 3: 9°, 171°   ·   x = −1/2: 5.5°, 174.5°' },
   ],
   misconceptions: [
-    { part: 'x', answer: '3', tag: 'forgot-second-root', msg: 'There is a second root — set each factor of (2x + 1)(x − 3) to 0.' },
-    { part: 'x', answer: '-1/2', tag: 'forgot-second-root', msg: 'There is a second root — set each factor of (2x + 1)(x − 3) to 0.' },
+    { part: 'x', answer: '3', tag: 'forgot-second-root', msg: 'That\'s one root — there\'s another. Set each factor to 0.' },
+    { part: 'x', answer: '-1/2', tag: 'forgot-second-root', msg: 'That\'s one root — there\'s another. Set each factor to 0.' },
     { part: 'x', answer: '1/2', tag: 'sign-flip', msg: '2x + 1 = 0 gives x = −1/2, not +1/2.' },
     { part: 'keep', answer: 'reject -1/2', tag: 'rejected-valid-root', msg: 'A negative x is not automatically wrong — at x = −1/2, m∠CFD = 5.5 and m∠BFC = 84.5, both positive. Keep it.' },
     { part: 'cases', answer: '3', tag: 'missing-case', msg: 'Two roots, two cases — work out m∠CFD and m∠DFE for x = −1/2 as well.' },

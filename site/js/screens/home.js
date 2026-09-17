@@ -175,8 +175,14 @@ function sparklineSvg(points) {
   const xs = i => (n === 1 ? w / 2 : (i / (n - 1)) * (w - 4) + 2);
   const ys = r => hgt - 2 - (Math.max(0, Math.min(100, r)) / 100) * (hgt - 4);
   const d = points.map((p, i) => `${i ? 'L' : 'M'} ${xs(i).toFixed(1)} ${ys(p.r).toFixed(1)}`).join(' ');
+  // home r1: a bare 96×24 stroke read as a rendering glitch — a baseline, an end dot and a caption make it a chart.
+  const first = points[0].r, last = points[n - 1].r;
   return h('div.rd-spark', { role: 'img', 'aria-label': `Readiness over the last ${n} days: ${points.map(p => p.r).join(', ')}` },
-    svg(`0 0 ${w} ${hgt}`, `<path d="${d}"/>`));
+    svg(`0 0 ${w} ${hgt}`,
+      `<line class="spark-base" x1="2" y1="${hgt - 2}" x2="${w - 2}" y2="${hgt - 2}"/>` +
+      `<path d="${d}"/>` +
+      `<circle class="spark-dot" cx="${xs(n - 1).toFixed(1)}" cy="${ys(last).toFixed(1)}" r="2.5"/>`),
+    h('span.spark-cap.mono', `${n} day${n === 1 ? '' : 's'} · ${first} → ${last}`));
 }
 
 /* ---------------- the screen ---------------- */
@@ -193,7 +199,14 @@ function render(el, state, today) {
   // resumes an interrupted run, which is why it stays the first-time link.
   const bossHref = (id) => `#/boss/${id}${(state.runs ?? []).some(r => r?.kind === `boss:${id}`) ? '?start=1' : ''}`;
 
-  const primary = h('a.btn.btn-primary.home-primary', { href: act.kind === 'boss' && boss ? bossHref(boss.id) : act.href, dataset: { kind: act.kind } }, act.label);
+  // home r1: a long breakdown ('RUN NEXT · 17 reviews + 4 new + 4 variants') wraps to two lines in the 56 px
+  // button at 375; past ~24 chars the button says the count and the breakdown moves to the sub-line.
+  let label = act.label, breakdown = null;
+  if (act.kind === 'page' && act.page && act.label.length > 24) {
+    breakdown = act.label.replace(/^RUN NEXT · /, '');
+    label = `RUN NEXT · ${act.page.queue.length} items`;
+  }
+  const primary = h('a.btn.btn-primary.home-primary', { href: act.kind === 'boss' && boss ? bossHref(boss.id) : act.href, dataset: { kind: act.kind } }, label);
   primary.addEventListener('click', (ev) => {
     if (act.kind !== 'page') return;
     ev.preventDefault();
@@ -204,6 +217,7 @@ function render(el, state, today) {
   if (act.kind === 'page' && act.page) {
     const m = act.page.meta;
     const est = Math.round(act.page.queue.reduce((t, it) => t + ({ 1: 0.5, 2: 1.5, 3: 3, 4: 5 }[it.tier] ?? 1.5), 0));
+    if (breakdown) sub.push(breakdown);
     sub.push(`~${est} min`, `seed ${m.seedTag}`);
     if (m.warn) sub.push(`plan wants ${m.q} new a day — holding at 12`);
     if (m.carried.length) sub.push(`${m.carried.length} hard item${m.carried.length === 1 ? '' : 's'} carried to the next page`);

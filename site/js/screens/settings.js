@@ -250,7 +250,7 @@ export function mountSettings() {
         : h('p.set-now',
           h('strong.set-now-n.mono', String(live.r)),
           h('span', live.band && live.band.label ? `· ${live.band.label}` : ''),
-          live.provisional ? h('span.muted', '· provisional') : null);
+          live.provisional ? h('span.muted', `· provisional${Number.isFinite(live.tested) ? ` · over ${live.tested} of ${live.skillsTotal ?? 19} skills tested` : ''}`) : null);
       const [provExpr, provTail] = String(FORMULA_PROVISIONAL).split('—');
       return card('How Readiness is computed',
         now,
@@ -262,7 +262,7 @@ export function mountSettings() {
         formula(provExpr.trim()),
         provTail ? hint(provTail.trim().replace(/^./, (c) => c.toUpperCase()) + '.') : null,
         h('dl.set-legend',
-          h('dt.mono', 'M'), h('dd', 'Mastery — Σ w · m_shown / 100 over the 19 skills, weighted the way the test is. A skill shows m_shown = m × min(1, n / 5), so two lucky clears never read as green.'),
+          h('dt.mono', 'M'), h('dd', 'Mastery — Σ w · m_shown / 100 over the 19 skills, weighted the way the test is. A skill shows m_shown = m × min(1, n / 5), so two lucky clears never read as green. While provisional, M runs over the skills tested so far only (n ≥ 1) — an untested skill is an unknown, not a zero.'),
           h('dt.mono', 'A'), h('dd', 'Accuracy of your most recent Mock, × 0.8 for a mini-mock (the day-1 Baseline and the Night-Before mock).'),
           h('dt.mono', 'C'), h('dd', 'Coverage — the share of non-bonus cards cleared at least once. It is exactly your Binder fill.')),
         h('p.set-bands', ...bandRanges().flatMap(([range, label], i) => [

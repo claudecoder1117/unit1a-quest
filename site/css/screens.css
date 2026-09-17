@@ -731,6 +731,11 @@ body:has(.sw-pill:not([hidden])) .set-msg { top: calc(var(--header-h) + 64px); }
    pointing at the same place, and it steals the first tab stop from the answer. */
 .run-stage .card-back { display: none; }
 .run-stage .card-head { padding-left: 0; }
+/* r1: inside a run the dock's "Continue ↵ / N" is THE continue — the result strip's own primary sat
+   directly above it as a second identical button. "Worked solution" / "Another ◆" stay in the strip. */
+.run-stage .card-result-actions .btn-primary { display: none; }
+.run-stage .card-result-actions:not(:has(.btn:not(.btn-primary))) { display: none; }
+.run-progress-retry { color: var(--warn); }
 .run-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
 .run-actions .btn { min-height: var(--tap); display: inline-flex; align-items: center; }
 /* `.card` is not a shared utility in this build (nothing defines it), so the two surfaces this screen
@@ -755,10 +760,20 @@ body:has(.sw-pill:not([hidden])) .set-msg { top: calc(var(--header-h) + 64px); }
 .blitz-meter-fill { display: block; height: 100%; background: var(--accent); transform-origin: left center; }
 
 /* A 60-second sprint lives in the thumb zone: the prompt sits at the top of the card and the answer row
-   is pinned to its bottom edge, so the tap target never moves between items of different stem lengths. */
-.blitz-stage { display: grid; gap: 10px; align-content: start; }
-.blitz-card { padding: 16px; display: grid; gap: 14px; grid-template-rows: auto 1fr; min-height: min(36vh, 320px); }
+   is pinned to its bottom edge, so the tap target never moves between items of different stem lengths.
+   r1: the screen fills the viewport (head · meter · stage) and the card fills the stage, so the answer
+   row sits at the bottom of an 844 px phone too — it used to size to content and end mid-screen with
+   340 px of empty ground under it (INTEGRATION-W4 #3). The miss line ("−3 s · …") is the card's middle
+   row, just above the thumb. On a laptop the column is capped and centred. */
+.run-screen.blitz { min-height: calc(100dvh - var(--header-h) - 40px); grid-template-rows: auto auto 1fr; }
+.blitz-stage { display: grid; gap: 10px; grid-template-rows: minmax(0, 1fr) auto; align-content: stretch; }
+.blitz-card { padding: 16px; display: grid; gap: 14px; grid-template-rows: auto 1fr auto; min-height: min(36vh, 320px); max-height: 560px; align-self: stretch; width: 100%; }
+.blitz-card .blitz-flash { align-self: end; }
 .blitz-answers { align-self: end; }
+@media (min-width: 1024px) {
+  .run-screen.blitz { max-width: 680px; margin-inline: auto; width: 100%; }
+  .blitz-card { align-self: start; }
+}
 .blitz-stem { font-size: var(--fs-3); line-height: 1.35; }
 .blitz-answers { display: grid; gap: 8px; }
 .blitz-answers[data-locked="true"] { opacity: .55; }
@@ -785,7 +800,7 @@ body:has(.sw-pill:not([hidden])) .set-msg { top: calc(var(--header-h) + 64px); }
 .blitz-go { min-height: var(--input-h); }
 .blitz-flash { margin: 0; min-height: 1.4em; font-size: var(--fs-2); }
 .blitz-hint { margin: 0; }
-.blitz-flash[data-tone="ok"] { color: var(--ok); }
+.blitz-flash[data-tone="ok"] { color: var(--ok-ink, var(--ok)); }
 .blitz-flash[data-tone="bad"] { color: var(--bad); }
 .blitz-flash[data-tone="warn"] { color: var(--warn); }
 
@@ -806,7 +821,7 @@ body:has(.sw-pill:not([hidden])) .set-msg { top: calc(var(--header-h) + 64px); }
 .sum-fact-note { line-height: 1.2; }
 
 .sum-verdict p { margin: 0 0 4px; }
-.sum-pass { color: var(--ok); }
+.sum-pass { color: var(--ok-ink, var(--ok)); }
 .sum-fail { color: var(--warn); }
 
 .sum-mint h2, .sum-hist h2, .sum-skills h2, .sum-readiness h2 { margin: 0 0 8px; }
@@ -836,15 +851,16 @@ body:has(.sw-pill:not([hidden])) .set-msg { top: calc(var(--header-h) + 64px); }
 .sum-bar-fill { background: var(--accent); z-index: 1; }
 .sum-bar-n { text-align: right; color: var(--muted); }
 .sum-bar-delta { font-family: var(--font-mono); text-align: right; }
-.sum-bar-delta[data-tone="ok"] { color: var(--ok); }
+.sum-bar-delta[data-tone="ok"] { color: var(--ok-ink, var(--ok)); }   /* r1: --ok is 4.11:1 on the light --bg at 13 px; --ok-ink (polish.css) is ≥ 4.5:1 */
 .sum-bar-delta[data-tone="bad"] { color: var(--bad); }
+.sum-bar-delta[data-tone="flat"], .sum-rd-delta[data-tone="flat"] { color: var(--muted); }
 
 .sum-rd-line { margin: 0; display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
 .sum-rd-from { font-size: var(--fs-4); color: var(--muted); }
 .sum-rd-arrow { color: var(--muted); }
 .sum-rd-to { font-size: var(--fs-5); font-weight: 700; }
 .sum-rd-delta { font-family: var(--font-mono); font-size: var(--fs-3); }
-.sum-rd-delta[data-tone="ok"] { color: var(--ok); }
+.sum-rd-delta[data-tone="ok"] { color: var(--ok-ink, var(--ok)); }
 .sum-rd-delta[data-tone="bad"] { color: var(--bad); }
 .sum-readiness p + p { margin: 4px 0 0; }
 .sum-plan p { margin: 0; }

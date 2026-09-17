@@ -457,3 +457,27 @@ test('boss: hearts are clamped and flawless needs all three, clean (S4 Hearts)',
   assert.equal(recordBossRun(s, run({ seed: 's4', hearts: HEARTS, flagged: true })).record.flawless, false);
   assert.equal(recordBossRun(s, run({ seed: 's5', hearts: HEARTS })).record.flawless, true);
 });
+
+/* === mock r1 (visual QA fixer, round 1) === */
+test('r1: the heart shatters AFTER the pips are redrawn (S5: 4 shards, 300 ms — drawHearts() rebuilds the pips)', async () => {
+  // drawHearts() does hearts.replaceChildren(); calling it after shatter() detached the shards 0.1 ms
+  // after they were added, so the S5 signature never painted. The order is pinned here because the
+  // suite has no DOM; the Playwright check lives in the r1 fixer's evidence.
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(new URL('../site/js/screens/boss.js', import.meta.url), 'utf8');
+  const handler = src.slice(src.indexOf("bus.on('card:wrong'"), src.indexOf("bus.on('card:cleared'"));
+  const draw = handler.indexOf('drawHearts()');
+  const shatter = handler.indexOf('shatter(st.hearts)');
+  assert.ok(draw > 0 && shatter > 0, 'both calls present in the card:wrong handler');
+  assert.ok(draw < shatter, 'drawHearts() runs before shatter(st.hearts)');
+  assert.ok(src.includes("h('span.boss-shard'") && src.includes('for (let i = 0; i < 4; i++)'), 'four shards');
+});
+
+test('r1: a blank B4 setup can be skipped on purpose — no heart, flawless forfeited (S3, OPEN-ISSUES B4)', async () => {
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(new URL('../site/js/screens/boss.js', import.meta.url), 'utf8');
+  assert.ok(src.includes("bus.on('card:graded'") && src.includes('function skipSetup('), 'the blank-setup escape hatch exists');
+  const skip = src.slice(src.indexOf('function skipSetup('), src.indexOf('function keepInView('));
+  assert.ok(skip.includes('st.setupMiss = true'), 'skipping forfeits flawless');
+  assert.equal(skip.includes('st.hearts'), false, 'skipping never touches the hearts');
+});

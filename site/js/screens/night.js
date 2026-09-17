@@ -24,14 +24,17 @@
 // Routing: `#/night` and `#/morning` are aliases of `#/run/night` / `#/run/morning` (app.js ALIASES), so
 // this module also carries the `/run/:kind/:id?` dispatcher until T16's run.js lands — see notes/T14.md.
 
-import { h, setHeader } from '../app.js';
+import { h, bus, setHeader } from '../app.js';
 import { getState, update } from '../store.js';
+import { mathfmt } from '../mathfmt.js';
+import { nightCounted, NIGHT_FLOOR } from '../trophies.js';
 import { todayISO, daysUntilTest, isQuietHours, timeHM } from '../days.js';
 import { readiness, weakSpots, latestMock } from '../readiness.js';
 import { dueList, checkDailyGoal, dailyRecord } from '../schedule.js';
 import { modeFor } from '../plan.js';
 import { tileRarity } from '../rarity.js';
 import { createSequence, mountJump } from './onboard.js';
+import { createCardView } from './card.js';
 import { personalLines } from '../../data/sheet.js';
 
 /* ------------------------------------------------------------------ lazy data */
@@ -173,7 +176,7 @@ export function morningItems(save) {
 /* ------------------------------------------------------------------ the run record */
 
 /** Push a `night` / `morning` run record (S6 `runs`). `accuracy` is written only when it was earned. */
-function writeRun(save, { kind, startedAt, submittedAt, items, accuracy = null, limitMs = null }) {
+function writeRun(save, { kind, startedAt, submittedAt, items, accuracy = null, limitMs = null, answered = null }) {
   if (!Array.isArray(save.runs)) save.runs = [];
   const n = save.runs.filter(r => String(r?.kind).split(':')[0] === kind).length + 1;
   const rec = {
@@ -184,6 +187,7 @@ function writeRun(save, { kind, startedAt, submittedAt, items, accuracy = null, 
     })),
     flagged: false, splits: [],
   };
+  if (Number.isFinite(answered)) rec.answered = answered;      // every block's answered count (trophies.nightCounted)
   if (accuracy != null && Number.isFinite(accuracy)) { rec.accuracy = accuracy; rec.score = Math.round(accuracy * 100); rec.scoreMax = 100; }
   save.runs.push(rec);
   return rec;
@@ -213,13 +217,162 @@ function closingCard(el, { quiet, onKeepGoing, onDone, save }) {
     )));
 }
 
+/**
+ * The four personal lines as HTML: mini-markup ({ray AB}, {seg AB}, x^2) rendered the way #/sheet
+ * renders it (S9 #3 "notation is real notation … everywhere"), never printed raw. Pure — tests read it.
+ */
+export function sheetPreviewLines(save, { max = 4 } = {}) {
+  return personalLines(save, { max }).map(l => ({ id: l.id, title: mathfmt(l.title), text: mathfmt(l.text) }));
+}
+
 function sheetPreview(save) {
-  const lines = personalLines(save, { max: 4 });
+  const lines = sheetPreviewLines(save);
   if (!lines.length) return null;
   return h('div.card.nb-sheet-preview',
     h('h2.fs-3', 'On your sheet tonight'),
-    h('ul.nb-sheet-list', lines.map(l => h('li', h('b', l.title), ' ', h('span.muted', l.text)))),
+    h('ul.nb-sheet-list', lines.map(l => h('li', h('b', { html: l.title }), ' ', h('span.muted', { html: l.text })))),
     h('p', h('a.btn', { href: '#/sheet' }, 'Open the sheet')));
+}
+
+/* ------------------------------------------------------------------ the mini-mock runner (block 3) */
+
+/**
+ * One item's verdict from what the mock saw: the first graded submit is the answer. A finished card
+ * scores its own `firstTry`; a card handed in (or moved past) after a submit is answered and wrong;
+ * a card that never received a submit is skipped — listed, not scored.
+ */
+export function miniVerdict({ graded = 0, result = null } = {}) {
+  if (result) return { answered: true, firstTry: result.firstTry === true && result.cleared === true };
+  return graded > 0 ? { answered: true, firstTry: false } : { answered: false, firstTry: false };
+}
+
+/**
+ * Block 3 runs the Card view under the Mock's rules (S7: no hints, no solutions, no per-item feedback):
+ * the FIRST graded submit of a box is the verdict. A wrong first answer locks the item and offers
+ * "Next question" — there is no retry loop to green and nothing is coached mid-mock — and the record
+ * is written the moment the answer lands, so "Hand it in" keeps every item that received a submit.
+ * The feedback strips the Card view draws are hidden by css/polish.css (`.nb-mini`). T14 §7 asked T13
+ * for the real Mock runner; until it is exposed this is the same contract in one screen-sized function.
+ */
+function createMiniMock(host, cfg = {}) {
+  const items = (cfg.items ?? []).filter(Boolean);
+  const total = items.length;
+  const results = [];
+  let i = 0, view = null, destroyed = false, offBus = null, cur = null;   // cur = { index, sub } of the open item
+
+  const root = h('section.screen.ob-run.nb-mini', { 'aria-label': 'Mini-mock' });
+  const counter = h('span.ob-run-count.mono', '');
+  const ticks = h('ol.ob-ticks', { role: 'progressbar', 'aria-valuemin': '0', 'aria-valuemax': String(total), 'aria-valuenow': '0', 'aria-label': 'Mini-mock progress' });
+  const actions = h('div.ob-run-actions');
+  root.append(
+    h('header.ob-run-head',
+      h('div.ob-run-headline', h('h1.fs-3.ob-run-title', 'Mini-mock'), cfg.badge ?? null, counter),
+      ticks,
+      h('div.ob-run-meta', h('p.ob-run-sub.muted.fs-1', cfg.sub || ''), actions)));
+  const stage = h('div.ob-run-stage');
+  const nextRow = h('div.nb-mini-next', { hidden: true });
+  root.append(stage, nextRow);
+  host.append(root);
+
+  const tickState = (n) => {
+    const r = results[n];
+    if (r) return r.answered ? (r.firstTry ? 'clean' : 'wrong') : 'skip';
+    return n === i ? 'now' : 'todo';
+  };
+  function draw() {
+    ticks.setAttribute('aria-valuenow', String(results.filter(Boolean).length));
+    counter.textContent = total ? `${Math.min(i + 1, total)} / ${total}` : '';
+    ticks.replaceChildren(...items.map((_, n) => h('li.ob-tick', { dataset: { state: tickState(n) } })));
+    actions.replaceChildren(h('button.btn.btn-ghost.ob-quit', { type: 'button', onclick: () => cfg.onQuit?.() }, cfg.quitLabel || 'Hand it in'));
+  }
+  function teardownView() {
+    if (offBus) { offBus(); offBus = null; }
+    if (view) { try { view.destroy(); } catch { /* gone */ } view = null; }
+    stage.replaceChildren();
+    delete stage.dataset.locked;
+    nextRow.hidden = true; nextRow.replaceChildren();
+  }
+  /** Write (or refine) the record for item `index`; `cfg.onItem` hears each item exactly once. */
+  function record(index, sub, result) {
+    const item = items[index];
+    const v = miniVerdict({ graded: sub.graded, result });
+    const fields = {
+      key: item.key, index, item, result, ...v, outcome: v.answered ? (v.firstTry ? 'clean' : 'wrong') : 'skip',
+      scratch: stage.querySelector('.card-scratch')?.value ?? results[index]?.scratch ?? '',
+      stem: view?.item?.stem ?? results[index]?.stem ?? '',
+      solution: (view?.item?.solution ?? results[index]?.solution ?? []).slice(),
+      itemId: result?.id ?? view?.item?.id ?? item.source?.id ?? null,
+    };
+    if (results[index]) { Object.assign(results[index], fields); return results[index]; }
+    const rec = results[index] = fields;
+    try { cfg.onItem?.(rec, item, index); } catch (e) { console.error('mini.onItem', e); }
+    return rec;
+  }
+  /** After the first wrong: every box locks, the dock's Submit greys, and the only way is forward. */
+  function lock() {
+    for (const e of view?.state?.entries ?? []) { try { e.w.lock(true); } catch { /* proxy */ } }
+    stage.dataset.locked = 'true';
+    const sb = document.querySelector('.card-submit');
+    if (sb) sb.disabled = true;
+  }
+  function offerNext(index) {
+    nextRow.replaceChildren(
+      h('p.muted.fs-1', 'Answer recorded — in a mock there is no second try.'),
+      h('button.btn.btn-primary', { type: 'button', onclick: () => advance(index) }, index + 1 < total ? 'Next question' : 'Hand it in'));
+    nextRow.hidden = false;
+    try { nextRow.scrollIntoView({ block: 'center' }); } catch { /* jsdom */ }
+    nextRow.querySelector('button')?.focus({ preventScroll: true });
+  }
+  function advance(index, sub) {
+    if (destroyed || index !== i) return;
+    if (!results[index]) record(index, sub ?? { graded: 0 }, null);
+    i = index + 1;
+    step();
+  }
+  function step() {
+    if (destroyed) return;
+    if (i >= total) { teardownView(); draw(); cfg.onFinish?.({ results: results.slice(), items }); return; }
+    const index = i, item = items[index];
+    teardownView();
+    draw();
+    const sub = { graded: 0 };
+    cur = { index, sub };
+    let done = false;
+    offBus = bus.on('card:graded', (ev) => {
+      if (destroyed || done || index !== i || ev?.free) return;        // a malformed entry is not an answer
+      sub.graded++;
+      if (ev.kind === 'wrong' || (ev.ok === false && ev.kind !== 'correct')) {
+        lock();
+        record(index, sub, null);
+        offerNext(index);
+        draw();
+      }
+    });
+    view = createCardView(stage, item.source, {
+      hints: false, mode: 'mock', back: '/night',
+      ...(item.opts || {}),
+      query: item.params ? new URLSearchParams(item.params) : undefined,
+      onDone: (result) => {
+        if (destroyed || index !== i) return;
+        done = true;
+        record(index, sub, result);
+        draw();
+        if (result?.cleared !== true) offerNext(index);                 // a revealed card: forward, never the solution
+      },
+      onContinue: () => advance(index, sub),
+    });
+  }
+
+  draw();
+  step();
+  return {
+    el: root,
+    get index() { return i; },
+    get results() { return results.slice(); },
+    /** Hand-in mid-item: the current item keeps whatever it has received. */
+    settle() { if (!destroyed && cur && cur.index === i && i < total && !results[i] && cur.sub.graded > 0) record(i, cur.sub, null); },
+    destroy() { destroyed = true; teardownView(); root.remove(); },
+  };
 }
 
 /* ------------------------------------------------------------------ Night Before */
@@ -304,14 +457,11 @@ export function mountNight(params, query) {
       const items = miniMockItems(save);
       const begun = Date.now();
       const clockEl = h('span.nb-clock.mono', clock(MINI_LIMIT_MS));
-      seq = createSequence(el, {
-        title: 'Mini-mock',
-        sub: 'Eight questions, 15 minutes, no hints. Scored on the first answer you give.',
-        back: '/night',
-        cardOpts: { hints: false, mode: 'mock', back: '/night' },
+      seq = createMiniMock(el, {
+        sub: 'Eight questions, 15 minutes, no hints. One answer per box — the first one you give is the one that counts.',
         badge: clockEl,
         quitLabel: 'Hand it in',
-        onQuit: () => miniReport(begun),
+        onQuit: () => { seq?.settle?.(); miniReport(begun); },
         items,
         onItem: (rec) => { collected.mini.push(rec); },
         onFinish: () => miniReport(begun),
@@ -329,23 +479,30 @@ export function mountNight(params, query) {
     function miniReport(begun) {
       const items = collected.mini;
       const submittedAt = Date.now();
-      const answered = items.length;
-      const right = items.filter(r => r.firstTry).length;
+      const scored = items.filter(r => r.answered !== false);          // skipped items are listed, not scored
+      const answered = scored.length;
+      const right = scored.filter(r => r.firstTry).length;
       const accuracy = answered ? right / answered : null;
+      // S9 #10 "Honest": the night satisfies the daily goal because it is thirty minutes of work — so it
+      // counts only past the floor (8 answered across the blocks, or some answered and 10 minutes).
+      const answeredAll = collected.flash.length + collected.sweep.length + answered;
+      const counted = nightCounted({ answered: answeredAll, startedAt, submittedAt });
       teardown();
 
-      update((s) => {
+      if (answeredAll > 0) update((s) => {
         writeRun(s, {
           kind: 'night', startedAt, submittedAt, limitMs: MINI_LIMIT_MS,
-          accuracy,
-          items: items.map(r => ({
+          accuracy, answered: answeredAll,
+          items: scored.map(r => ({
             id: r.itemId, skill: r.result?.skills?.[0] ?? null, tier: r.result?.tier ?? null,
             credit: r.firstTry ? 1 : 0, ms: r.result?.elapsedMs ?? 0, work: r.scratch,
           })),
         });
-        const d = dailyRecord(s, todayISO(new Date(submittedAt)));
-        d.nightDone = true;
-        checkDailyGoal(s, todayISO(new Date(submittedAt)));
+        if (counted) {
+          const d = dailyRecord(s, todayISO(new Date(submittedAt)));
+          d.nightDone = true;
+          checkDailyGoal(s, todayISO(new Date(submittedAt)));
+        }
       });
 
       const save = getState();
@@ -357,15 +514,21 @@ export function mountNight(params, query) {
         blockHead(3, 4, 'Mini-mock report', 15),
         h('h1#nb-rep-h', answered ? `${right} of ${answered} first try` : 'Nothing answered'),
         h('p.muted', answered
-          ? 'Scored on your first answer only — the retries you did after are practice, not a score. This is the number Readiness uses.'
-          : 'No items answered, so nothing was scored. The sheet is still worth five minutes.'),
+          ? `Scored on the first answer you gave to each box${items.length > answered ? ` — ${items.length - answered} you never answered ${items.length - answered === 1 ? 'is' : 'are'} listed, not scored` : ''}. This is the number Readiness uses.`
+          : 'No answers, so nothing was scored. The sheet is still worth five minutes.'),
         h('p.nb-rep-rd.mono', `Readiness ${rd.r}${rd.provisional ? ' · provisional' : ''}`),
-        items.length ? h('ol.nb-rep-list', items.map(r => h('li.nb-rep-item', { dataset: { ok: String(!!r.firstTry) } },
+        counted
+          ? h('p.nb-rep-count.fs-1', { dataset: { counted: 'true' } }, `${answeredAll} answered tonight — the night counts toward today's goal.`)
+          : h('p.nb-rep-count.fs-1', { dataset: { counted: 'false' } }, answeredAll
+            ? `${answeredAll} answered tonight — the night counts at ${NIGHT_FLOOR.items}, or ${Math.round(NIGHT_FLOOR.ms / 60000)} minutes of work. It is not a streak day yet.`
+            : 'Nothing answered — the night does not count yet. No streak day, no trophy, nothing written.'),
+        items.length ? h('ol.nb-rep-list', items.map(r => h('li.nb-rep-item', { dataset: { ok: r.answered === false ? 'skip' : String(!!r.firstTry) } },
           h('div.nb-rep-head',
-            h('span.nb-rep-mark', { 'aria-hidden': 'true' }, r.firstTry ? '✓' : '✗'),
+            h('span.nb-rep-mark', { 'aria-hidden': 'true' }, r.answered === false ? '–' : r.firstTry ? '✓' : '✗'),
             h('span.nb-rep-id.mono.fs-1', r.itemId ?? ''),
+            r.answered === false ? h('span.muted.fs-1', 'not answered') : null,
           ),
-          r.stem ? h('p.nb-rep-stem.fs-1.muted', String(r.stem).replace(/\{[a-z]+ ([A-Z0-9]+)\}/g, '$1').slice(0, 160)) : null,
+          r.stem ? h('p.nb-rep-stem.fs-1.muted', { html: mathfmt(String(r.stem)) }) : null,   // real notation (S9 #3), clamped by CSS
           h('div.nb-rep-cols',
             h('div.nb-rep-col',
               h('h3.fs-1.muted', 'Your work'),
@@ -373,11 +536,13 @@ export function mountNight(params, query) {
             h('div.nb-rep-col',
               h('h3.fs-1.muted', 'Worked solution'),
               r.solution?.length
-                ? h('ol.nb-rep-sol', r.solution.map(st => h('li', h('span', st.say || ''), st.math ? h('code.mono', ' ' + st.math) : null)))
+                ? h('ol.nb-rep-sol', r.solution.map(st => h('li', h('span', { html: mathfmt(st.say || '') }), st.math ? h('code.mono', { html: ' ' + mathfmt(st.math) }) : null)))   // steps carry {m EZJ} too
                 : h('p.muted.fs-1', 'No written solution for this one — open the card for the steps.')),
           ),
         ))) : null,
-        h('div.ob-nav', h('button.btn.btn-primary', { type: 'button', onclick: () => finishNight({ quiet }) }, 'The cheat sheet')),
+        h('div.ob-nav',
+          h('button.btn.btn-primary', { type: 'button', onclick: () => finishNight({ quiet }) }, 'The cheat sheet'),
+          counted ? null : h('button.btn', { type: 'button', onclick: () => intro({ quiet }) }, 'Back to the blocks')),
       );
       el.append(report);
       window.scrollTo(0, 0);

@@ -57,10 +57,14 @@
   60%  { transform: rotateY(12deg) scale(1.04); opacity: 1; }
   100% { transform: none; opacity: 1; }
 }
-.sum-tile { animation: t16-mint-flip 460ms var(--ease) both; transform-style: preserve-3d; }
+.sum-tile { animation: t16-mint-flip 460ms var(--ease) both; transform-style: preserve-3d; backface-visibility: hidden; }
+/* r1: without a perspective a rotateY() is an orthographic width squash — the tile now flips in depth. */
+.sum-tiles > li { perspective: 600px; perspective-origin: 50% 40%; }
 
 /* The foil sheen is T11's own `.tile-sheen` (screens.css) — one gradient in the app, not two. All this
-   block does is hold it back until the flip has landed, and stretch it so it reads on a 60 px tile. */
+   block does is hold it back until the flip has landed, and stretch it so it reads on a 60 px tile.
+   r1: every mint carries the sheen (run.js), and its delay is set inline per tile (420 ms + k × 90 ms)
+   so each sheen lands after ITS flip instead of all of them firing together at 420 ms. */
 .sum-tile .tile-sheen { animation-duration: 820ms; animation-delay: 420ms; animation-fill-mode: both; }
 
 .sum-bar-fill { transition: transform 600ms var(--ease); }

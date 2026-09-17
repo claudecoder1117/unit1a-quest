@@ -15,24 +15,32 @@
 // A handler is  (el, params, query) => void | cleanupFn  — see app.js `mount` and notes/T01.md.
 // Patterns must be one of the 13 in app.js ROUTES (a typo is reported in the console at boot).
 
-import { mountSettings } from './settings.js';   // T15
-
+// home r1 (visual QA): every screen but Home is a LAZY loader. A cold #/today used to pull all 13 screens
+// (101 files / 1.88 MB — run.js, mock.js, card.js, boss.js and their widget/gen graphs) before Home could
+// paint: 10 s on a 3G-class link against S9 #1's "< 1 s". Each loader below is `(...a) => import(file)
+// .then(m => m.mountX(...a))`; app.js's router awaits a Promise-returning handler and mounts what resolves
+// (the route is re-checked after the await so a navigation during the load is not clobbered). The static
+// import lines the registry tests look for are kept as the loaders' `from './x.js'` strings; the service
+// worker precaches the same file list, so offline is unchanged (`node qa/gen-precache.mjs`).
 import { mountHome } from './home.js';
 
-import { mountBinder } from './binder.js';       // T11
-import { mountStats } from './stats.js';         // T11
 import { bus } from '../app.js';                 // T11 (live binding — read inside the microtask below)
 import { getState, update } from '../store.js';  // T11
 import { install as installTrophies } from '../trophies.js';   // T11
-
-import { mountCard, mountVariant } from './card.js';   // T09
-import { mountOnboard } from './onboard.js';     // T14
-import { mountSheet } from './sheet.js';         // T14
-import { mountRun } from './run.js';             // T16
-import { mountBoss } from './boss.js';           // T12
-import { mountMock } from './mock.js';           // T13
-import { mountReport } from './report.js';       // T13
 import * as sound from '../sound.js';            // W3 integration: T15's synth, subscribed to the bus below
+
+const lazy = (load, name) => (...a) => load().then(m => m[name](...a));
+const mountSettings = lazy(() => import('./settings.js'), 'mountSettings');   // T15   from './settings.js'
+const mountBinder = lazy(() => import('./binder.js'), 'mountBinder');         // T11   from './binder.js'
+const mountStats = lazy(() => import('./stats.js'), 'mountStats');            // T11   from './stats.js'
+const mountCard = lazy(() => import('./card.js'), 'mountCard');               // T09   from './card.js'
+const mountVariant = lazy(() => import('./card.js'), 'mountVariant');         // T09
+const mountOnboard = lazy(() => import('./onboard.js'), 'mountOnboard');      // T14   from './onboard.js'
+const mountSheet = lazy(() => import('./sheet.js'), 'mountSheet');            // T14   from './sheet.js'
+const mountRun = lazy(() => import('./run.js'), 'mountRun');                  // T16   from './run.js'
+const mountBoss = lazy(() => import('./boss.js'), 'mountBoss');               // T12   from './boss.js'
+const mountMock = lazy(() => import('./mock.js'), 'mountMock');               // T13   from './mock.js'
+const mountReport = lazy(() => import('./report.js'), 'mountReport');         // T13   from './report.js'
 
 export const screens = {};
 screens['/card/:id'] = mountCard; screens['/variant/:template'] = mountVariant;   // T09
@@ -50,6 +58,13 @@ screens['/sheet'] = mountSheet;                  // T14
 // four screens are still T14's — there is just one registration and one mount point (S1, 13 routes).
 screens['/binder'] = mountBinder;                // T11
 screens['/stats'] = mountStats;                  // T11
+
+// Warm the two screens a fresh student reaches next (the run screen and the card engine) once Home has
+// painted and the network is idle — so the first tap is instant on a second visit too (the SW caches them).
+if (typeof window !== 'undefined') {
+  const warm = () => { import('./run.js').catch(() => {}); import('./card.js').catch(() => {}); };
+  if ('requestIdleCallback' in window) window.requestIdleCallback(warm, { timeout: 4000 }); else setTimeout(warm, 2500);
+}
 
 // T11: trophies are pure predicates over the save, evaluated after every grade (S4) — `install` listens
 // on bus 'graded' and on 'state'. Deferred one microtask because THIS module is imported from app.js's

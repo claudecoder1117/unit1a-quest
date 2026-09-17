@@ -698,13 +698,13 @@ origin: SOURCE.md §5. The Quizlet is not in `source/` (WebFetch → HTTP 403; C
 - srcFile: content/SOURCE.md §5 (Quizlet 254286132)
 - stem: A line and a ray are coplanar.
 - teacherAnswer: S
-- disputed: Quizlet's answer is S; arguably A. Graded S with the ⚑ note (Global rule 5)
+- disputed: Quizlet's key is S — and S is right (a line and a ray can be skew); an earlier draft flagged it as A. Graded S with the ⚑ note (Global rule 5)
 
 ### qz-05
 - sheet: QZ
 - teacherNo: SOURCE §5 in-scope 5
 - srcFile: content/SOURCE.md §5 (Quizlet 254286132)
-- stem: Ray AB and ray AC are the same ray.
+- stem: {ray AB} and {ray AC} are the same ray.
 - teacherAnswer: S
 
 ### qz-06
@@ -725,7 +725,7 @@ origin: SOURCE.md §5. The Quizlet is not in `source/` (WebFetch → HTTP 403; C
 - sheet: QZ
 - teacherNo: SOURCE §5 in-scope 8
 - srcFile: content/SOURCE.md §5 (Quizlet 254286132)
-- stem: Ray XY and ray YX are opposite rays.
+- stem: {ray XY} and {ray YX} are opposite rays.
 - teacherAnswer: N
 
 ### qz-09
@@ -826,7 +826,7 @@ origin: SOURCE.md §5. The Quizlet is not in `source/` (WebFetch → HTTP 403; C
 - sheet: QZ (Binder tab: Bonus)
 - teacherNo: SOURCE §5 out-of-scope 4
 - srcFile: content/SOURCE.md §5 (Quizlet 254286132)
-- stem: 2 triangles congruent if 2 sides and included angle...
+- stem: 2 triangles are congruent if 2 sides and the included angle of 1 are congruent to 2 sides and the included angle of the other
 - teacherAnswer: A
 - note: abbreviated in SOURCE.md (SAS); full Quizlet wording not recoverable offline
 
@@ -869,14 +869,14 @@ origin: SOURCE.md §5. The Quizlet is not in `source/` (WebFetch → HTTP 403; C
 - sheet: QZ (Binder tab: Bonus)
 - teacherNo: SOURCE §5 out-of-scope 10
 - srcFile: content/SOURCE.md §5 (Quizlet 254286132)
-- stem: If ∠BAC≅∠ABC then AB≅BC
+- stem: If {ang BAC} ≅ {ang ABC} in △ABC, then {seg AB} ≅ {seg BC}
 - teacherAnswer: S
 
 ### bonus-11
 - sheet: QZ (Binder tab: Bonus)
 - teacherNo: SOURCE §5 out-of-scope 11
 - srcFile: content/SOURCE.md §5 (Quizlet 254286132)
-- stem: 2 triangles congruent if 2 sides and an angle of one ≅ corresponding parts
+- stem: 2 triangles are congruent if 2 sides and an angle of one are congruent to corresponding parts of another
 - teacherAnswer: S
 - note: abbreviated in SOURCE.md (SSA is not a congruence shortcut)
 
@@ -884,7 +884,7 @@ origin: SOURCE.md §5. The Quizlet is not in `source/` (WebFetch → HTTP 403; C
 - sheet: QZ (Binder tab: Bonus)
 - teacherNo: SOURCE §5 out-of-scope 12
 - srcFile: content/SOURCE.md §5 (Quizlet 254286132)
-- stem: If 2 sides of a right triangle ≅ corresponding parts of another right triangle, congruent
+- stem: If 2 sides of a right triangle are congruent to the corresponding parts of another right triangle the triangles are congruent
 - teacherAnswer: A
 - note: abbreviated in SOURCE.md (HL / LL)
 
@@ -906,14 +906,14 @@ origin: SOURCE.md §5. The Quizlet is not in `source/` (WebFetch → HTTP 403; C
 - sheet: QZ (Binder tab: Bonus)
 - teacherNo: SOURCE §5 out-of-scope 15
 - srcFile: content/SOURCE.md §5 (Quizlet 254286132)
-- stem: An exterior angle of a triangle is larger than any angle of the triangle
+- stem: An exterior angle of a triangle is larger in measure than any angle of a triangle
 - teacherAnswer: S
 
 ### bonus-16
 - sheet: QZ (Binder tab: Bonus)
 - teacherNo: SOURCE §5 out-of-scope 16
 - srcFile: content/SOURCE.md §5 (Quizlet 254286132)
-- stem: One base angle of an isosceles triangle > one of the exterior angles
+- stem: One of the base angles of an isosceles triangle has a measure greater than one of the exterior angles of the triangle
 - teacherAnswer: N
 
 ### bonus-17
@@ -934,7 +934,7 @@ origin: SOURCE.md §5. The Quizlet is not in `source/` (WebFetch → HTTP 403; C
 - sheet: QZ (Binder tab: Bonus)
 - teacherNo: SOURCE §5 out-of-scope 19
 - srcFile: content/SOURCE.md §5 (Quizlet 254286132)
-- stem: A line in the ceiling plane and a line in the floor plane are parallel
+- stem: A line in the plane of the ceiling and a line in the plane of the floor are parallel
 - teacherAnswer: S
 
 ### bonus-20
@@ -962,14 +962,14 @@ origin: SOURCE.md §5. The Quizlet is not in `source/` (WebFetch → HTTP 403; C
 - sheet: QZ (Binder tab: Bonus)
 - teacherNo: SOURCE §5 out-of-scope 23
 - srcFile: content/SOURCE.md §5 (Quizlet 254286132)
-- stem: Two lines parallel to a third line are parallel
+- stem: Two lines parallel to a third line are parallel to each other
 - teacherAnswer: A
 
 ### bonus-24
 - sheet: QZ (Binder tab: Bonus)
 - teacherNo: SOURCE §5 out-of-scope 24
 - srcFile: content/SOURCE.md §5 (Quizlet 254286132)
-- stem: Two planes parallel to the same line are parallel
+- stem: Two planes parallel to the same line are parallel to each other
 - teacherAnswer: S
 
 ### bonus-25
@@ -983,14 +983,14 @@ origin: SOURCE.md §5. The Quizlet is not in `source/` (WebFetch → HTTP 403; C
 - sheet: QZ (Binder tab: Bonus)
 - teacherNo: SOURCE §5 out-of-scope 26
 - srcFile: content/SOURCE.md §5 (Quizlet 254286132)
-- stem: Two planes parallel to the same plane are parallel
+- stem: Two planes parallel to the same plane are parallel to each other
 - teacherAnswer: A
 
 ### bonus-27
 - sheet: QZ (Binder tab: Bonus)
 - teacherNo: SOURCE §5 out-of-scope 27
 - srcFile: content/SOURCE.md §5 (Quizlet 254286132)
-- stem: Two lines perpendicular to a third line are parallel
+- stem: Two lines perpendicular to a third line are parallel to each other
 - teacherAnswer: S
 
 ### bonus-28
@@ -1011,28 +1011,28 @@ origin: SOURCE.md §5. The Quizlet is not in `source/` (WebFetch → HTTP 403; C
 - sheet: QZ (Binder tab: Bonus)
 - teacherNo: SOURCE §5 out-of-scope 30
 - srcFile: content/SOURCE.md §5 (Quizlet 254286132)
-- stem: If a line intersects one of two parallel lines, it intersects the other
+- stem: If a line intersects one of two parallel lines, then it intersects the other line also
 - teacherAnswer: S
 
 ### bonus-31
 - sheet: QZ (Binder tab: Bonus)
 - teacherNo: SOURCE §5 out-of-scope 31
 - srcFile: content/SOURCE.md §5 (Quizlet 254286132)
-- stem: If the sides of two angles lie in parallel lines, the angles are congruent
+- stem: If the sides of two angles lie in parallel lines, then the angles are congruent
 - teacherAnswer: S
 
 ### bonus-32
 - sheet: QZ (Binder tab: Bonus)
 - teacherNo: SOURCE §5 out-of-scope 32
 - srcFile: content/SOURCE.md §5 (Quizlet 254286132)
-- stem: If line t is skew to m, there is a plane containing t parallel to m
+- stem: If line t is skew to line m, there exists a plane that contains line t and is parallel to line m
 - teacherAnswer: A
 
 ### bonus-33
 - sheet: QZ (Binder tab: Bonus)
 - teacherNo: SOURCE §5 out-of-scope 33
 - srcFile: content/SOURCE.md §5 (Quizlet 254286132)
-- stem: If m is skew to k, there is a line perpendicular to both
+- stem: If line m is skew to line k, there exists a line that is perpendicular to both m and k
 - teacherAnswer: A
 
 ---

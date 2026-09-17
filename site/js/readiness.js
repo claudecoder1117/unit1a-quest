@@ -5,7 +5,10 @@
 //     A = accuracy of the most recent Mock (× 0.8 for a mini-mock: Baseline, Night Before)  → 0..1
 //     C = fraction of non-bonus bank items cleared at least once (the Binder fill)          → 0..1
 //   Until a Mock or Baseline exists the A term is NOT scored as zero:
-//     R = round(100 × (0.5·M + 0.2·C) / 0.7)   labelled "provisional — take a Mock to lock it", ring dashed.
+//     R = round(100 × (0.5·M + 0.2·C) / 0.7)   labelled "provisional — take a Mock to lock it", ring dashed,
+//     and in THAT branch M runs over the skills tested so far (n ≥ 1) — `masteryTermTested` — because on
+//     day 0 the 11 untested skills are unknowns, not zeros (S4 "untested is not weak"; home r1 fix of S9 #1:
+//     an 8/8 aced placement read 27 under the all-19 M, it reads 57 under the tested-only M).
 //   Bands: < 50 Not ready · 50–69 Getting there · 70–84 Ready · ≥ 85 Locked in.
 //   Logged daily to forecastLog[] (7-day sparkline); the Page Summary shows the delta.
 //
@@ -29,8 +32,8 @@ export const BANDS = Object.freeze([
 export const WEAK_THRESHOLD = 70;   // m_shown < 70 ∧ n ≥ 1
 export const WEAK_MAX = 5;
 export const FORMULA_FULL = 'R = round(100 × (0.5·M + 0.3·A + 0.2·C))';
-export const FORMULA_PROVISIONAL = 'R = round(100 × (0.5·M + 0.2·C) / 0.7)   — provisional, until a Mock or Baseline exists';
-export const PROVISIONAL_LABEL = 'provisional — take a Mock to lock it';
+export const FORMULA_PROVISIONAL = 'R = round(100 × (0.5·M + 0.2·C) / 0.7)   — provisional, until a Mock or Baseline exists; M runs over the skills tested so far (n ≥ 1), not all 19';
+export const PROVISIONAL_LABEL = 'provisional — take a Mock to lock\u00a0it';   // nbsp: no one-word orphan at 375 px
 
 const isObj = x => x !== null && typeof x === 'object' && !Array.isArray(x);
 const BANK_IDS = manifestIds({ bonus: false });   // the 164 non-bonus ids: what C counts
@@ -41,6 +44,24 @@ export function masteryTerm(save) {
   let acc = 0;
   for (const s of skills) acc += s.w * mShown(save?.skills?.[s.id]) / 100;
   return acc / TOTAL_WEIGHT;
+}
+
+/**
+ * M over the skills TESTED so far: Σ w · m_shown / 100 / Σ w over skills with n ≥ 1 (0 when none).
+ * Used ONLY by the provisional branch of `readiness()` — a skill nobody has asked about yet is an unknown,
+ * not a zero (S4/S7 "untested is never weak"), the same way the missing Mock does not score A as zero.
+ * Also returns `tested` (how many of the 19 the number rests on) for the label Settings prints.
+ */
+export function masteryTermTested(save) {
+  let acc = 0, wsum = 0, tested = 0;
+  for (const s of skills) {
+    const rec = save?.skills?.[s.id];
+    if (!((rec?.n ?? 0) >= 1)) continue;
+    tested++;
+    wsum += s.w;
+    acc += s.w * mShown(rec) / 100;
+  }
+  return { M: wsum > 0 ? acc / wsum : 0, tested, total: skills.length };
 }
 
 /**
@@ -108,20 +129,23 @@ export function bandOf(r) {
 }
 
 /**
- * readiness(save) → { r, provisional, M, A, C, band, label, mock }
- * `r` is the published integer; `A` is null while provisional; `label` is the provisional note or ''.
+ * readiness(save) → { r, provisional, M, A, C, band, label, mock, tested, skillsTotal }
+ * `r` is the published integer; `A` is null while provisional; `label` is the provisional note or '';
+ * `tested` is how many of the 19 skills M rests on (all 19 once locked).
  */
 export function readiness(save, { ids = BANK_IDS } = {}) {
-  const M = masteryTerm(save);
   const C = coverageTerm(save, ids);
   const A = accuracyTerm(save);
   const provisional = A == null;
+  // provisional: M over the skills tested so far (see masteryTermTested); locked: over all 19 (S4)
+  const mt = provisional ? masteryTermTested(save) : null;
+  const M = provisional ? mt.M : masteryTerm(save);
   const raw = provisional
     ? 100 * (WEIGHTS.M * M + WEIGHTS.C * C) / (WEIGHTS.M + WEIGHTS.C)
     : 100 * (WEIGHTS.M * M + WEIGHTS.A * A + WEIGHTS.C * C);
   const r = Math.max(0, Math.min(100, Math.round(raw)));
   const band = bandOf(r);
-  return { r, provisional, M, A, C, band, label: provisional ? PROVISIONAL_LABEL : '', mock: latestMock(save) };
+  return { r, provisional, M, A, C, band, label: provisional ? PROVISIONAL_LABEL : '', mock: latestMock(save), tested: mt ? mt.tested : skills.length, skillsTotal: skills.length };
 }
 
 /* ---------------- forecast log ---------------- */

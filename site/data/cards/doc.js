@@ -96,7 +96,7 @@ const doc06 = {
   misconceptions: [
     { part: 'm', answer: '30', tag: 'gave-complement', msg: '30 is the complement — the angle itself is x = 60.' },
     { part: 'm', answer: '120', tag: 'gave-supplement', msg: '120 is the supplement — the angle itself is x = 60.' },
-    { part: 'm', answer: '90', tag: 'wrong-side-supp', msg: '"30 more than three times the complement" is 30 + 3(90 − x), and it equals the SUPPLEMENT 180 − x — check which side each piece is on.' },
+    { part: 'm', answer: '90', tag: 'grouping', msg: '90 comes from 3(90 − x + 30). "30 more than three times the complement" adds the 30 AFTER tripling: 30 + 3(90 − x).' },
     { part: 'setup', answer: '180-x=3(90-x)-30', tag: 'wrong-side-supp', msg: '"30 more than" means add 30 to the three-times piece: 180 − x = 30 + 3(90 − x).' },
   ],
   verified: true,

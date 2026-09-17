@@ -358,6 +358,9 @@ export function grade(part, raw, ctx = {}) {
   let next = null;
   let newest = null;
   let malformed = null;
+  // card r1 (S3 "Submit is idempotent"): slots the screen has already charged + revealed are never the
+  // `newest` miss again — a re-submit with the next slot still blank says "Next: …" (free) instead.
+  const charged = new Set(Array.isArray(ctx?.state?.charged) ? ctx.state.charged : []);
   for (const slot of slots) {
     const v = values[slot.id];
     if (next || isBlank(v)) {
@@ -373,7 +376,7 @@ export function grade(part, raw, ctx = {}) {
       continue;
     }
     rows.push({ id: slot.id, label: slot.label ?? slot.id, type: slot.type, state: r.ok ? 'ok' : 'revealed', ok: r.ok, msg: r.msg, answer: r.answer, fields: r.fields ?? null, raw: v, normalized: r.normalized });
-    newest = { slot, r };
+    if (!(charged.has(slot.id) && !r.ok)) newest = { slot, r };
   }
   const okCount = rows.filter((x) => x.ok).length;
   const revealed = rows.filter((x) => x.state === 'revealed').map((x) => x.id);
@@ -386,6 +389,8 @@ export function grade(part, raw, ctx = {}) {
   if (malformed) return { ...base, msg: malformed.r.msg };
   if (!newest) {
     const first = slots[0];
+    if (revealed.length && next) { const ns = slots.find((s) => s.id === next); return { ...base, msg: `Next: ${ns?.label ?? next}.` }; }
+    if (revealed.length && complete) return { ...base, ok: false, kind: 'correct', msg: `Complete — ${revealed.length} step${revealed.length > 1 ? 's' : ''} revealed.` };
     return { ...base, msg: first ? `Start with ${first.label ?? first.id}.` : 'Empty strip.' };
   }
   const { slot, r } = newest;
