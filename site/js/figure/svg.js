@@ -30,6 +30,7 @@ const PT_FS = 15, EXPR_FS = 13;
 const WEDGE_MIN = 60, WEDGE_MAX = 140, BAND = 58, MIN_CHORD = 60;   // card r1: every wedge hit ≥ 44 px at 375 (the figure is ≈ 0.77 px per vb there; S9 #9)
 const RAY_MARGIN = 6, ARC_MARGIN = 4, LABEL_GAP_BOX = 6;   // expression labels keep this much clear air
 const CHIP_TEXT = 'Not to scale';
+const RUN_ON = 34;             // fix5:gen — an arrowed poly chain runs this far past its end point to the arrowhead
 
 const R = (d) => (d * Math.PI) / 180;
 const dirOf = (deg) => [Math.cos(R(deg)), -Math.sin(R(deg))];      // screen y points down
@@ -290,10 +291,22 @@ function layoutPoly(model, opts) {
   const pts = model.points;
   const names = Object.keys(pts);
   const cen = [names.reduce((s, n) => s + pts[n][0], 0) / names.length, names.reduce((s, n) => s + pts[n][1], 0) / names.length];
-  const strokes = model.segments.map(ch => ({ kind: 'seg', from: pts[ch[0]], to: pts[ch[ch.length - 1]], names: [ch[0], ch[ch.length - 1]], chain: ch, arrows: 'none' }));
+  const unit = (p, q) => { const dx = q[0] - p[0], dy = q[1] - p[1], L = Math.hypot(dx, dy) || 1; return [dx / L, dy / L]; };
+  // fix5:gen — optional `arrows` (parallel to segments): 'end' = ray from the first point through the last,
+  // 'both' = line; the stroke runs RUN_ON past each arrowed end so the point's dot sits before the arrowhead.
+  // Without `arrows` every chain is the plain segment it always was.
+  const strokes = model.segments.map((ch, i) => {
+    const a = Array.isArray(model.arrows) ? (model.arrows[i] ?? 'none') : 'none';
+    const P = pts[ch[0]], Q = pts[ch[ch.length - 1]];
+    if (a !== 'end' && a !== 'both') return { kind: 'seg', from: P, to: Q, names: [ch[0], ch[ch.length - 1]], chain: ch, arrows: 'none' };
+    const u = unit(P, Q);
+    const to = [Q[0] + RUN_ON * u[0], Q[1] + RUN_ON * u[1]];
+    const from = a === 'both' ? [P[0] - RUN_ON * u[0], P[1] - RUN_ON * u[1]] : P;
+    return { kind: a === 'both' ? 'line' : 'ray', from, to, names: [ch[0], ch[ch.length - 1]], chain: ch, arrows: a };
+  });
   const segLines = [];
   for (const ch of model.segments) for (let i = 0; i + 1 < ch.length; i++) segLines.push([pts[ch[i]], pts[ch[i + 1]]]);
-  const unit = (p, q) => { const dx = q[0] - p[0], dy = q[1] - p[1], L = Math.hypot(dx, dy) || 1; return [dx / L, dy / L]; };
+  const outline = Array.isArray(model.outline) ? model.outline.map(p => [p[0], p[1]]) : null;   // fix5:gen
   const outwardNormal = (p, q) => { const u = unit(p, q); const n = [-u[1], u[0]]; const m = [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2]; return ((m[0] - cen[0]) * n[0] + (m[1] - cen[1]) * n[1]) >= 0 ? n : [-n[0], -n[1]]; };
 
   const ticks = [];
@@ -312,13 +325,18 @@ function layoutPoly(model, opts) {
   const placedBoxes = [];
   const pointLabels = [];
   const offP = model.labelOffsets.point ?? {};
+  // fix5:gen: optional `letterSize` (viewBox units) — sparse mini-figures print bigger letters so they stay
+  // legible when a short phone caps the figure's height; the gap to the dot grows with the letter
+  const ptFs = Number.isFinite(model.letterSize) ? model.letterSize : PT_FS;
+  const ptGap = LABEL_GAP * (ptFs / PT_FS);
   if (!model.hideLetters) {
     for (const n of names) {
       const p = pts[n];
-      const d = unit(cen, p);
-      let x = p[0] + LABEL_GAP * d[0], y = p[1] + LABEL_GAP * d[1];
+      const dirDeg = model.labelDirs?.[n];                              // fix5:gen: an explicit letter direction
+      const d = Number.isFinite(dirDeg) ? dirOf(dirDeg) : unit(cen, p);
+      let x = p[0] + ptGap * d[0], y = p[1] + ptGap * d[1];
       if (offP[n]) { x += offP[n][0]; y += offP[n][1]; }
-      const w = textWidth(n, PT_FS, false), h = PT_FS * 1.15;
+      const w = textWidth(n, ptFs, false), h = ptFs * 1.15;
       [x, y] = clampBox(x, y, w, h);
       const box = boxOf(x, y, w, h);
       pointLabels.push({ n, x, y, box, anchor: p });
@@ -365,7 +383,7 @@ function layoutPoly(model, opts) {
     arcs.push(...lf.arcs); exprLabels.push(...lf.exprLabels); wedges.push(...lf.wedges);
   }
   const chip = model.notToScale ? chipLayout() : null;
-  return { kind: 'poly', points: pts, centroid: cen, strokes, ticks, dots, pointLabels, segLabels, arcs, exprLabels, wedges, chip, angles: angles(model), aria: describe(model) };
+  return { kind: 'poly', points: pts, centroid: cen, strokes, ticks, dots, pointLabels, segLabels, arcs, exprLabels, wedges, chip, angles: angles(model), aria: describe(model), ...(outline ? { outline } : {}) };
 }
 
 function chipLayout() {
@@ -391,6 +409,7 @@ export function renderModel(model, opts = {}) {
   out.push(`<svg class="fig fig-${model.kind}" viewBox="0 0 ${VIEW.w} ${VIEW.h}" xmlns="http://www.w3.org/2000/svg" role="group" aria-label="${esc('Figure: ' + L.aria)}" data-figure="${esc(model.figId ?? model.id ?? '')}">`);
   out.push(`<defs><marker id="${markerId}" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="${ARROW}" markerHeight="${ARROW}" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M1,1 L9,5 L1,9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>`);
 
+  if (L.outline) out.push(`<g class="fig-planes"><path class="fig-plane" d="M${L.outline.map(p => `${f1(p[0])},${f1(p[1])}`).join(' L')} Z"/></g>`);   // fix5:gen
   out.push('<g class="fig-strokes">');
   for (const s of L.strokes) out.push(emitStroke(s, markerId));
   out.push('</g>');
@@ -442,7 +461,8 @@ export function renderModel(model, opts = {}) {
   out.push('</g>');
 
   out.push('<g class="fig-labels">');
-  for (const p of L.pointLabels) out.push(`<text class="fig-label fig-pt" data-point="${p.n}" x="${f1(p.x)}" y="${f1(p.y)}">${esc(p.n)}</text>`);
+  const ptStyle = L.kind === 'poly' && Number.isFinite(model.letterSize) ? ` style="font-size:${f1(model.letterSize)}px"` : '';   // fix5:gen
+  for (const p of L.pointLabels) out.push(`<text class="fig-label fig-pt" data-point="${p.n}" x="${f1(p.x)}" y="${f1(p.y)}"${ptStyle}>${esc(p.n)}</text>`);
   for (const s of L.segLabels ?? []) out.push(`<text class="fig-label fig-expr" data-seg="${s.seg.join('')}" x="${f1(s.x)}" y="${f1(s.y)}">${esc(s.text)}</text>`);
   for (const e of L.exprLabels) out.push(`<text class="fig-label fig-expr" data-angle="${e.angle.id}" data-name="${e.angle.name}" x="${f1(e.x)}" y="${f1(e.y)}">${esc(e.text)}</text>`);
   out.push('</g>');
@@ -555,6 +575,7 @@ export function lint(model, opts = {}) {
   ];
   for (const t of texts) if (!inView(t.box)) issues.push(`clipped: "${t.text}"`);
   const segs = L.strokes.map(s => [s.from, s.to]);
+  if (L.outline) L.outline.forEach((p, i) => segs.push([p, L.outline[(i + 1) % L.outline.length]]));   // fix5:gen: a plane's edges count as strokes
   for (const t of texts) if (segs.some(([p, q]) => segHitsBox(p, q, t.box, 1))) issues.push(`label on a stroke: "${t.text}"`);
   for (let i = 0; i < texts.length; i++) for (let j = i + 1; j < texts.length; j++) {
     if (boxesOverlap(texts[i].box, texts[j].box, 0)) issues.push(`overlap: "${texts[i].text}" × "${texts[j].text}"`);

@@ -56,10 +56,13 @@ test('home r2 / hero honesty: provisional Readiness says over how many skills, a
     assert.equal(EARLY_MIN_TESTED, 4);
   });
 
-  await t.test('two clean answers: still 57, but early — never "Getting there"', async () => {
+  await t.test('two clean answers: early — never "Getting there"', async () => {
     const rd = readiness(await placedSave(2));
     assert.equal(rd.tested, 2);
-    assert.equal(rd.r, 57, 'the number itself is unchanged (masteryTermTested)');
+    // fix5:home r3 (critic r2): the provisional M now divides by at least 30 of the 100 weight points
+    // (readiness.EVIDENCE_W0), so two placed skills (NOTE 8 + ASN-PLP 7 = 15 points at 80) read 12 / 30 → R 29, no
+    // longer 57. Four placed skills (30 points) still read 57 — see the next case.
+    assert.equal(rd.r, 29, 'two skills cannot stand in for the unit (evidence floor)');
     assert.equal(rd.early, true);
     assert.equal(rd.band.label, 'Too early to say');
   });
@@ -70,6 +73,7 @@ test('home r2 / hero honesty: provisional Readiness says over how many skills, a
     assert.equal(rd.early, false);
     assert.equal(rd.band.label, bandOf(rd.r).label);
     assert.equal(rd.band.label, 'Getting there');
+    assert.equal(rd.r, 57, 'fix5:home r3: 30 points tested — the floor no longer binds');
   });
 
   await t.test('a locked Readiness is never early', () => {
@@ -84,7 +88,11 @@ test('home r2 / hero honesty: provisional Readiness says over how many skills, a
   await t.test('the Home hero prints "N of 19 skills tested" while provisional and drops the T−N', () => {
     const home = src('site/js/screens/home.js');
     assert.match(home, /provisional · \$\{rd\.tested\} of \$\{rd\.skillsTotal\} skills tested — take a Mock to lock\\u00a0it/);
-    assert.match(home, /mastery \$\{pct\(rd\.M\)\} of \$\{rd\.tested\} tested/);
+    // fix5:home r1: the provisional M no longer averages EVERY tested skill (a just-started, never-missed skill
+    // counts only where it raises M — notes/FIX5-home.md), so "mastery X % of N tested" would misstate it. The
+    // note line above keeps "N of 19 skills tested"; the term reads just "mastery X %".
+    assert.match(home, /`mastery \$\{pct\(rd\.M\)\}`/);
+    assert.ok(!/mastery \$\{pct\(rd\.M\)\} of \$\{rd\.tested\} tested/.test(home));
     assert.match(home, /h\('span\.rd-term'/, 'each term is a nowrap span (polish.css home r2)');
     assert.ok(!/· T−\$\{D\}/.test(home), 'the hero no longer repeats the header chip');
   });

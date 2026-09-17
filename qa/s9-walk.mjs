@@ -135,7 +135,7 @@ const text = (page, sel) => page.evaluate(s => document.querySelector(s)?.innerT
 
 /** Wait for a card to be ready, compute the forced-correct map from the widgets mounted after `mark`. */
 async function armCard(page, mark) {
-  await page.waitForSelector('.card-screen:not([data-state="loading"]) .card-parts .w', { timeout: 20000 });
+  await page.waitForSelector('.card-screen:not([data-state="loading"]) .card-parts .w, .mock-parts .w', { timeout: 20000 });   // fix5 integrate: the Mock mounts its widgets under .mock-parts (walk mode crashed here)
   await page.waitForTimeout(350);
   return page.evaluate(async (mark) => {
     const ms = (window.__mounted || []).slice(mark);

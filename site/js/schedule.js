@@ -237,12 +237,16 @@ export function decaySkills(save, { today = todayISO() } = {}) {
     const idle = diffDays(todayISO(new Date(rec.lastAt)), today);
     if (Number.isNaN(idle)) continue;
     const eligible = Math.max(0, idle - DECAY_IDLE_DAYS);
-    const prior = isObj(rec.decay) && rec.decay.from === rec.lastAt ? (rec.decay.days | 0) : 0;
+    // fix5 integrate: mastery.decaySkill (card.js / run.js, inside an answer's save) keeps its own count on
+    // `decayDays` (reset whenever lastAt moves) — read both, write both, so the same idle day is never charged twice.
+    const ledger = isObj(rec.decay) && rec.decay.from === rec.lastAt ? (rec.decay.days | 0) : 0;
+    const prior = Math.max(ledger, Number.isFinite(rec.decayDays) ? Math.floor(rec.decayDays) : 0);
     const delta = eligible - prior;
     if (delta <= 0) continue;
     const before = rec.m;
     rec.m = Math.max(0, rec.m - DECAY_PER_DAY * delta);
     rec.decay = { from: rec.lastAt, days: eligible };
+    rec.decayDays = eligible;
     if (rec.m !== before) changed++;
   }
   return changed;

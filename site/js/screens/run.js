@@ -41,7 +41,7 @@ import * as T from '../../data/templates.js';
 import { mathfmt } from '../mathfmt.js';
 import { isClean } from '../xp.js';
 import { placeSkill, scoreFor, applyOutcome as applyMastery, decayAll } from '../mastery.js';
-import { rarityOf, bestRarity, tileRarity, familyRarity } from '../rarity.js';
+import { rarityOf, bestRarity, tileRarity, familyRarity, foilRule, FAMILY_STEPS, FAMILY_PLATINUM_GOLD, FAMILY_PLATINUM_DAYS } from '../rarity.js';
 import { applyOutcome as applySchedule, outcomeOf, checkDailyGoal, dailyRecord } from '../schedule.js';
 import { readiness, readinessDelta, logForecast, skillStates, coverageCount } from '../readiness.js';
 import {
@@ -744,10 +744,14 @@ function renderStub(el, kind) {
 
 /* ------------------------------------------------------------------ shared chrome */
 
-function runHead({ title, subtitle, back, right = null, quitLabel = 'Quit' }) {
-  const head = h('header.run-head');
+function runHead({ title, subtitle, back, right = null, quitLabel = 'Quit', kind = null }) {
+  // fix5 run r2: data-kind so a phone hides ONLY the Page's subtitle ("11 new + 2 variants"); every other run's
+  // subtitle is its rule ("hints off, first try only", "pay full XP") and stays on its own line (polish.css).
+  const head = h('header.run-head', kind ? { dataset: { kind } } : {});
   head.append(
-    h('a.btn.run-quit', { href: '#' + back, 'aria-label': `${quitLabel} — progress is kept` }, '← ', quitLabel),
+    // fix5 run r1: arrow + label in their own spans so a phone shows a 44 px "←" icon button (the label is
+    // visually hidden ≤ 639 px, the aria-label carries it) and the whole head fits one slim row (polish.css).
+    h('a.btn.run-quit', { href: '#' + back, 'aria-label': `${quitLabel} — progress is kept`, title: quitLabel }, h('span.run-quit-arrow', { 'aria-hidden': 'true' }, '←'), h('span.run-quit-label', ' ', quitLabel)),
     h('div.run-titles', h('h1.run-title.fs-4', title), subtitle ? h('p.run-sub.muted.fs-1', subtitle) : null),
   );
   if (right) head.append(right);
@@ -764,7 +768,7 @@ function progressBar(done, total, { retries = 0 } = {}) {
 
 function emptyState(el, run) {
   el.replaceChildren(h('section.screen.run-screen', { dataset: { kind: run.kind } },
-    runHead({ title: run.title, subtitle: '', back: run.back, quitLabel: 'Back' }),
+    runHead({ title: run.title, subtitle: '', back: run.back, quitLabel: 'Back', kind: run.kind }),
     h('div.card.run-empty',
       h('p', run.empty),
       h('p.run-actions', h('a.btn.btn-primary', { href: '#/today' }, 'Today'), h('a.btn', { href: '#/binder' }, 'Binder')),
@@ -831,7 +835,9 @@ function mountCardRun(host, { kind, id, seed }) {
       }
     }
     if (kind === 'page') results.push(...pageResults(queue));   // the items answered before a reload
-    setHeader({ readiness: before.readiness.r, provisional: before.readiness.provisional });
+    // fix5:home: the header shows the LIVE number — a resumed Page's `before` is the page-start snapshot (kept for the
+    // Summary delta), and showing it read 57 right after Home had shown 60 for the same save.
+    { const live = readiness(getState()); setHeader({ readiness: live.r, provisional: !!live.provisional }); }
   }
 
   renderHead();
@@ -846,7 +852,7 @@ function mountCardRun(host, { kind, id, seed }) {
     headSlot.replaceChildren(runHead({
       title: run.title, subtitle: run.subtitle, back: run.back,
       right: progressBar(done, queue.length, { retries }),
-      quitLabel: kind === 'page' ? 'Quit' : 'Back',
+      quitLabel: kind === 'page' ? 'Quit' : 'Back', kind,
     }));
   }
 
@@ -1040,7 +1046,7 @@ function mountBlitz(host, { id, seed }) {
   const stage = h('div.blitz-stage', h('div.card.blitz-card', stem, flash, answers), hint);
   root.append(
     runHead({
-      title: run.title, subtitle: run.subtitle, back: run.back, quitLabel: 'Quit',
+      title: run.title, subtitle: run.subtitle, back: run.back, quitLabel: 'Quit', kind: 'blitz',
       right: h('div.blitz-hud', h('span.blitz-hud-time', clock), h('span.blitz-hud-score', scoreEl, h('span.muted.fs-1', ' pts')), strikeEl),
     }),
     meter, stage,
@@ -1274,11 +1280,11 @@ function renderSummary(host, ctx) {
   if (minted.length) {
     mintWrap.append(
       h('h2.fs-3', minted.length === 1 ? 'Tile minted' : `${minted.length} tiles minted`),
-      h('ul.sum-tiles', ...minted.map((m, k) => h('li',
+      h('ul.sum-tiles', ...minted.map((m, k) => h('li', { dataset: { fam: String(m.fam) } },
         h('span.tile.sum-tile', {
           dataset: { rarity: m.to, foil: String(m.to === 'platinum'), fam: String(m.fam), delay: String(k) },
           style: { animationDelay: `${k * 90}ms` },
-          'aria-label': `${mintLabel(m)} — ${mintCaption(m)}`,
+          'aria-label': m.fam ? familyAria(m, save?.variants?.[m.id]) : `${mintLabel(m)} — ${mintCaption(m)}`,
         },
           h('span.tile-num', m.fam ? '◆' : (numbering(m.id) || m.id)),
           h('span.tile-state', { 'aria-hidden': 'true' }, m.to === 'platinum' ? '★' : m.to === 'gold' ? '●' : m.to === 'silver' ? '◐' : '○'),
@@ -1286,9 +1292,17 @@ function renderSummary(host, ctx) {
           // `data-foil` (the platinum edge) stays platinum-only.
           h('span.tile-sheen', { 'aria-hidden': 'true', style: { animationDelay: `${420 + k * 90}ms` } }),
         ),
-        h('span.sum-tile-cap.fs-1.muted', h('span.sum-tile-name', mintLabel(m)), h('span.sum-tile-move', `${RARITY_GLYPH[m.to] ?? ''} ${m.to}`)),   // page r2: two short lines under a 60 px tile
+        h('span.sum-tile-cap.fs-1.muted', { 'aria-hidden': m.fam ? 'true' : null },
+          h('span.sum-tile-name', m.fam ? familyNameNodes(mintLabel(m)) : mintLabel(m)),
+          h('span.sum-tile-move', `${RARITY_GLYPH[m.to] ?? ''} ${m.to}`),   // page r2: two short lines under a 60 px tile
+          // fix5 run r1 (S4 family ladder): a family tile counts Gold VARIANTS, so it reads bronze right after a
+          // "◆ GOLD" card — the third line says where it stands ("1/6 ◆ → Silver at 2", r2: the Binder's /6).
+          m.fam ? h('span.sum-tile-fam', familyProgressLine(save?.variants?.[m.id])) : null),
       ))),
     );
+    if (minted.some((m) => m.fam)) {
+      mintWrap.append(h('p.sum-fam-legend.muted.fs-1', h('span.sum-fam-legend-k', '◆ Family tile'), ` — it counts Gold Variants, not one card: ${FAMILY_LADDER_TEXT}`));
+    }
   }
 
   /* skill bars, animating old → new */
@@ -1408,6 +1422,45 @@ function mintLabel(m) {
   return sheet ? `${sheet} ${no}` : no;
 }
 function mintCaption(m) { return m.from ? `${m.from} → ${m.to}` : m.to; }
+
+/* ---- fix5 run r1: family tiles on the Summary (S4: Bronze/Silver/Gold at 1/2/3 Gold Variants, Platinum at
+   6 across ≥ 2 days — the same rule the Binder tooltip prints via foilRule) ---- */
+export const FAMILY_LADDER_TEXT = foilRule('fam-sys');
+/** "Quadratics, a > 1" → "Quadratics (a > 1)": no comma that can be orphaned at the start of a line. */
+export function familyDisplayName(name) {
+  return String(name ?? '').replace(/^(.*?),\s*(.+)$/, '$1 ($2)');
+}
+/** The name as nodes: the parenthetical qualifier is one unbreakable span, so a line never starts with punctuation. */
+function familyNameNodes(name) {
+  const disp = familyDisplayName(name);
+  const m = disp.match(/^(.*\S)\s+(\([^)]*\))$/);
+  return m ? [m[1], ' ', h('span.sum-nowrap', m[2])] : [disp];
+}
+/**
+ * Where a family tile stands on its ladder, one short line (≤ 19 characters, fits the 130 px caption at 11 px
+ * mono). fix5 run r2: the SAME fraction the Binder popover prints ("1 / 6 Gold Variants", capped at 6), plus the
+ * next rung: "0/6 ◆ → Bronze at 1", "1/6 ◆ → Silver at 2", "2/6 ◆ → Gold at 3", "3/6 ◆ → Platinum" (Platinum
+ * is at 6, the denominator), then the day rule: "6/6 ◆ · 1 of 2 days", "6/6 ◆ · 2 of 2 days" (Platinum).
+ * @param {{ clearsGold?:number, goldDays?:string[] }} rec  save.variants[famId]
+ */
+export function familyProgressLine(rec) {
+  const { n, have, days } = familyCounts(rec);
+  const frac = `${have}/${FAMILY_PLATINUM_GOLD} ◆`;
+  if (n < FAMILY_STEPS.bronze) return `${frac} → Bronze at ${FAMILY_STEPS.bronze}`;
+  if (n < FAMILY_STEPS.silver) return `${frac} → Silver at ${FAMILY_STEPS.silver}`;
+  if (n < FAMILY_STEPS.gold) return `${frac} → Gold at ${FAMILY_STEPS.gold}`;
+  if (n < FAMILY_PLATINUM_GOLD) return `${frac} → Platinum`;
+  return `${frac} · ${Math.min(days, FAMILY_PLATINUM_DAYS)} of ${FAMILY_PLATINUM_DAYS} days`;
+}
+function familyCounts(rec) {
+  const n = rec && Number.isFinite(rec.clearsGold) ? Math.max(0, Math.floor(rec.clearsGold)) : 0;
+  const days = new Set((rec && Array.isArray(rec.goldDays) ? rec.goldDays : []).filter((d) => typeof d === 'string')).size;
+  return { n, have: Math.min(FAMILY_PLATINUM_GOLD, n), days };
+}
+function familyAria(m, rec) {
+  const { have, days } = familyCounts(rec);
+  return `${familyDisplayName(mintLabel(m))} family tile — ${m.to}, ${have} of ${FAMILY_PLATINUM_GOLD} Gold Variants, ${Math.min(days, FAMILY_PLATINUM_DAYS)} of ${FAMILY_PLATINUM_DAYS} days. ${FAMILY_LADDER_TEXT}`;
+}
 
 function fact(label, value, note, mono = true) {
   return h('div.sum-fact', h('dt.muted.fs-1', label),

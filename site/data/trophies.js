@@ -162,7 +162,7 @@ list.push(counterDef('notation-20', 'craft', 'Notation ×20',
   'Clear 20 notation cards in a row, first try with no hints.', 'notationClean', 20, { best: true }));
 list.push(counterDef('sign-master', 'craft', 'Sign Master',
   'Factor 10 negative-lead trinomials.', 'signLead', 10));
-list.push(counterDef('forge-flash', 'craft', 'Forge Flash',
+list.push(counterDef('forge-flash', 'craft', 'Factor Flash',   // fix5:home r1: no lore (was 'Forge Flash'); id kept for saves
   'Factor 5 in a row in 30 seconds or less each.', 'forgeFlash', 5, { best: true }));
 list.push(counterDef('systems-10', 'craft', 'Systems ×10',
   'Solve 10 systems.', 'systems', 10));
@@ -182,7 +182,7 @@ list.push(setDef('asn-36', 'craft', 'ASN 36',
   'Clear all 36 Always/Sometimes/Never statements.', ASN_36, 'clear'));
 list.push(setDef('sixteen', 'craft', 'Sixteen',
   'Take all 16 word problems to Gold or better.', WP_16, 'gold'));
-list.push(setDef('forge-18', 'craft', 'Forge 18',
+list.push(setDef('forge-18', 'craft', 'Factoring 18',   // fix5:home r1: no lore (was 'Forge 18'); id kept for saves
   'Clear all 18 Kuta factorings.', FAC_18, 'clear'));
 
 /* ---- runs & tests ---- */

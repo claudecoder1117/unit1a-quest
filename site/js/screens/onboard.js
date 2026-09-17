@@ -26,6 +26,7 @@ import { cyrb53 } from '../rng.js';
 import { readiness } from '../readiness.js';
 import { placementSize, placementCopy, PLACEMENT_FULL } from '../plan.js';
 import { moduleById } from '../../data/modules.js';
+import { freshSkill } from '../mastery.js';   // fix5:home r1 (misses)
 import { createCardView } from './card.js';
 
 /* ------------------------------------------------------------------ lazy data (keeps #/today light) */
@@ -50,7 +51,7 @@ export const loadData = () => Promise.all([loadT(), loadC()]).then(() => undefin
 export const PLACEMENT_CLUSTERS = Object.freeze([
   { key: 'notation', module: 'M1', template: 'T-notation', params: { kind: 'ray' }, label: 'Notation', blurb: 'Write the symbol.', short: true },
   { key: 'asn', module: 'M9', card: 'asn', label: 'Always / Sometimes / Never', blurb: 'One statement, one verdict.', short: true },
-  { key: 'cslin', module: 'M4', template: 'T-cs-lin', params: {}, label: 'Comp/supp word problem', blurb: 'Set it up, then solve it.', short: true },
+  { key: 'cslin', module: 'M4', template: 'T-cs-lin', params: {}, label: 'Linear word problem', blurb: 'Set it up, then solve it.', short: true },
   { key: 'fac2', module: 'M10', template: 'T-factor-a2', params: {}, label: 'Factoring, a > 1', blurb: 'The Kuta sheet’s hard half.', short: true },
   { key: 'ratio', module: 'M4', template: 'T-cs-ratio', params: {}, label: 'Ratio word problem', blurb: 'Parts of 180 or 90.', short: false },
   { key: 'sys', module: 'M12', template: 'T-sys', params: {}, label: 'A system', blurb: 'Two equations, two unknowns.', short: false },
@@ -109,19 +110,26 @@ export function placementItems(save, { D = daysUntilTest(save?.settings?.testDat
 
 /* ------------------------------------------------------------------ the save writes (S4 / S7) */
 
-/** Write one skill the placement / JUMP way: m with n = 5, `placedAt` only when the item was CLEAN. */
+/** Write one skill the placement / JUMP way: m with n = 5 (a clean write never lowers m), `placedAt` only when the item was CLEAN. */
 function writeSkill(save, id, m, { now, placed }) {
   if (!isObj(save.skills)) save.skills = {};
   const prev = isObj(save.skills[id]) ? save.skills[id] : {};
   const next = {
     ...prev,
-    m: Math.max(0, Math.min(100, m)),
+    // fix5:home r3 (critic r2): a CLEAN item / a JUMP pass never lowers an earned m (10 clean JUMP answers had lifted
+    // NOTE to ~93; the flat 80 lowered Readiness on the finish save). A retry / wrong item still writes 50 / 0.
+    m: placed ? Math.max(freshSkill(prev).m, Math.max(0, Math.min(100, m))) : Math.max(0, Math.min(100, m)),
     n: Math.max(Number.isFinite(prev.n) ? prev.n : 0, PLACEMENT_N),
     lastAt: now,
     lastDueCorrectAt: Number.isFinite(prev.lastDueCorrectAt) ? prev.lastDueCorrectAt : null,
     placedAt: placed ? now : (prev.placedAt ?? null),
+    // fix5:home r1: a non-clean placement item (retry / wrong) is a miss — it is what lets Weak spots list it.
+    // fix5:home r2: at LEAST one, not one more — the card view has already counted the wrong attempt(s) of this
+    // item through updateSkill (a wrong-then-right item read misses: 3), and applyPlacement may run twice.
+    misses: placed ? freshSkill(prev).misses : Math.max(1, freshSkill(prev).misses),
   };
   delete next.decay;                       // a fresh number is not a decayed one (schedule.js ledger)
+  next.decayDays = 0;                      // fix5 integrate: …nor on mastery.js's ledger (a stale count under-charged later idle days)
   save.skills[id] = next;
   return next;
 }
@@ -508,12 +516,19 @@ function placementSummary(el, save, { onBaseline, onToday }) {
     if (!sibling) return 'first try';
     const sib = results[sibling.key];
     const what = sibling.label.replace(/ word problem$/, '').toLowerCase();
-    return sib === 'clean' ? 'first try' : sib ? `first try · the ${what} item too` : `first try · needs the ${what} item too`;
+    // fix5:home r2: a non-clean sibling said "first try · the ratio item too" beside the ratio row's "second try".
+    return sib === 'clean' ? 'first try' : sib ? `first try · needs the ${what} item clean too` : `first try · needs the ${what} item too`;
   };
-  const rows = PLACEMENT_CLUSTERS.filter(c => results[c.key]).map(c => h('li.ob-result-row', { dataset: { outcome: results[c.key] } },
-    h('span.ob-result-mark', { 'aria-hidden': 'true' }, results[c.key] === 'clean' ? '✓' : results[c.key] === 'retry' ? '·' : '✗'),
-    h('span.ob-result-name', c.label),
-    h('span.muted.fs-1', results[c.key] === 'clean' ? cleanSub(c) : results[c.key] === 'retry' ? 'second try' : 'start here')));
+  // fix5:home r3 (critic r2): the long "needs the … item clean too" note sat in the row's `auto` column and crushed the
+  // label to "Line / ar / word / prob / lem" at 375 px. The right column keeps the short tag; the note gets its own
+  // line under the label.
+  const rows = PLACEMENT_CLUSTERS.filter(c => results[c.key]).map(c => {
+    const [tag, note] = (results[c.key] === 'clean' ? cleanSub(c) : results[c.key] === 'retry' ? 'second try' : 'start here').split(' · ');
+    return h('li.ob-result-row', { dataset: { outcome: results[c.key] } },
+      h('span.ob-result-mark', { 'aria-hidden': 'true' }, results[c.key] === 'clean' ? '✓' : results[c.key] === 'retry' ? '·' : '✗'),
+      h('span.ob-result-name', c.label, note ? h('span.ob-result-note.muted.fs-1', note) : null),
+      h('span.muted.fs-1.ob-result-tag', tag));
+  });
 
   el.append(h('section.screen.ob-step', { 'aria-labelledby': 'ob-h4' },
     h('p.ob-eyebrow.muted.fs-1', 'Placement done'),

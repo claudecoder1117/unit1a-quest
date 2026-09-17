@@ -11,6 +11,13 @@
 //          (a chain lists every named point along one straight stroke, in order — that is how
 //          collinearity/betweenness is encoded), ticks:[[[C,B],[B,A]], …] (group k → k+1 marks),
 //          labels:[{seg:[C,B], text} | {angle:[X,V,Y], text}], labelOffsets:{seg:{'B-C':[dx,dy]}, point:{}, angle:{}} }
+//          fix5:gen — three OPTIONAL poly fields (absent on every older figure, so their output is unchanged):
+//            arrows:['none'|'end'|'both', …]  parallel to `segments`: 'end' draws the chain as a RAY from its first
+//                   point through its last (the stroke runs past the last point to an arrowhead), 'both' as a LINE;
+//            labelDirs:{A:deg}  the direction a point's letter sits from its dot (default: away from the centroid);
+//            outline:[[x,y],…]  an unlettered closed outline (a plane) drawn under the strokes;
+//            letterSize:n       point-letter size in viewBox units (default 15), for sparse figures shown small.
+//          T-notation's mini-figures use them (js/gen/notation.js).
 //
 // Angles are every ∠XVY with 0 < measure < 180 (composite ones included; straight angles excluded).
 // Relations are STRUCTURAL: linearPair / vertical / adjacent from ray sharing and `lines`;
@@ -87,6 +94,7 @@ export function applyRename(fig, map) {
     if (f.segments) f.segments = mapArr(map, f.segments);
     if (f.ticks) f.ticks = mapArr(map, f.ticks);
     if (f.rightMarks) f.rightMarks = mapArr(map, f.rightMarks);
+    if (f.labelDirs) f.labelDirs = Object.fromEntries(Object.entries(f.labelDirs).map(([k, v]) => [mapName(map, k), v]));   // fix5:gen
   }
   if (f.labels) f.labels = f.labels.map(l => ({ ...l, angle: l.angle ? mapArr(map, l.angle) : undefined, seg: l.seg ? mapArr(map, l.seg) : undefined, point: l.point ? mapName(map, l.point) : undefined, v: l.v ? mapName(map, l.v) : undefined }));
   if (f.labelOffsets) {
@@ -138,6 +146,9 @@ export function resolve(fig, opts = {}) {
     const pts = Object.values(m.points);
     const c = [pts.reduce((s, p) => s + p[0], 0) / pts.length, pts.reduce((s, p) => s + p[1], 0) / pts.length];
     if (m.rotate || m.mirror) m.points = Object.fromEntries(Object.entries(m.points).map(([k, p]) => [k, rotatePoint(p, c, m.rotate, m.mirror)]));
+    // fix5:gen optional fields turn with the points (a letter direction mirrors to 180 − deg, then rotates)
+    if ((m.rotate || m.mirror) && Array.isArray(m.outline)) m.outline = m.outline.map(p => rotatePoint(p, c, m.rotate, m.mirror));
+    if ((m.rotate || m.mirror) && m.labelDirs) m.labelDirs = Object.fromEntries(Object.entries(m.labelDirs).map(([k, d]) => [k, norm((m.mirror ? 180 - d : d) + m.rotate)]));
     m.segments = m.segments ?? []; m.rightMarks = m.rightMarks ?? [];
     m.ticks = Array.isArray(opts.ticks) ? structuredClone(opts.ticks) : (m.ticks ?? []);
   }
@@ -211,7 +222,18 @@ export function validate(model) {
       if (!Array.isArray(p) || p.length !== 2 || !p.every(Number.isFinite)) bad.push(`point ${k}: bad coordinates`);
     }
     const chains = model.segments ?? [];
-    if (chains.length === 0) bad.push('a poly needs segments');
+    if (chains.length === 0 && !Array.isArray(model.outline)) bad.push('a poly needs segments');
+    // fix5:gen optional fields
+    if (model.arrows != null) {
+      if (!Array.isArray(model.arrows) || model.arrows.length > chains.length) bad.push('arrows must be an array no longer than segments');
+      else model.arrows.forEach((a, i) => { if (!['none', 'end', 'both'].includes(a)) bad.push(`arrows[${i}] "${a}" must be none, end or both`); });
+    }
+    for (const [k, d] of Object.entries(model.labelDirs ?? {})) {
+      if (!pts[k]) bad.push(`labelDirs names unknown point ${k}`);
+      if (!Number.isFinite(d)) bad.push(`labelDirs.${k} is not a number`);
+    }
+    if (model.letterSize != null && !(Number.isFinite(model.letterSize) && model.letterSize >= 10 && model.letterSize <= 30)) bad.push('letterSize must be a number from 10 to 30');
+    if (model.outline != null && (!Array.isArray(model.outline) || model.outline.length < 3 || !model.outline.every(p => Array.isArray(p) && p.length === 2 && p.every(Number.isFinite)))) bad.push('outline needs ≥ 3 [x,y] corners');
     for (const ch of chains) {
       if (!Array.isArray(ch) || ch.length < 2) { bad.push(`segment ${JSON.stringify(ch)} needs ≥ 2 points`); continue; }
       for (const n of ch) if (!pts[n]) bad.push(`segment ${ch.join('')} names unknown point ${n}`);
@@ -599,6 +621,20 @@ export function describe(model) {
     if (rays.length) parts.push(rays.join(', ') + (lines.length ? '' : ` from ${model.vertex}`));
     for (const [x, y] of model.rightMarks) parts.push(`right angle ${x}${model.vertex}${y}`);
     for (const l of model.labels) if (l.angle) { const [x, v, y] = l.angle.length === 3 ? l.angle : [l.angle[0], model.vertex, l.angle[1]]; parts.push(`angle ${x}${v}${y} labelled ${l.text}`); }
+    return parts.join('; ');
+  }
+  if (Array.isArray(model.arrows) || Array.isArray(model.outline)) {
+    // fix5:gen: a figure that says which chains are rays / lines is described object by object
+    const parts = [];
+    if (Array.isArray(model.outline)) parts.push('a plane');
+    model.segments.forEach((ch, i) => {
+      const a = model.arrows?.[i] ?? 'none';
+      const through = ch.length > 2 ? ` through ${ch.slice(1, -1).join(', ')}` : '';
+      parts.push(`${a === 'both' ? 'line' : a === 'end' ? 'ray' : 'segment'} ${ch[0]}${ch[ch.length - 1]}${through}`);
+    });
+    const onStroke = new Set(model.segments.flat());
+    const lone = Object.keys(model.points).filter(n => !onStroke.has(n));
+    if (lone.length) parts.push(`${lone.length === 1 ? 'point' : 'points'} ${lone.join(', ')}`);
     return parts.join('; ');
   }
   const chains = model.segments.map(ch => `${ch[0]}${ch[ch.length - 1]}${ch.length > 2 ? ` through ${ch.slice(1, -1).join(', ')}` : ''}`);

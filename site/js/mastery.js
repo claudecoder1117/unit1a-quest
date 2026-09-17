@@ -8,6 +8,15 @@
 //
 // Record shape (S6 `skills[id]`): { m, n, lastAt, lastDueCorrectAt, placedAt } — `decayDays` is added here so
 // decay is idempotent across repeated loads (it is reset by any update).
+// fix5:home r1 — `misses` counts the answers on this skill that were NOT correct (s < 70: a wrong, a retry on
+// attempt ≥ 2, a shown solution, a Mock/Boss miss, a non-clean placement item). It is what separates a
+// genuinely weak skill from one that has merely JUST STARTED (m climbs from 0, so one clean answer shows
+// m_shown = 7): Weak spots require misses ≥ 1, and the provisional Readiness counts a never-missed skill
+// only where it raises M (readiness.js). Records written before the field existed are inferred once
+// (`legacyMisses`, r3: positive evidence only) and stamped explicitly by their next update.
+// fix5:home r2 — `helped` counts the CORRECT answers that needed a hint (s = 70). A hint is not a wrong answer,
+// but a skill that can only be done with one is not "just started" either: `helped ≥ 1` makes a skill count in
+// the provisional M and lets it be a Weak spot, exactly like a miss. A clean answer never touches either count.
 //
 // Leitner (S4): bucket 0–5, intervals [0,1,2,4,7,14] days; clean → +1; with hints → unchanged;
 // wrong → max(0, bucket − 2); due = lastAt + interval. The TEST CLAMP belongs to T10's schedule.js —
@@ -32,6 +41,37 @@ export const MAX_BUCKET = INTERVALS.length - 1;
 const num = (v, d = 0) => (typeof v === 'number' && Number.isFinite(v) ? v : d);
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
+/** The m an all-clean history of n answers from m = 0 reaches: 35, 57.75, 72.5, 82.1, 88.4 … */
+export function cleanM(n) {
+  let m = 0;
+  for (let i = 0; i < Math.min(Math.max(0, n), 60); i++) m += ALPHA * (S.clean - m);
+  return m;
+}
+
+/**
+ * fix5:home r1/r3 — a pre-`misses` record: is there POSITIVE evidence, in the record alone, that an answer on it was
+ * not clean? r3 (critic r2): the r1 rule ("m below the all-clean curve cleanM(n) ⇒ a miss") misread a clean-only record
+ * that had decayed and was answered again (updateSkill resets decayDays, so old decay looks like a deficit). Only
+ * signatures that NO clean-only history can produce count now:
+ *   · m + the decay still charged < 35 (− 0.5 slack): a clean LAST answer always lands at ≥ 35 whatever came before
+ *     (m + 0.35·(100 − m) ≥ 35 from any m ≥ 0), and only the decay since that answer is unrecorded-proof. Below it the
+ *     last answer was wrong, a retry or hinted — counted as a miss, as r1 did (a hint and a miss weigh the same in
+ *     Readiness and Weak spots);
+ *   · no placedAt, n ≥ 5 and m + the charged decay exactly 50 — the retry placement item's write.
+ * Everything else reads 0; the save's own card history / errors[] add the rest (readiness.saveEvidence).
+ * Returns 0 or 1.
+ */
+export function legacyMisses(raw) {
+  const r = raw && typeof raw === 'object' ? raw : {};
+  const n = Math.max(0, Math.floor(num(r.n)));
+  if (n === 0) return 0;
+  const m = clamp(num(r.m), 0, 100);
+  const undecayed = m + DECAY_PER_DAY * Math.max(num(r.decayDays), num(r.decay?.days));
+  if (undecayed < ALPHA * S.clean - 0.5) return 1;
+  if (!Number.isFinite(r.placedAt) && n >= N_FULL && Math.abs(undecayed - PLACEMENT_M.retry) < 1e-9) return 1;
+  return 0;
+}
+
 /** A skill record with defaults filled in (never mutates the input). */
 export function freshSkill(rec = null) {
   const r = rec && typeof rec === 'object' ? rec : {};
@@ -41,9 +81,20 @@ export function freshSkill(rec = null) {
     lastAt: Number.isFinite(r.lastAt) ? r.lastAt : null,
     lastDueCorrectAt: Number.isFinite(r.lastDueCorrectAt) ? r.lastDueCorrectAt : null,
     placedAt: Number.isFinite(r.placedAt) ? r.placedAt : null,
-    decayDays: Math.max(0, Math.floor(num(r.decayDays))),
+    // fix5 integrate: one decay ledger. schedule.js housekeeping (Home, app boot) records charged days on
+    // `decay = { from: lastAt, days }`; this record used only `decayDays`, so an answer after a Home visit charged the
+    // same idle days a SECOND time inside the answer's save (after-ace, 5 idle days: 80 → 74 on Home → 68 on answer).
+    decayDays: Math.max(0, Math.floor(num(r.decayDays)), r.decay && typeof r.decay === 'object' && r.decay.from != null && r.decay.from === r.lastAt ? Math.floor(num(r.decay.days)) : 0),
+    misses: Number.isFinite(r.misses) ? Math.max(0, Math.floor(r.misses)) : legacyMisses(r),   // fix5:home r1
+    helped: Number.isFinite(r.helped) ? Math.max(0, Math.floor(r.helped)) : 0,                 // fix5:home r2 (legacy hints: readiness.saveEvidence reads the card history)
   };
 }
+
+/** fix5:home r1 — has any answer on this skill ever been wrong (s < 70)? */
+export function hasMiss(rec) { return freshSkill(rec).misses > 0; }
+
+/** fix5:home r2 — has any correct answer on this skill needed a hint (s = 70)? */
+export function hasHelp(rec) { return freshSkill(rec).helped > 0; }
 
 /**
  * The S4 score of an outcome.
@@ -74,6 +125,8 @@ export function updateSkill(rec, s, { at = Date.now(), dueReview = false } = {})
     n: r.n + 1,
     lastAt: at,
     decayDays: 0,
+    misses: r.misses + (score < S.hints ? 1 : 0),   // fix5:home r1: wrong / retry / solution shown
+    helped: r.helped + (score >= S.hints && score < S.clean ? 1 : 0),   // fix5:home r2: cleared with a hint
   };
   if (score > 0 && dueReview && gapOk) out.lastDueCorrectAt = at;
   return out;
@@ -120,16 +173,20 @@ export function decayAll(skills, now = Date.now()) {
   return skills;
 }
 
-/** Placement / JUMP: write m with n = 5 (never lowering an earned n) and placedAt. Returns a NEW record. */
+/**
+ * Placement / JUMP pass: write m with n = 5 and placedAt — never lowering an earned m or n (fix5:home r3, critic r2:
+ * a 10/10 JUMP HERE overwrote an EMA-earned 93 with a flat 80 and the finish save lowered Readiness).
+ * Returns a NEW record.
+ */
 export function placeSkill(rec, m, at = Date.now()) {
   const r = freshSkill(rec);
-  return { ...r, m: clamp(num(m), 0, 100), n: Math.max(r.n, N_FULL), lastAt: at, placedAt: at, decayDays: 0 };
+  return { ...r, m: Math.max(r.m, clamp(num(m), 0, 100)), n: Math.max(r.n, N_FULL), lastAt: at, placedAt: at, decayDays: 0 };
 }
 
 /** A Mock / Boss miss on a Mastered skill: m → 69 at once (the Mock is the source of truth). Returns a NEW record. */
 export function mockMiss(rec) {
   const r = freshSkill(rec);
-  return isMastered(r) ? { ...r, m: MOCK_MISS_M } : r;
+  return isMastered(r) ? { ...r, m: MOCK_MISS_M, misses: r.misses + 1 } : r;   // fix5:home r1: a Mock miss is a miss
 }
 
 /**

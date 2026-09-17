@@ -91,7 +91,7 @@ test('binder r2 · JUMP is defined over originals: modules without any are neith
     assert.equal(moduleJumpable(id), !!(m.jump && m.originals.length), id);
   }
   assert.equal(moduleJumpable('M12'), false);   // Systems — families only
-  assert.equal(moduleJumpable('M3'), false);    // Comp/Supp Sprint — chains only
+  assert.equal(moduleJumpable('M3'), false);    // M3 Complement & Supplement — chains only
   assert.equal(moduleJumpable('M4'), true);
   assert.equal(moduleJumpable('nope'), false);
 });

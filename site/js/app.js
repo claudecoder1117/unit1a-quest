@@ -6,6 +6,8 @@ import { daysUntilTest } from './days.js';
 import { screens } from './screens/index.js';
 import { xpForLevel, levelFor, rankFor } from './xp.js';   // T09/Wave 3: the S4 ladder lives in one file
 import { readiness as readinessOf } from './readiness.js';   // W4 integration: the ring is the SHELL's, not a screen's
+import { housekeep } from './schedule.js';   // fix5 integrate: owed decay is charged at boot, not inside an answer's save
+import { todayISO } from './days.js';
 
 export const APP_VERSION = (typeof self !== 'undefined' && self.APP_VERSION) || 'dev';
 
@@ -263,8 +265,27 @@ function placeholder(pattern) {
   };
 }
 
+/* ---------------- owed decay (fix5 integrate) ---------------- */
+/**
+ * Charge any owed idle-day decay (the same schedule.js housekeeping Home runs) BEFORE a screen mounts, once per
+ * calendar day. Without it a phone tab restoring #/run/page after idle days showed the undecayed number in the
+ * header and charged the decay inside the first CLEAN answer's save (57 → 55 on a GOLD clear; critic home r3).
+ * Writes only when a skill decayed or frozen cards were pruned, so an ordinary boot never dirties the save.
+ */
+let housekeptDay = null;
+function chargeOwedDecay() {
+  const today = todayISO();
+  if (housekeptDay === today) return;
+  housekeptDay = today;
+  try {
+    const r = housekeep(structuredClone(getState()), { today });
+    if (r.decayed || r.pruned) update((s) => { housekeep(s, { today }); });
+  } catch (e) { console.error('housekeep', e); }
+}
+
 /* ---------------- router ---------------- */
 function route() {
+  chargeOwedDecay();
   const view = $('view');
   const { path, query } = parseHash();
   if (path === '/' || path === '') { navigate('/today', { replace: true }); return; }
@@ -300,7 +321,8 @@ function boot() {
   }
   const state = load();
   applyTheme(state.settings.theme);
-  syncHeaderFromState(state);
+  chargeOwedDecay();                                                   // fix5 integrate: before the header's first number
+  syncHeaderFromState(getState());
   subscribe((s, reason) => { syncHeaderFromState(s); if (reason !== 'update') applyTheme(s.settings.theme); bus.emit('state', s, reason); });
   storageBanner();
   $('theme-toggle')?.addEventListener('click', toggleTheme);

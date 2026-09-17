@@ -1,4 +1,4 @@
-// data/cards/m1.js — Module M1 "Lexicon": the 55 §0 cards (COMPOSED S2 row 1, S6 card schema).
+// data/cards/m1.js — Module M1 "Vocabulary & Notation" (S2 working title: Lexicon): the 55 §0 cards (COMPOSED S2 row 1, S6 card schema).
 //   voc-01..23  VOC     vocabulary — three presentations of one term (mc · term · termmatch), `pick:'one'`
 //   not-01..09  NOTE    notation — read (`mc` of rendered symbols) and write (`notation` builder), trap items
 //   def-01..14  VOC     standard definitions as `cloze` with chip rows (text verbatim from SOURCE.md §0)

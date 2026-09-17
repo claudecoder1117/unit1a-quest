@@ -76,7 +76,7 @@ export const templates = {
     par: 45,
     module: 'M3',
     sheet: null,
-    label: 'Comp/Supp Sprint',
+    label: 'Complement & Supplement',   // fix5:home r1: no lore in student-facing labels
     blurb: 'Chains of complements and supplements, 1–3 deep.',
     partTypes: ['num'],
   },

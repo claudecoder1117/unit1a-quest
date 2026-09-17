@@ -361,7 +361,8 @@ export function fillPlanStrip(wrap, save, opts = {}) {
     for (const line of plan.lowering.lines) ul.append(el('li', null, line));
     wrap.append(ul);
   }
-  if (plan.mock.offered) {
+  // fix5:home r1 (S9 scorecard #5): Home passes hideMock when its primary button already is the Mock.
+  if (plan.mock.offered && !opts.hideMock) {
     const a = el('a', 'plan-mock', `Mock #1 · 20 items · 40 min`);
     a.href = '#/mock';
     wrap.append(a);

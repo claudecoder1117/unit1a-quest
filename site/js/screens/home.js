@@ -2,7 +2,7 @@
 //
 // One primary button that names the next correct action (page.js `nextAction`), the plan strip SLOT
 // (T14's plan.js fills `#plan-strip`; a minimal day-pill fallback is drawn here so the screen is never blank),
-// weak spots (n ≥ 1 ∧ m_shown < 70, at most 5, each with a "Drill 5" link), the Readiness ring (88 px,
+// weak spots (n ≥ 1 ∧ a miss or a hinted clear ∧ m_shown < 70, at most 5, each with a "Drill 5" link; fix5:home r1 — never-missed skills are "just started"), the Readiness ring (88 px,
 // dashed track while provisional), the streak protractor arc (10° per day) and the level ring with its rank.
 // On every visit: schedule.js housekeeping (mastery decay, frozen pruning, the daily-goal check), today's
 // Readiness logged to forecastLog[], and `setHeader({ readiness, provisional })` for the shell.
@@ -12,7 +12,7 @@
 import { h, bus, navigate, setHeader, levelFor, xpForLevel, rankFor } from '../app.js';
 import { getState, update } from '../store.js';
 import { todayISO, daysUntilTest, addDays, weekday } from '../days.js';
-import { readiness, logForecast, weakSpots, skillStates, coverageCount, sparkline } from '../readiness.js';
+import { readiness, logForecast, weakSpots, skillStates, startedSkills, coverageCount, sparkline, latestMock } from '../readiness.js';
 import { housekeep } from '../schedule.js';
 // home r2 (visual QA): page.js and plan.js are LAZY. page.js drags data/cards.js (233 KB) + data/templates.js →
 // every js/gen/* (311 KB) onto Home's static graph, and a cold 3G-class open measured 7.7 s to the CTA against
@@ -136,11 +136,37 @@ function planStrip(state, today, D) {
   return wrap;
 }
 
-function weakList(state) {
+/** fix5:home r2 — the grey line's phrases: "Just started" is only true below 3 answers; past that it is "no misses yet". */
+export function startedPhrases(started) {
+  const names = list => `${list.slice(0, 5).map(s => s.name).join(' · ')}${list.length > 5 ? ` · +${list.length - 5}` : ''}`;
+  const fresh = started.filter(s => s.n < 3), more = started.filter(s => s.n >= 3);
+  const out = [];
+  if (fresh.length) out.push(`Just started, no misses yet: ${names(fresh)}`);
+  if (more.length) out.push(`No misses yet, still under 70: ${names(more)}`);
+  return out;
+}
+
+/** fix5:home r2 — the empty state names the next step the CTA actually offers, not always "take the Baseline". */
+export function weakEmptyLine(kind, { locked = false } = {}) {
+  if (kind === 'resume') return 'No weak spots yet — finish the page and they show up here.';
+  if (kind === 'mock') return 'No weak spots yet — the Mock will find them.';
+  if (kind === 'night' || kind === 'morning') return 'No weak spots on record.';
+  if (locked) return 'No weak spots right now — nothing you have missed is under 70.';
+  return 'No weak spots yet — take the Baseline or run a Page.';
+}
+
+function weakList(state, kind = null) {
   const ws = weakSpots(state);
   const sec = h('section.card.home-weak', { 'aria-labelledby': 'weak-h' }, h('h2#weak-h.fs-3', 'Weak spots'));
+  // fix5:home r1 (S9 scorecard #1): a skill answered right but only once or twice reads m_shown 7 — that is the
+  // m = 0 starting point, not a verdict. Weak spots need a wrong answer (or, r2, a hinted clear); these get a grey line.
+  const phrases = startedPhrases(startedSkills(state));
+  const startedLine = phrases.length
+    ? h('p.muted.fs-1.weak-started', { dataset: { tone: 'started' } }, phrases.join('. '))
+    : null;
   if (!ws.length) {
-    sec.append(h('p.muted.empty', 'No weak spots yet — take the Baseline or run a Page.'));
+    sec.append(h('p.muted.empty', weakEmptyLine(kind, { locked: latestMock(state) != null })));
+    if (startedLine) sec.append(startedLine);   // DOM append() would print a null as the text "null"
     return sec;
   }
   sec.append(h('ul.weak-list', ws.map(w => h('li.weak-row',
@@ -150,6 +176,7 @@ function weakList(state) {
     h('span.weak-m.mono', { 'aria-label': `mastery ${Math.round(w.mShown)}` }, String(Math.round(w.mShown))),
     h('a.btn.btn-drill', { href: w.drill }, 'Drill 5'),
   ))));
+  if (startedLine) sec.append(startedLine);
   return sec;
 }
 
@@ -157,14 +184,14 @@ function skillRail(state) {
   const rail = h('aside.rail.home-rail', { 'aria-labelledby': 'skills-h' }, h('h2#skills-h.fs-3', 'Skills'));
   const list = h('ul.skill-list');
   for (const s of skillStates(state)) {
-    const tone = s.untested ? 'untested' : s.mastered ? 'mastered' : s.weak ? 'weak' : 'ok';
+    const tone = s.untested ? 'untested' : s.mastered ? 'mastered' : s.weak ? 'weak' : s.started ? 'started' : 'ok';   // fix5:home r1
     list.append(h('li.skill-row', { dataset: { tone } },
       h('span.skill-name', s.name, s.placed ? h('span.skill-tag.mono', { title: 'placed' }, ' ·placed') : null),
       h('span.skill-bar', { 'aria-hidden': 'true' }, h('span.skill-fill', { style: { transform: `scaleX(${s.untested ? 0 : Math.max(0.02, s.mShown / 100)})` } })),
       h('span.skill-m.mono', s.untested ? '—' : String(Math.round(s.mShown))),
     ));
   }
-  rail.append(list, h('p.muted.fs-1', 'Greyed skills are untested — never listed as weak.'));
+  rail.append(list, h('p.muted.fs-1', 'Greyed skills are untested or have no misses yet — a skill is weak only after a wrong answer or a hint.'));
   return rail;
 }
 
@@ -186,7 +213,9 @@ function heroBlock(state, rd, today) {
       mockLine,
       // home r2: nowrap terms (the line wraps only at a separator) and no T−N — the header chip shows it.
       h('p.rd-terms.mono.fs-1.muted',
-        h('span.rd-term', !rd.provisional ? `mastery ${pct(rd.M)}` : rd.tested === 0 ? 'no skill tested yet' : `mastery ${pct(rd.M)} of ${rd.tested} tested`), ' · ',
+        // fix5:home r1: provisional M no longer averages every tested skill (a just-started one counts only where it
+        // raises it), so "of N tested" would misstate it — the note line above already says how many are tested.
+        h('span.rd-term', rd.provisional && rd.tested === 0 ? 'no skill tested yet' : `mastery ${pct(rd.M)}`), ' · ',
         h('span.rd-term', `binder ${cov.cleared}/${cov.total}`)),
       sparkEl,
     ),
@@ -265,7 +294,8 @@ function render(el, state, today) {
     ip && act.kind !== 'resume' ? h('a.btn', { href: '#/run/page' }, 'Continue page') : null,
     boss && act.kind !== 'boss' ? h('a.btn', { href: bossHref(boss.id) }, `Boss: ${boss.name}`) : null,
     h('a.btn', { href: '#/binder' }, 'Binder'),
-    h('a.btn', { href: '#/mock' }, 'Mock'),
+    // fix5:home r1 (S9 scorecard #5): when the primary button IS the Mock, it is the one Mock entry point.
+    act.kind !== 'mock' ? h('a.btn', { href: '#/mock' }, 'Mock') : null,
     h('a.btn', { href: '#/stats' }, 'Stats'),
     h('a.btn', { href: '#/sheet' }, 'Sheet'),
   );
@@ -273,9 +303,9 @@ function render(el, state, today) {
   const col = h('div.col',
     heroBlock(state, rd, today),
     h('div.home-cta', primary, sub.length ? h('p.home-cta-sub.muted.fs-1', sub.join(' · ')) : null),
-    fillPlanStrip(planStrip(state, today, D), state, { today }),   // T14 (the call below is the fallback)
+    fillPlanStrip(planStrip(state, today, D), state, { today, hideMock: act.kind === 'mock' }),   // T14 (the call below is the fallback); fix5:home r1 — no second Mock link under a Mock CTA
     h('section.card.home-today', { 'aria-label': 'Today' }, goalMeter(state, today), streakArc(state.streak ?? { count: 0, best: 0 }), levelRing(state.xp ?? 0)),
-    weakList(state),
+    weakList(state, act.kind),
     secondary,
   );
   // NOT `.screen` (that caps the whole grid at 680 px) — `.with-rail` lays out the 680 column + 320 rail (T01)

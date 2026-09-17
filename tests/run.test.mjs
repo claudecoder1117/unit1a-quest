@@ -272,7 +272,9 @@ test('T16 JUMP: 8 of 10 marks the module placed with m = 80 and n = 5', async (t
     s.skills.FAC1 = { m: 95, n: 9, lastAt: NOW - 1000, lastDueCorrectAt: null, placedAt: null, decayDays: 0 };
     R.applyJump(s, 'M10', { correct: 9, total: 10, at: NOW });
     assert.equal(s.skills.FAC1.n, 9);
-    assert.equal(s.skills.FAC1.m, 80);
+    // fix5:home r3 (critic r2): a JUMP pass never lowers an earned m either (a flat 80 over an earned 95 lowered
+    // Readiness on the finish save of an all-correct run) — mastery.placeSkill keeps max(m, 80).
+    assert.equal(s.skills.FAC1.m, 95);
   });
 
   await t.test('the JUMP queue is 10 items for every module that offers one', () => {

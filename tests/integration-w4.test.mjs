@@ -27,7 +27,9 @@ function tier4Save() {
   s.settings.testDate = '2026-09-23';
   for (const sk of ALL_SKILLS) s.skills[sk.id] = { m: 90, n: 4, lastAt: NOW - DAY };
   for (const id of ['BISECT-1', 'BISECT-2', 'MID-TRI', 'QUAD-CTX', 'DIAG-ALG']) {
-    if (s.skills[id]) s.skills[id] = { m: 45, n: 3, lastAt: NOW - DAY };
+    // fix5:home r3: `misses: 1` — a weak spot needs a recorded miss; a legacy {m 45, n 3} is reachable by clean answers
+    // with idle-day decay in between, so it is no longer inferred as one (notes/FIX5-home.md).
+    if (s.skills[id]) s.skills[id] = { m: 45, n: 3, lastAt: NOW - DAY, misses: 1 };
   }
   return s;
 }

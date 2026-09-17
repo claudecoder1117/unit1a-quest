@@ -232,7 +232,9 @@ describe('dues, frozen returns, weak Variants, floor, label', () => {
   });
   test('weak-skill Variants: 2–3 ordered by w × (1 − m/100); ASN weak spots fall back to an original; a floor of 2 M11/M12 Variants', () => {
     const s = mk();
-    s.skills = { 'CS-LIN': { m: 20, n: 4, lastAt: NOW }, 'ASN-ANG': { m: 50, n: 3, lastAt: NOW }, PAIRS: { m: 60, n: 5, lastAt: NOW } };
+    // fix5:home r3: `misses: 1` — weak spots need a recorded miss; {m 50, n 3} / {m 60, n 5} are reachable by clean
+    // answers with idle-day decay, so a record without the field is no longer inferred as missed (notes/FIX5-home.md).
+    s.skills = { 'CS-LIN': { m: 20, n: 4, lastAt: NOW }, 'ASN-ANG': { m: 50, n: 3, lastAt: NOW, misses: 1 }, PAIRS: { m: 60, n: 5, lastAt: NOW, misses: 1 } };
     const { queue, meta } = composePage(s, { now: NOW });
     const weak = queue.filter(it => it.role === 'weak');
     assert.equal(weak.length, 3);

@@ -38,7 +38,7 @@ tall at 375). Reduced-motion Summary not re-shot (page-r2 pins the no-frozen-she
 hidden. Overall wow: **8 / 10** — the product is complete, honest and quick; the remaining edges are the ones a
 student meets in the first ten minutes.
 
-## What a student will notice first (≤ 5 rough edges)
+## What a student will notice first (≤ 5 rough edges) — all five fixed in v2026-09-17d
 
 1. **"I got it right and my number went down."** Every clean answer on a *new* skill drops the provisional
    Readiness/mastery and can list the skill as weak: after four first-try page items from the aced Home,
@@ -48,20 +48,47 @@ student meets in the first ten minutes.
    published `m_shown = m × min(1, n/5)` rule doing its job, but the words "weak" and the falling number read as
    a verdict on answers that were right. Fix idea: a skill with `n < 3` and no wrong answer says "just started"
    (grey), not "weak"; or show the ring's delta as "+ still testing".
+   **FIXED (fix5 home r1–r3 + integrator, v2026-09-17d).** A clean first-try answer never lowers the provisional
+   Readiness or the mastery %, and a skill with no wrong or hinted answer is grey "Just started", never weak. Dip run:
+   57 / 80 % → **61 / 84 %** after four clean Page items (`qa/screenshots/s9/p-17-home-midpage-dip.png`). The critic r3
+   blocker (a wrong *optional* setup, then a GOLD clear: 57 → 50 plus "Weak spots · Diagram Algebra 7") was fixed at merge.
+   `readiness.saveEvidence` ignores errors[] rows from the setup slot, so it now reads **58**, with FIG-ALG shown as "just
+   started" (`qa/screenshots/fix5-integrate/setupwrong-home.png`). The same merge found that Home's housekeeping and
+   an answer's `decayAll` kept separate decay ledgers, so idle days were charged twice (80 → 74 → 68). That is
+   fixed: one ledger, and owed decay is charged at boot before any screen mounts. A tab reopened straight onto
+   #/run/page after 5 idle days shows 53 and then 55 after a clean item, with no drop inside the answer
+   (`fix5-integrate/idle-direct-after1.png`). Tests: `tests/fix5-home.test.mjs`, `tests/fix5-integrate.test.mjs`.
 2. **Placement item 1 says "Points Z, N, K and X are labelled in the figure" and there is no figure**
    (`p-05-place-item1.png`) — `T-notation` emits `figure: null` (OPEN-ISSUES C). The very first problem in the
    app contradicts itself. Either draw the small fan figure or reword the generated stem when there is none.
+   **FIXED (fix5 gen r1).** T-notation v2 draws a small figure from the item's own letters, gated by validate/lint.
+   Items that need no picture (`read`, one-letter plane) no longer mention a figure. Evidence:
+   `qa/screenshots/s9/p-05-place-item1.png` and `qa/screenshots/fix5-gen/integrate-place-item1-light.png`. The
+   integrator also stopped the phone answer-lift from parking the card's chip row half under the sticky
+   Placement head, which is what the walk shot showed. Tests: `tests/fix5-gen.test.mjs` (2000+ seeds).
 3. **On a phone, the Page's answer box starts below the fold.** Three stacked headers (app bar · "← Quit /
    Today's Page / 0 of 13 done" · card chips) plus the paper push "Build the symbol…" under the dock on item 1
    at 375×667 (`p-09-page-item1.png`). The figure is visible; the thing to tap is not.
+   **FIXED (fix5 run r1–r2).** The run head is now one 44 px row, the chips sit beside the skill name, and short
+   phones get tighter paper. The item-1 builder row sits above the dock (`qa/screenshots/s9/p-09-page-item1.png`;
+   measured table in `notes/FIX5-run.md`). Integrator follow-up: the 150 px figure cap now applies only to
+   notation-builder cards. ang-10's algebra labels had shrunk to ≈ 7.5 px and are back to 13 px, with the setup
+   field still above the dock at 548 px (`qa/screenshots/fix5-integrate/card-ang10-375-light.png`).
 4. **The Summary's family tiles say bronze/silver while the card just said GOLD**, and the label
    "Quadratics, a > 1" wraps to "Quadratics / , a > 1" with an orphaned comma (`p-11-summary.png`). The family
    ladder is per spec (Foil rule), but the tile under a "◆ GOLD +72 XP" result reading "bronze" needs one word
    of explanation ("family tile · 1 of 6 Gold").
+   **FIXED (fix5 run r1–r2).** Family tiles span two columns. They name the family ("Quadratics (a = 1)") and show
+   the ladder line "2/6 ◆ → Gold at 3", and a one-line legend explains that family tiles count Gold Variants. No
+   orphaned comma (`qa/screenshots/s9/p-11-summary.png`). Tests: `tests/fix5-run.test.mjs`.
 5. **Home shows the Mock twice** once the CTA becomes "Mock #1": the big button *and* the underlined
    "Mock #1 · 20 items · 40 min" link right under the plan strip (`v-laptop-light-home.png`,
    `v-phone-dark-home.png`); the link is also a 32 px tap target. Smaller kin: the placement summary's module
    names ("Factor Forge", "ASN Arena", "Lexicon") are the only lore words left in the app (Appendix A says none).
+   **FIXED (fix5 home r1–r3).** When the CTA is the Mock, Home has exactly one Mock entry (the 56 px button). In
+   other states the plan link is a 44 px target (`qa/screenshots/fix5-home/r3/mockcta-light-full.png`; in
+   `s9/p-08-home.png` the CTA is RUN NEXT, so the link stays). Module names contain no lore
+   (`qa/screenshots/s9/p-07-place-summary.png`), and M6 is now "Diagram Algebra" to match the skill name.
 
 ## Not scored / left to the next pass
 

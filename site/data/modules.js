@@ -2,6 +2,9 @@
 // Every SOURCE item lives in exactly one module's `originals` (its Original Set, in sheet order).
 // `templates` name the generators (js/gen/*, registered in data/templates.js) that feed the module's
 // Infinite view, Variants and Boss runs. Nothing here locks anything (Global rule 1).
+// fix5:home r1: module `name`s are dry and descriptive (COMPOSED tone "no lore", Appendix A) — the S2 table's
+// working titles (Lexicon, Figure Recon, Comp/Supp Sprint, Bisector Verdicts, ASN Arena, Factor Forge) survive
+// only in comments. Boss names are S2's and stay.
 
 const range = (prefix, from, to, pad = 2) => {
   const out = [];
@@ -26,20 +29,20 @@ const M4_ORIGINALS = [
 
 export const modules = Object.freeze([
   {
-    id: 'M1', name: 'Lexicon', skills: ['VOC', 'NOTE', 'CLASS'],
+    id: 'M1', name: 'Vocabulary & Notation', skills: ['VOC', 'NOTE', 'CLASS'],
     originals: M1_ORIGINALS,
     // fact-01..05 sit in M1's set but drive ASN-PLP (S2 manifest line: `fact-* → ASN-PLP`).
     templates: ['T-vocab', 'T-notation', 'T-classify'],
     boss: 'B1', blitz: 60, jump: true,
   },
   {
-    id: 'M2', name: 'Figure Recon', skills: ['PAIRS'],
+    id: 'M2', name: 'Pairs in a Figure', skills: ['PAIRS'],
     originals: ['ang-wu-1', 'ang-wu-2', 'ang-wu-3', 'ang-wu-4', 'ang-wu-5'],
     figure: 'F1G', templates: ['T-fig-pairs'],
     boss: null, bossVia: 'B2', jump: true,
   },
   {
-    id: 'M3', name: 'Comp/Supp Sprint', skills: ['CSARITH'],
+    id: 'M3', name: 'Complement & Supplement', skills: ['CSARITH'],
     originals: [],                       // none fixed — T-csarith chains depth 1–3 (BLITZ + cards)
     templates: ['T-csarith'],
     boss: null, bossVia: 'B1', blitz: 60, jump: true,
@@ -57,13 +60,14 @@ export const modules = Object.freeze([
     boss: null, bossVia: 'B4', jump: true,
   },
   {
-    id: 'M6', name: 'Figure Algebra', skills: ['FIG-ALG'],
+    id: 'M6', name: 'Diagram Algebra',   // fix5 integrate: one name with skills.js FIG-ALG
+    skills: ['FIG-ALG'],
     originals: ['ang-10', 'doc-07'],
     figure: 'F1A', templates: ['T-fig-xlines-L', 'T-fig-xlines-Q', 'T-fig-system'],
     boss: 'B6', jump: true,
   },
   {
-    id: 'M7', name: 'Bisector Verdicts', skills: ['BISECT-L', 'BISECT-Q'],
+    id: 'M7', name: 'Does It Bisect?', skills: ['BISECT-L', 'BISECT-Q'],
     originals: ['ang-05', 'doc-05'],
     templates: ['T-fig-bisect-L', 'T-fig-bisect-Q'],
     boss: 'B5', jump: true,
@@ -75,13 +79,13 @@ export const modules = Object.freeze([
     boss: 'B7', jump: true,
   },
   {
-    id: 'M9', name: 'ASN Arena', skills: ['ASN-PLP', 'ASN-ANG'],
+    id: 'M9', name: 'Always / Sometimes / Never', skills: ['ASN-PLP', 'ASN-ANG'],
     originals: [...range('asn', 1, 36), ...range('qz', 1, 18)],
     templates: [], modes: ['full36'],
     boss: 'B2', blitz: 90, jump: true,
   },
   {
-    id: 'M10', name: 'Factor Forge', skills: ['FAC1', 'FAC2'],
+    id: 'M10', name: 'Factoring', skills: ['FAC1', 'FAC2'],
     originals: range('fac', 1, 18),      // sheet order; 8, 9, 18 teach GCF, 16 negative lead, 11–15 a-term on either factor
     templates: ['T-factor-a1', 'T-factor-a2', 'T-factor-gcf', 'T-factor-neg'],
     boss: 'B3', jump: true,
@@ -116,8 +120,8 @@ export const moduleById = Object.freeze(Object.fromEntries(modules.map(m => [m.i
  * Bronze/Silver/Gold at 1/2/3 Gold Variants; Platinum at 6 Gold Variants across ≥ 2 days (S4).
  */
 export const families = Object.freeze([
-  { id: 'fam-quad-a1',  name: 'Quadratics, a = 1',  module: 'M11', sheet: 'ALG', skills: ['QUAD-SOLVE'], template: 'T-quad-solve', params: { a: 1 }, tier: 2 },
-  { id: 'fam-quad-a2',  name: 'Quadratics, a > 1',  module: 'M11', sheet: 'ALG', skills: ['QUAD-SOLVE'], template: 'T-quad-solve', params: { a: '>1' }, tier: 3 },
+  { id: 'fam-quad-a1',  name: 'Quadratics (a = 1)', module: 'M11', sheet: 'ALG', skills: ['QUAD-SOLVE'], template: 'T-quad-solve', params: { a: 1 }, tier: 2 },
+  { id: 'fam-quad-a2',  name: 'Quadratics (a > 1)', module: 'M11', sheet: 'ALG', skills: ['QUAD-SOLVE'], template: 'T-quad-solve', params: { a: '>1' }, tier: 3 },
   { id: 'fam-quad-ctx', name: 'Reject the Root',    module: 'M11', sheet: 'ALG', skills: ['QUAD-CTX'],   template: 'T-quad-ctx',   params: {}, tier: 3 },
   { id: 'fam-sys',      name: 'Systems',            module: 'M12', sheet: 'ALG', skills: ['SYS'],        template: 'T-sys',        params: {}, tier: 2 },
 ].map(Object.freeze));

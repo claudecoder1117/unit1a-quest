@@ -519,3 +519,118 @@
 .rd-spark .spark-base { vector-effect: non-scaling-stroke; }
 .rd-spark .spark-dot { fill: none; stroke: var(--accent); stroke-width: 5; stroke-linecap: round; }
 /* === /integration r2 === */
+
+/* === fix5:run r1 === Today's Page on a phone: the answer control above the sticky dock (S9 #3 "rough edges"),
+   and the Summary's family tiles (S4 family ladder, no orphaned comma).
+   Below 1024 the run head is ONE slim row — 44 px "←" Quit · title · "0 of 13 done" — with the progress bar
+   as a 3 px line riding the head's bottom border (was three rows, 84 px). The card's chip row keeps the skill
+   name beside the chips instead of forcing it onto its own line. On a short viewport (≤ 760 px tall) the paper
+   pads 12 px, the notation preview is 60 px (not 84) and a figure that is not the answer surface caps at 150 px; a pairs card (the figure IS the
+   answer) keeps its full width so the wedges stay ≥ 44 px — card.js revealAnswer() lifts its field instead.
+   ≥ 1024 is untouched. */
+@media (max-width: 1023px) {
+  .run-screen { gap: 8px; }
+  .run-head { position: relative; gap: 8px; padding-bottom: 4px; }
+  .run-head:has(> .run-progress) { flex-wrap: nowrap; }   /* BLITZ's clock + score HUD keeps its own wrap row */
+  .run-titles { flex: 1 1 auto; min-width: 0; display: flex; align-items: baseline; gap: 8px; }
+  .run-title { flex: 0 1 auto; min-width: 0; font-size: var(--fs-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .run-sub { flex: 1 1 0; min-width: 0; margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .run-progress { flex: 0 0 auto; gap: 0; }
+  .run-progress-n { white-space: nowrap; }
+  .run-progress-track { position: absolute; left: 0; right: 0; bottom: -1px; min-width: 0; max-width: none; height: 3px; border-radius: 0; background: transparent; }
+  .run-progress-fill { border-radius: 0 2px 2px 0; }
+  .card-head { gap: 6px; }
+  .card-skills { flex: 1 1 110px; }
+}
+@media (max-width: 639px) {
+  .run-quit { width: var(--tap); padding: 0; font-size: var(--fs-3); }
+  .run-quit-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .run-head[data-kind="page"] .run-sub { display: none; }   /* r2: the Page's "11 new + 2 variants" only — other runs' subtitles are rules (fix5:run r2) */
+}
+@media (max-width: 1023px) and (max-height: 760px) {
+  .card-screen { gap: 8px; }
+  .card-paper { padding: 12px 12px 12px 36px; }
+  .card-no { left: 8px; top: 12px; }
+  .card-paper[data-no="long"] { padding-left: 12px; }
+  .card-paper[data-no="long"] .card-no { margin-bottom: 6px; }
+  .card-figure { margin-top: 10px; }
+  .card-screen:not(:has(.card-part[data-type="pairs"])) .card-figure,
+  .card-screen:not(:has(.card-part[data-type="pairs"])) .card-figure .fig { max-height: 150px; }
+  .card-stem { line-height: 1.42; }
+  #view:has(> .run-screen) { padding-top: 8px; }
+  .card-screen .w-nt-preview { min-height: 60px; margin-bottom: 8px; padding-block: 6px; }
+}
+
+/* ≥ 1024 (found while checking this lane for regressions, pre-existing since W4): base.css `.screen { max-width:
+   var(--col) }` capped the run screen at 680 px, so the card inside it laid out its 680 + 320 rail in 680 —
+   the paper got 336 px, its two-column stem track 0 px, and the stem printed one letter per line
+   (qa/screenshots/s9/v-laptop-light-page.png). A run that hosts a card gets the card route's width. */
+@media (min-width: 1024px) {
+  .run-screen:has(> .run-stage > .card-screen) { max-width: none; }
+}
+
+/* Summary family tiles: a family tile takes two grid columns (130 px) so its third line — where it stands on
+   the ladder, "1/6 ◆ → Silver at 2" (r2 wording) — fits; the name never breaks inside "(a > 1)" and no caption line can start
+   with punctuation (the 60 px caption's `overflow-wrap: anywhere` split "Quadratics, a > 1" into "Quadratics" /
+   ", a > 1"). A one-line legend under the grid prints the family rule the Binder tooltip prints. */
+.sum-tiles > li { align-content: start; }   /* a two-column family cell makes its row taller: neighbours keep their caption under the tile */
+.sum-tiles > li[data-fam="true"] { grid-column: span 2; width: 130px; }
+.sum-tiles > li[data-fam="true"] .sum-tile-cap { width: 130px; overflow-wrap: normal; word-break: normal; }
+.sum-tile-cap { overflow-wrap: break-word; }
+.sum-nowrap { white-space: nowrap; }
+.sum-tile-fam { font-family: var(--font-mono); font-size: 11px; line-height: 1.2; }
+.sum-fam-legend { margin: 10px 0 0; line-height: 1.4; max-width: 60ch; }
+.sum-fam-legend-k { color: var(--text); font-weight: 600; }
+/* === /fix5:run r1 === */
+
+/* === fix5:home r1 === */
+/* S9 scorecard #1: a just-started skill (answered, never wrong) is grey, never the warn colour. */
+.skill-row[data-tone="started"] .skill-name, .skill-row[data-tone="started"] .skill-m { color: var(--muted); }
+.skill-row[data-tone="started"] .skill-fill { background: var(--muted); opacity: .55; }
+.weak-started { margin: 8px 0 0; line-height: 1.4; }
+/* S9 scorecard #5: the plan's Mock link (and "How did it go?") is a real 44 px tap target (S5 "Tap targets ≥ 44 px"). */
+.plan-mock, .plan-post-link { min-height: var(--tap, 44px); min-width: 44px; margin-top: 2px; }
+/* === /fix5:home r1 === */
+
+/* === fix5:gen r1 === T-notation mini-figures: the unlettered plane outline (poly `outline`, figure/svg.js) */
+.fig-plane { fill: none; stroke: var(--fig-line, currentColor); stroke-width: 1.5; stroke-linejoin: round; opacity: .55; }
+/* === /fix5:gen r1 === */
+
+/* === fix5:run r2 === (1) Run subtitles are rules ("hints off, first try only", "these pay full XP", "+XP for
+   finishing"): below 1024 every run except the Page shows its subtitle on its own full-width muted line under
+   the one-row head (the Page's "11 new + 2 variants" stays hidden on a phone — r1). (2) Short phones: the
+   notation builder's preview box 44 px (was 60), so item 1's first row of symbol buttons shows whole above the
+   dock with no scroll. (3) Summary family ladder line never wraps (≤ 19 characters by construction). */
+@media (max-width: 1023px) {
+  .run-head:not([data-kind="page"]):has(.run-sub) { flex-wrap: wrap; row-gap: 2px; }
+  .run-head:not([data-kind="page"]):has(.run-sub) > .run-titles { display: contents; }
+  .run-head:not([data-kind="page"]):has(.run-sub) .run-title { flex: 1 1 0; }
+  .run-head:not([data-kind="page"]) .run-sub { order: 3; flex: 1 1 100%; min-width: 0; white-space: normal; overflow: visible; text-overflow: clip; line-height: 1.35; }
+  /* BLITZ: the full title keeps the row; its rule line, then the clock/score HUD row under it (no "BLITZ · Vocabu…") */
+  .run-head[data-kind="blitz"] .run-title { flex: 1 1 auto; white-space: normal; }
+  .run-head[data-kind="blitz"] > .blitz-hud { order: 4; }
+}
+@media (max-width: 1023px) and (max-height: 760px) {
+  .card-screen .w-nt-preview { min-height: 44px; padding-block: 4px; margin-bottom: 4px; }
+  .card-figure { margin-top: 6px; }
+}
+.sum-tiles > li[data-fam="true"] .sum-tile-fam { white-space: nowrap; }
+/* === /fix5:run r2 === */
+
+/* === fix5:home r3 === placement summary: the sibling note ("needs the ratio item clean too") is its own line under the
+   label, and the right-hand tag can never take more than half the row — the label no longer breaks per syllable. */
+.ob-result-note { display: block; margin-top: 1px; line-height: 1.35; }
+.ob-result-row > .ob-result-tag { max-width: 48vw; text-align: right; }
+.ob-result-name { overflow-wrap: normal; }
+/* === /fix5:home r3 === */
+
+/* === fix5:integrate r1 === Short portrait phones (≤ 760 px tall): fix5:run r1 capped every non-pairs card figure at
+   150 px so the notation builder's first row clears the dock. On a shipped figure with algebra labels (ang-10:
+   "−x + 84", "2x² − 4x + 3") that scaled 13-unit labels to ≈ 7.5 px (fix5:gen note). Only notation-builder cards
+   keep the 150 px cap; any other non-pairs figure gets its natural 375-px height back (≈ 190 px), and the first
+   control still sits above the dock (qa/fix5-run-measure.mjs). Landscape (≤ 480 px tall) keeps its own 200 px rule. */
+@media (max-width: 1023px) and (min-height: 481px) and (max-height: 760px) {
+  .card-screen:not(:has(.card-part[data-type="pairs"])):not(:has(.card-part[data-type="notation"])) .card-figure,
+  .card-screen:not(:has(.card-part[data-type="pairs"])):not(:has(.card-part[data-type="notation"])) .card-figure .fig { max-height: 190px; }
+}
+/* === /fix5:integrate r1 === */

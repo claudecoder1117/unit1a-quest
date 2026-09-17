@@ -34,7 +34,10 @@ describe('mastery: the EMA update and m_shown', () => {
   test('m ← m + 0.35·(s − m), n + 1, lastAt; the input record is never mutated', () => {
     assert.equal(ALPHA, 0.35);
     const r0 = freshSkill();
-    assert.deepEqual(r0, { m: 0, n: 0, lastAt: null, lastDueCorrectAt: null, placedAt: null, decayDays: 0 });
+    // fix5:home r1: records now carry `misses` (wrong answers on the skill) — Weak spots and the provisional
+    // Readiness tell a weak skill from a just-started one by it (notes/FIX5-home.md).
+    // fix5:home r2: … and `helped` (correct answers that needed a hint), which counts like a miss for those two.
+    assert.deepEqual(r0, { m: 0, n: 0, lastAt: null, lastDueCorrectAt: null, placedAt: null, decayDays: 0, misses: 0, helped: 0 });
     const r1 = updateSkill(r0, 100, { at: T0 });
     near(r1.m, 35); assert.equal(r1.n, 1); assert.equal(r1.lastAt, T0);
     assert.deepEqual(r0, freshSkill(), 'pure');

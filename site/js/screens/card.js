@@ -91,6 +91,8 @@ function mods() {
 
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 const num = (v, d = 0) => (typeof v === 'number' && Number.isFinite(v) ? v : d);
+/** fix5 run r1: what counts as "the answer control" when lifting it above the dock (a read-only preview is not one). */
+const ANSWER_CONTROL = 'input:not([disabled]):not([type=hidden]), textarea, select, button:not([disabled]), [role="button"]:not(output), [tabindex="0"]:not(output)';
 const reduceMotion = () => (typeof matchMedia === 'function' ? matchMedia('(prefers-reduced-motion: reduce)').matches : true);
 
 /** The S6 default record for cards[id], created on demand inside an update(). */
@@ -379,6 +381,7 @@ export function createCardView(host, source = {}, opts = {}) {
     st.startedAt = Date.now(); st.hiddenMs = 0; st.hiddenAt = document.visibilityState === 'hidden' ? Date.now() : null;
     drawPips();
     focusFirst();
+    revealAnswer();
   }
 
   /* ---- head + paper ---- */
@@ -554,6 +557,51 @@ export function createCardView(host, source = {}, opts = {}) {
     // keepVisible() centre it, which parks the stem under the sticky header.
     try { const r = e.box.getBoundingClientRect(); if (r.bottom > innerHeight - (dock.el?.offsetHeight || 0) - 8) return; } catch { /* no layout */ }
     try { e.w.focus(); } catch { /* not focusable */ }
+  }
+
+  /**
+   * fix5 run r1 (S9 "phone-complete"): on a phone, when the compact layout still leaves the first answer control
+   * under the sticky dock (a long stem + note + figure), scroll the page just enough to lift the control's top
+   * above the dock — never further than keeps the stem's first line below the sticky app bar. One instant
+   * scroll as part of the mount (not an animation); nothing is focused, so no OS keyboard pops up.
+   */
+  function revealAnswer() {
+    if (o.mode !== 'card' || o.sandbox) return;
+    if (typeof matchMedia !== 'function' || !matchMedia('(max-width: 1023px)').matches) return;
+    if (typeof requestAnimationFrame !== 'function') return;
+    // measure after the navigation slide (#view .view-enter, 24 px) settles — a translated ancestor makes the
+    // control look 24 px lower than it will sit, which would scroll a card that already fits
+    const settled = () => {
+      const running = [];
+      for (let el = root; el; el = el.parentElement) { try { for (const a of el.getAnimations?.() ?? []) running.push(a.finished.catch(() => {})); } catch { /* old engine */ } }
+      return running.length ? Promise.race([Promise.all(running), new Promise((res) => setTimeout(res, 700))]) : Promise.resolve();
+    };
+    requestAnimationFrame(() => requestAnimationFrame(() => settled().then(() => {
+      try {
+        if (st.destroyed || !root.isConnected || window.scrollY > 4) return;
+        const ctl = [...partsHost.querySelectorAll(ANSWER_CONTROL)].find((el) => el.getClientRects().length && !el.closest('[hidden]'));
+        if (!ctl) return;
+        const dockTop = window.innerHeight - (dock.el?.offsetHeight || 0);
+        const r = ctl.getBoundingClientRect();
+        const need = Math.ceil(r.top + Math.min(r.height, 52) + 4 - dockTop);   // fix5 run r2: the whole first row (≤ 52 px), not a 28 px peek with its labels under the dock
+        if (need <= 0) return;
+        // fix5 integrate: the cover is the app bar AND any sticky head above this card (the Placement's run head):
+        // measured against the app bar alone, the lift parked the chip row half under the Placement head
+        // (qa/screenshots/s9/p-05-place-item1.png showed "tier 2 · Notation" cut in half).
+        let hdrBottom = document.querySelector('.hdr')?.getBoundingClientRect().bottom ?? 0;
+        for (let el = root; el && el !== document.body; el = el.parentElement) {
+          for (let sib = el.previousElementSibling; sib; sib = sib.previousElementSibling) {
+            if (getComputedStyle(sib).position === 'sticky') hdrBottom = Math.max(hdrBottom, sib.getBoundingClientRect().bottom);
+          }
+        }
+        const room = Math.floor(stemEl.getBoundingClientRect().top - hdrBottom - 8);
+        // snap to a clean edge — the chip row or the paper just under the app bar — rather than half a row
+        // showing through the translucent header; otherwise the exact amount, capped by the stem's first line
+        const edges = [head, paper].map((el) => Math.floor(el.getBoundingClientRect().top - hdrBottom - 4)).filter((y) => y >= need && y <= room);
+        const by = edges.length ? Math.min(...edges) : Math.min(need, room);
+        if (by > 0) window.scrollBy(0, by);
+      } catch { /* no layout (jsdom) */ }
+    })));
   }
 
   function activeEntry() {

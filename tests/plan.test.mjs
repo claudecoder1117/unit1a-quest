@@ -91,7 +91,7 @@ test('S7: R is TIER-WEIGHTED, not a card count', async (t) => {
     assert.equal(plan.workR(famSave).R, 62.5 - 3, 'a tile at Bronze is no longer uncleared work');
 
     const jumped = newSave();
-    jumped.jumps.M10 = true;                                   // JUMP HERE placed the Factor Forge
+    jumped.jumps.M10 = true;                                   // JUMP HERE placed M10 Factoring
     const dropped = 62.5 - plan.workR(jumped).R;
     assert.ok(dropped > 8 && dropped < 10, `18 tier-2/3 factorings ≈ 9, got ${dropped}`);
   });

@@ -262,7 +262,7 @@ export function mountSettings() {
         formula(provExpr.trim()),
         provTail ? hint(provTail.trim().replace(/^./, (c) => c.toUpperCase()) + '.') : null,
         h('dl.set-legend',
-          h('dt.mono', 'M'), h('dd', 'Mastery — Σ w · m_shown / 100 over the 19 skills, weighted the way the test is. A skill shows m_shown = m × min(1, n / 5), so two lucky clears never read as green. While provisional, M runs over the skills tested so far only (n ≥ 1) — an untested skill is an unknown, not a zero.'),
+          h('dt.mono', 'M'), h('dd', 'Mastery — Σ w · m_shown / 100 over the 19 skills, weighted the way the test is. A skill shows m_shown = m × min(1, n / 5), so two lucky clears never read as green. While provisional, M runs over the skills tested so far only (n ≥ 1) — an untested skill is an unknown, not a zero — skills you have got wrong or needed a hint on always count, and any other skill you have answered counts only where it raises M: its low m_shown is the starting point, not a verdict, so answering right first try without a hint never lowers the number (a hint, a wrong answer, idle-day decay and the first Mock’s switch to the full formula can). M also divides by at least 30 of the 100 weight points, so a handful of skills you are good at cannot read as the whole unit: M = Σ w · m_shown / 100 ÷ max(Σ w, 30) over the skills that count.'),
           h('dt.mono', 'A'), h('dd', 'Accuracy of your most recent Mock, × 0.8 for a mini-mock (the day-1 Baseline and the Night-Before mock).'),
           h('dt.mono', 'C'), h('dd', 'Coverage — the share of non-bonus cards cleared at least once. It is exactly your Binder fill.')),
         h('p.set-bands', ...bandRanges().flatMap(([range, label], i) => [

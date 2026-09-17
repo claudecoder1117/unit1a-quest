@@ -29,7 +29,7 @@ test('W5 §A2: one clean placement item can no longer erase a 55-card module', a
   await t.test('the rule is a size rule, and it catches exactly the two modules that need it', () => {
     const offenders = Object.keys(moduleById).filter(m => onboard.placeWithheld(m)
       && onboard.PLACEMENT_CLUSTERS.some(c => c.module === m));
-    assert.deepEqual(offenders.sort(), ['M1', 'M9'], 'Lexicon (55) and ASN Arena (54) — one cluster each');
+    assert.deepEqual(offenders.sort(), ['M1', 'M9'], 'Vocabulary & Notation (55) and Always / Sometimes / Never (54) — one cluster each (fix5:home r1: module names de-lored)');
     for (const m of offenders) assert.ok(onboard.originalsCount(m) > onboard.PLACE_MAX_ORIGINALS, m);
     // Everything else the placement asks about is small enough that S7's sentence stands unchanged.
     for (const c of onboard.PLACEMENT_CLUSTERS) {
@@ -44,7 +44,7 @@ test('W5 §A2: one clean placement item can no longer erase a 55-card module', a
     onboard.applyPlacement(s, { notation: { outcome: 'clean', skills: ['NOTE'], module: 'M1' } }, { now: 1, total: 8 });
     const after = page.newCardPool(s).filter(c => c.module === 'M1').length;
     assert.ok(before > 0);
-    assert.equal(after, before, 'the whole Lexicon would otherwise have gone, and never come back as reviews either');
+    assert.equal(after, before, 'the whole of M1 Vocabulary & Notation would otherwise have gone, and never come back as reviews either');
     assert.equal(moduleById.M1.originals.length, 55);
   });
 
