@@ -1,0 +1,238 @@
+<!doctype html>
+<!-- qa/widgets.html — T08a dev page (NOT served; never copied under site/). Mounts the numeric
+     widgets (num · multi · rootcase · ratio) for ang-10, ang-05, doc-07, wp-10 straight out of
+     site/data/cards.js and grades them with site/js/grader/index.js, in the real CSS.
+     Built as site/dev-widgets.html during T08a and moved here (the qa/figures.html precedent) so
+     T09 and T18 keep the harness; site/ ships without it.
+       node qa/shot.mjs "/qa/widgets.html" out.png --root --w 375 --h 700 [--dark] [--eval "__t08a.report()"]
+     Query params: ?demo=states|reject|cases|cleared  ?kb=260 (fake keyboard inset)  ?ids=ang-09,ang-02 -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex">
+<title>Widgets — dev</title>
+<link rel="stylesheet" href="../site/css/theme.css">
+<link rel="stylesheet" href="../site/css/base.css">
+<link rel="stylesheet" href="../site/css/components.css">
+<link rel="stylesheet" href="../site/css/figure.css">
+<link rel="stylesheet" href="../site/css/motion.css">
+<link rel="stylesheet" href="../site/css/widgets.css">
+<style>
+  body { padding-bottom: 180px; }
+  .dev-card { margin-block: 16px; padding: 12px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
+  .dev-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .dev-id { font-family: var(--font-mono); font-size: var(--fs-1); color: var(--accent-ink); }
+  .dev-stem { margin: 6px 0 12px; font-size: var(--fs-2); line-height: 1.45; }
+  .dev-tools { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+  .dev-tools button { min-height: 32px; padding: 0 10px; font-size: var(--fs-1); border: 1px solid var(--line); border-radius: 999px; background: var(--surface2); color: var(--muted); }
+  .dev-skip { margin: 0; padding: 10px; border: 1px dashed var(--line); border-radius: var(--radius-sm); font-size: var(--fs-1); color: var(--muted); }
+</style>
+</head>
+<body>
+<main id="view">
+  <h1 style="font-size:var(--fs-4);margin-block:8px">Widgets — dev</h1>
+  <p class="dev-stem">Every part type (T08a · T08b · T08c · T08d), mounted from <code>data/cards.js</code> through
+  <code>js/widgets/index.js</code> and graded by <code>grader/index.js</code>. <code>?mine=1</code> = T08a only,
+  <code>?ids=…</code> picks the cards.</p>
+  <div id="cards"></div>
+</main>
+
+<script type="module">
+import { byId } from '../site/data/cards.js';
+import { grade, ready } from '../site/js/grader/index.js';
+import { composeParts, mountPart, loadFor, loadAll, pipsFor, pipsForCard, partsOf, missing } from '../site/js/widgets/index.js';
+import { createDock, h } from '../site/js/widgets/base.js';
+import { mathfmt } from '../site/js/mathfmt.js';
+
+// [W2 integrator] The page was T08a-only while T08b/T08c/T08d were still in flight; all four widget
+// tickets have landed, so it now mounts EVERY part type through the registry (one page that proves the
+// four lanes compose). `?mine=1` restores the T08a-only view; `?ids=` still overrides the card list.
+const Q = new URLSearchParams(location.search);
+const IDS = (Q.get('ids') || 'ang-10,ang-05,doc-07,wp-10,ang-wu-1,fac-16,voc-01,def-10,not-03,cls-01,fact-01').split(',');
+const T08A = new Set(['num', 'multi', 'ratio', 'rootcase', 'roots', 'reject', 'cases']);
+const MINE = Q.get('mine') === '1' ? T08A : null;     // null = mount every type
+const host = document.getElementById('cards');
+const dock = createDock({ keys: ['-', '/', ',', 'or'] });
+const mounted = [];
+let focused = null;
+
+for (const id of IDS) {
+  const card = byId[id];
+  const sec = h('section.dev-card', { dataset: { card: id } });
+  const pips = h('span.hp', { role: 'img', 'aria-label': 'progress' });
+  sec.append(h('div.dev-head', h('span.dev-id', `${card.teacherNo || ''} ${id}`), pips));
+  const stem = h('p.dev-stem');
+  stem.innerHTML = mathfmt(card.stem || '');
+  sec.append(stem);
+
+  const groups = composeParts(card.parts || []);
+  await loadFor(MINE ? groups.filter((g) => MINE.has(g.type)) : groups);
+  const entries = [];
+  for (const g of groups) {
+    if (MINE && !MINE.has(g.type)) {
+      sec.append(h('p.dev-skip', `${g.id} · ${g.type} — not a T08a widget (drop ?mine=1 to mount it)`));
+      continue;
+    }
+    const slot = h('div.dev-slot');
+    sec.append(slot);
+    const ctx = { card, keys: dock.keys, dock, state: {}, figureEl: null, figure: card.figure || null, seed: id, mode: 'card', settings: { askReasonOnMiss: true } };
+    const w = mountPart(slot, g, ctx);
+    const entry = { id, group: g, w, ctx, pips, card };
+    entries.push(entry);
+    mounted.push(entry);
+    slot.addEventListener('w-submit', () => submit(entry));
+    slot.addEventListener('focusin', () => { focused = entry; });
+    slot.append(h('div.dev-tools',
+      h('button', { type: 'button', onclick: () => submit(entry) }, 'Submit'),
+      h('button', { type: 'button', onclick: () => fill(entry, 'right') }, 'demo ✓'),
+      h('button', { type: 'button', onclick: () => fill(entry, 'wrong') }, 'demo ✗')));
+  }
+  host.append(sec);
+  drawPips(entries[0] || { pips, card, w: null });
+}
+
+await ready;            // graders
+await loadAll();        // [W2 integrator] every widget module, so nothing mounts as a placeholder
+
+dock.actions.append(
+  h('button.btn', { type: 'button', onclick: () => focused && focused.w.setFeedback(null) }, 'Clear'),
+  h('button.btn.btn-primary', { type: 'button', onclick: () => focused && submit(focused) }, 'Submit'));
+
+function activePart(entry) {
+  return entry.w.activePart ? entry.w.activePart() : entry.group;
+}
+
+function submit(entry) {
+  const part = activePart(entry);
+  const res = grade(part, entry.w.raw(), entry.ctx);
+  entry.w.setFeedback(res);
+  entry.last = res;
+  drawPips(entry);
+  return res;
+}
+
+function drawPips(entry) {
+  const card = entry.card;
+  const total = pipsForCard(card.parts || []);
+  const filled = mounted.filter((e) => e.card === card).reduce((n, e) => n + (e.w ? e.w.pips().filled : 0), 0);
+  entry.pips.textContent = '';
+  for (let i = 0; i < total; i++) entry.pips.append(h('span.hp-pip' + (i < filled ? '.is-full' : '')));
+  entry.pips.setAttribute('aria-label', `${filled} of ${total} parts cleared`);
+}
+
+/* ---- dev-only answer fillers: drive the real DOM the way a student would ---- */
+function setInput(input, value) {
+  input.value = String(value);
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+}
+function fieldIn(root, key) { return root.querySelector(`.w-field[data-key="${key}"] input`); }
+
+function fill(entry, kind) {
+  const w = entry.w;
+  const root = w.el;
+  const part = activePart(entry);
+  const wrongify = (v) => (kind === 'wrong' ? String(v).replace(/^-/, '') + '1' : v);
+  if (part.type === 'num') {
+    setInput(fieldIn(root, 'value'), wrongify(part.answer));
+    for (const b of part.bonus || []) setInput(fieldIn(root, b.key), b.answer);
+  } else if (part.type === 'multi') {
+    for (const f of part.fields || []) setInput(fieldIn(root, f.key), wrongify(f.answer));
+  } else if (part.type === 'ratio') {
+    setInput(fieldIn(root, 'value'), kind === 'wrong' ? '2:3' : part.answer);
+  } else if (part.type === 'roots') {
+    const answers = part.answer || [];
+    setInput(fieldIn(root, 'roots'), kind === 'wrong' ? String(answers[0]) : answers.join(' or '));
+  } else if (part.type === 'reject') {
+    const valid = new Set((part.valid || []).map(String));
+    for (const row of root.querySelectorAll('.w-rej-row')) {
+      const x = row.querySelector('.w-rej-x').textContent.replace(/^.*=\s*/, '').replace(/−/g, '-');
+      const keep = valid.has(x) === (kind !== 'wrong');
+      row.querySelector(`.w-segbtn[data-value="${keep ? 'keep' : 'reject'}"]`).click();
+    }
+    const chips = [...root.querySelectorAll('.w-chip')];
+    const want = kind === 'wrong' ? (part.distractors || [])[0] : part.reason;
+    (chips.find((c) => c.textContent === want) || chips[0]).click();
+  } else if (part.type === 'cases') {
+    const tab = [...root.querySelectorAll('.w-tab')].find((t) => t.getAttribute('aria-selected') === 'true');
+    const xText = (tab.textContent.split('=')[1] || '').trim().replace(/−/g, '-');
+    const panel = [...root.querySelectorAll('.w-panel')].find((p) => !p.hidden);
+    const row = (part.rows || []).find((r) => String(r[part.of || 'x']) === xText) || part.rows[0];
+    for (const col of part.cols || []) {
+      if (col.key === (part.of || 'x')) continue;
+      const seg = panel.querySelector(`.w-field[data-key="${col.key}"] .w-segbtn[data-value="${row[col.key]}"]`);
+      if (seg) { seg.click(); continue; }
+      const input = fieldIn(panel, col.key);
+      if (input) setInput(input, kind === 'wrong' ? '999' : row[col.key]);
+    }
+  }
+}
+
+/* ---- what qa/shot.mjs --eval reads ---- */
+function tapSizes() {
+  const small = [];
+  for (const el of document.querySelectorAll('.w-key, .w-segbtn, .w-chip, .w-tab, .btn, .w-input')) {
+    const r = el.getBoundingClientRect();
+    if (r.width < 1 && r.height < 1) continue;
+    if (r.height < 43.5 || r.width < 43.5) small.push(`${el.className}|${Math.round(r.width)}x${Math.round(r.height)}|${el.textContent.trim().slice(0, 12)}`);
+  }
+  return small;
+}
+window.__t08a = {
+  report: () => ({
+    horizontalOverflow: document.documentElement.scrollWidth > innerWidth,
+    scrollW: document.documentElement.scrollWidth,
+    widgets: mounted.map((e) => ({ card: e.id, part: activePart(e).id, type: activePart(e).type, stage: e.w.stage?.() ?? null, pips: e.w.pips(), state: e.w.el.dataset.state || '' })),
+    smallTargets: tapSizes(),
+    keyRow: [...dock.keys.el.children].map((b) => b.textContent),
+    kb: getComputedStyle(document.documentElement).getPropertyValue('--kb'),
+  }),
+  submitAll: (kind) => mounted.map((e) => { fill(e, kind || 'right'); const r = submit(e); return { card: e.id, part: activePart(e).id, kind: r.kind, msg: r.msg }; }),
+  step: (i, kind) => { const e = mounted[i]; fill(e, kind || 'right'); const r = submit(e); return { stage: e.w.stage?.() ?? null, kind: r.kind, msg: r.msg, reveal: r.reveal || null }; },
+  mounted,
+  fill, submit,
+};
+/* ---- scripted demos so a screenshot can show a state (qa/shot.mjs shoots before --eval) ---- */
+const at = (i) => mounted[i];
+const tabsOf = (e) => [...e.w.el.querySelectorAll('.w-tab')];
+const fillEveryTab = (e) => { for (const t of tabsOf(e)) { t.click(); fill(e, 'right'); } };
+const DEMOS = {
+  states() {                                   // ok / bad / almost side by side
+    fill(at(0), 'wrong'); submit(at(0));                       // ang-10 roots: one root only → almost
+    const d = at(2); const f = d.group.fields;
+    setInput(fieldIn(d.w.el, f[0].key), f[1].answer);          // doc-07: x and y swapped
+    setInput(fieldIn(d.w.el, f[1].key), f[0].answer);
+    setInput(fieldIn(d.w.el, f[2].key), f[2].answer);
+    submit(d);
+    setInput(fieldIn(at(3).w.el, 'value'), '6:4'); submit(at(3)); // wp-10: unreduced → correct + nudge
+  },
+  reject() {                                   // ang-10 at the keep/reject stage
+    fill(at(0), 'right'); submit(at(0));
+    at(0).w.el.scrollIntoView({ block: 'start' });
+  },
+  cases() {                                    // ang-05: stopped at one root → the "+ another case" tab
+    fill(at(1), 'wrong'); submit(at(1));
+    fill(at(1), 'wrong'); submit(at(1));
+    fillEveryTab(at(1));
+    submit(at(1));
+    at(1).w.el.scrollIntoView({ block: 'start' });
+  },
+  cleared() {                                  // everything right, everything locked
+    fill(at(0), 'right'); submit(at(0));
+    fill(at(0), 'right'); submit(at(0));
+    fillEveryTab(at(0)); submit(at(0));
+    fill(at(2), 'right'); submit(at(2));
+    fill(at(3), 'right'); submit(at(3));
+    at(0).w.el.scrollIntoView({ block: 'start' });
+  },
+};
+const params = new URLSearchParams(location.search);
+const kb = params.get('kb');   // fake the OS keyboard inset to prove the dock lifts above it
+if (kb) { document.documentElement.style.setProperty('--kb', kb + 'px'); document.documentElement.dataset.kb = 'open'; }
+const demo = params.get('demo');
+if (demo && DEMOS[demo]) DEMOS[demo]();
+window.__t08a.demos = Object.keys(DEMOS);
+document.body.dataset.ready = '1';
+</script>
+</body>
+</html>
