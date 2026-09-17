@@ -1,0 +1,2 @@
+# Quizlet export available
+`source/quizlet.txt` (git-ignored, local only) holds all 87 Quizlet cards verbatim (statement TAB answer). T00 could not fetch the set; the qz-*/bonus-* stems in content/transcript.md and site/data/cards/asn.js were copied from content/SOURCE.md §5, where bonus-04/11/12 were abbreviated with "...". Whoever owns the next content pass (T06f or T17) should diff the 18 qz-* and 33 bonus-* stems against this file and fix wording (answers are unaffected).

@@ -41,7 +41,7 @@ Warm-up (identify from figure F1 with left point G):
   - 2 non-examples of adjacent angles: teacher gave ∠BFA & ∠CFD (no common side), ∠BFC & ∠AFE (non-adjacent complementary).
 #2 One of two complementary angles is twice the other. Find the measures. → x + 2x = 90, x = 30. Answer: 30° and 60°.
 #3 One of two supplementary angles is 70° greater than the second. Find the larger. → x + (x+70) = 180, x = 55. Larger = 125°.
-#4 Figure F2: Triangle ACE with apex C at top, A bottom-left, E bottom-right. B is on side AC, D is on side CE, segment BD drawn. Labels: CB = 3m + 4, BA = n − 1, CD = 19, DE = m² − 6, AE = 8. Given AC ≅ CE and BD bisects AC and CE (so B and D are midpoints). Find m, n, and perimeter of triangle ACE.
+#4 Figure F2: Triangle ACE with apex C at top, A bottom-left, E bottom-right. B is on side AC, D is on side CE, segment BD drawn. Printed labels: CB = 3m + 4, BA = n − 1, DE = m² − 6, AE = 8. (CD has NO printed label — the '19' seen in the key is the teacher's derived value; there are no tick marks printed.) Given AC ≅ CE and BD bisects AC and CE (so B and D are midpoints). Find m, n, and perimeter of triangle ACE.
    Key: m² − 6 = 3m + 4 → m² − 3m − 10 = 0 → (m−5)(m+2)=0 → m = 5 (m = −2 rejected: negative side length). Then CB = 19, so n − 1 = 19 → n = 20. AC = CE = 38, AE = 8, perimeter = 84.
 #5 m∠MAH = x² + 3, m∠HAC = 11 − 7x, m∠MAC = 6 − 16x. Ray AH is between rays AM and AC. Does AH bisect ∠MAC? Explain.
    Key: x² + 3 + 11 − 7x = 6 − 16x → x² + 9x + 8 = 0 → (x+8)(x+1) = 0 → x = −8 or x = −1. If x = −8: m∠MAH = 67, m∠HAC = 67 → YES bisects (congruent halves). If x = −1: m∠MAH = 4, m∠HAC = 18 → NO. (Both cases must be discussed.)
