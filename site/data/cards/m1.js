@@ -21,9 +21,14 @@
 //   "∠FBC", "m∠BFC", "FD" = a length) — compare with `same(parse(m.answer), result.normalized)`.
 //
 // Mini-markup in stems / options / solutions is rendered by js/mathfmt.js ({line AB}, {seg AB}, {ray AB},
-// {len AB}, {ang ABC}, {m ABC}). Figure F1 is the fan in data/figures.js (vertex F; rays D 0°, C 31°,
-// B 90°, A 180°, E 211°; lines A–D and E–C; right mark at B), so every measure quoted here is true of it:
-// ∠CFD = 31°, ∠BFC = 59°, ∠BFD = 90°, ∠AFE = 31°, ∠BFE = 121°, ∠AFC = 149°, ∠AFD = 180°.
+// {len AB}, {ang ABC}, {m ABC}). Figure F1 is the fan in data/figures.js (vertex F; rays D 0°, C 26°,
+// B 90°, A 180°, E 206°; lines A–D and E–C; right mark between B and A) — T04 modelled it from the scan,
+// where ray C measures ≈ 26°, not the 31° this file first assumed. The structure every card here depends on
+// is exact (∠BFD = 90°, ∠AFD = 180°, A–F–D and E–F–C collinear, ∠AFE vertical to ∠CFD); the *given* measures
+// 31° / 59° / 121° / 149° are data on a drawing that is a few degrees off, so the F1() helper below leaves
+// `notToScale` to the model's auto-detection: a numeric label that disagrees with the drawing by > 0.5°
+// (cls-01's 31°, cls-03's 121°) shows the "Not to scale" chip; cards with no numeric label show no chip.
+// Drawn measures, if a solution ever needs one: ∠CFD 26°, ∠BFC 64°, ∠BFE 116°, ∠AFC 154°, ∠DFE 154°.
 
 import { vocab, vocabByKey, termmatchSets } from '../vocab.js';
 
@@ -31,7 +36,9 @@ const SRC_FILE = 'source/study-guide.html (§0 vocabulary)';
 const LETTERS = Object.freeze(['A', 'B', 'C', 'D', 'E', 'F']);
 const CLASSES = Object.freeze(['acute', 'right', 'obtuse', 'straight']);
 
-const F1 = (labels = []) => ({ id: 'F1', rename: {}, labels, notToScale: false });
+// `notToScale` omitted on purpose: resolve() decides (letters in a label, or a numeric label that
+// disagrees with the drawn measure by > 0.5° → chip). See the header note above.
+const F1 = (labels = []) => ({ id: 'F1', rename: {}, labels });
 
 const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 const withTag = (tag) => (tag ? { tag } : {});

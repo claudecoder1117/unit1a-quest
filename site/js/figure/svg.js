@@ -37,14 +37,15 @@ const f1 = (n) => (Math.round(n * 10) / 10).toString();
 const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
 // ------------------------------------------------------------------------------------------------
-// text metrics (no DOM): a mono expression is 0.62 em per glyph, the UI font a little narrower
+// text metrics (no DOM): a mono expression is 0.62 em per glyph — spaces, superscripts and minus
+// signs included (JetBrains Mono / Menlo / SF Mono advance 0.60–0.61 em); the UI font a little narrower
 
 function textWidth(text, fs, mono) {
   let w = 0;
   for (const ch of String(text)) {
-    if (ch === ' ') w += 0.3;
-    else if (/[²³¹]/.test(ch)) w += 0.45;
-    else if (mono) w += 0.62;
+    if (/\p{M}/u.test(ch)) continue;                        // combining marks take no advance
+    if (mono) w += 0.62;
+    else if (ch === ' ') w += 0.3;
     else if (/[A-Z]/.test(ch)) w += 0.68;
     else w += 0.56;
   }
@@ -62,7 +63,7 @@ function segHitsBox(p, q, b, grow = 2) {
   const dx = q[0] - p[0], dy = q[1] - p[1];
   let t0 = 0, t1 = 1;
   const clip = (den, num) => {
-    if (den === 0) return num <= 0;
+    if (den === 0) return num >= 0;                 // parallel to this edge: inside iff on the inner side
     const t = num / den;
     if (den < 0) { if (t > t1) return false; if (t > t0) t0 = t; } else { if (t < t0) return false; if (t < t1) t1 = t; }
     return true;
@@ -166,33 +167,36 @@ function layoutFan(model, opts) {
     exprLabels.push({ angle: a, text: String(l.text) });
   }
   const arcs = [];
-  const overlapsArc = (a, b) => {                       // angular intervals intersect (open)
+  const overlapsArc = (a, b) => {                       // angular intervals intersect, or touch at a shared ray
     const s0 = a.start, e0 = a.start + a.span, s1 = b.start, e1 = b.start + b.span;
     const inside = (t, s, e) => { const d = norm(t - s); return d > 1e-6 && d < (e - s) - 1e-6; };
-    return inside(s1, s0, e0) || inside(e1, s0, e0) || inside(s0, s1, e1) || inside(e0, s1, e1) || (Math.abs(norm(s0 - s1)) < 1e-6 && Math.abs(a.span - b.span) < 1e-6);
+    const touch = (t, u) => Math.abs(norm(t - u)) < 1e-6 || Math.abs(norm(t - u) - 360) < 1e-6;
+    return inside(s1, s0, e0) || inside(e1, s0, e0) || inside(s0, s1, e1) || inside(e0, s1, e1)
+      || (touch(s0, s1) && Math.abs(a.span - b.span) < 1e-6)
+      || touch(e0, s1) || touch(e1, s0);               // two halves of a bisected angle stay visibly two arcs
   };
   for (const a of [...arcAngles.values()].sort((p, q) => p.span - q.span)) {
     let k = 0;
     for (const placed of arcs) if (overlapsArc(a, placed.angle)) k = Math.max(k, placed.k + 1);
     const r = 22 + 10 * k;
-    arcs.push({ angle: a, k, r, path: arcPath(c, r, a.start, a.span) });
+    arcs.push({ angle: a, k, r, center: c, path: arcPath(c, r, a.start, a.span) });
   }
   const arcR = (a) => arcs.find(p => p.angle.key === a.key)?.r ?? 22;
 
   // point letters (outward from the dot/tip, or the figure's own offset)
   const pointLabels = [];
   const offP = model.labelOffsets.point ?? {};
-  const placedBoxes = [];
+  const placedBoxes = [];               // expression labels + the vertex letter (ray letters may still flip)
+  const letterBoxes = () => pointLabels.filter(p => !p.vertex).map(p => p.box);
+  const placeLetter = (r, off) => {
+    const anchor = r.dot ?? r.tip;
+    let p = off ? [anchor[0] + off[0], anchor[1] + off[1]] : [anchor[0] + LABEL_GAP * r.dir[0], anchor[1] + LABEL_GAP * r.dir[1]];
+    const w = textWidth(r.n, PT_FS, false), h = PT_FS * 1.15;
+    p = clampBox(p[0], p[1], w, h);
+    return { n: r.n, x: p[0], y: p[1], box: boxOf(p[0], p[1], w, h), anchor, off: off ?? [LABEL_GAP * r.dir[0], LABEL_GAP * r.dir[1]], ray: r };
+  };
   if (!model.hideLetters) {
-    for (const r of Object.values(rays)) {
-      const anchor = r.dot ?? r.tip;
-      let p = offP[r.n] ? [anchor[0] + offP[r.n][0], anchor[1] + offP[r.n][1]] : [anchor[0] + LABEL_GAP * r.dir[0], anchor[1] + LABEL_GAP * r.dir[1]];
-      const w = textWidth(r.n, PT_FS, false), h = PT_FS * 1.15;
-      p = clampBox(p[0], p[1], w, h);
-      const box = boxOf(p[0], p[1], w, h);
-      pointLabels.push({ n: r.n, x: p[0], y: p[1], box, anchor });
-      placedBoxes.push(box);
-    }
+    for (const r of Object.values(rays)) pointLabels.push(placeLetter(r, offP[r.n]));
     // vertex letter: the freest direction unless the figure says where
     const vd = dirOf(freestDirection(Object.values(rays).map(r => r.deg)));
     let vp = offP[model.vertex] ? [c[0] + offP[model.vertex][0], c[1] + offP[model.vertex][1]] : [c[0] + LABEL_GAP * vd[0], c[1] + LABEL_GAP * vd[1]];
@@ -202,25 +206,61 @@ function layoutFan(model, opts) {
     placedBoxes.push(pointLabels[pointLabels.length - 1].box);
   }
 
-  // expression labels on the bisector at arcR + 16, nudged outward until the box clears every ray
+  // expression labels: on the bisector at arcR + 16, nudged outward until the box clears every ray;
+  // a wide label in a narrow wedge may also slide off the bisector (±3 steps of span/10) so it hugs
+  // one side instead of running out of the viewBox. Ray letters that collide with the natural spot
+  // flip to the other side of their ray (the sheets do the same: A sits above AD on #10).
   const offA = model.labelOffsets.angle ?? {};
+  const wedgeClear = (box, a) => !raySegs.some(([p, q]) => segHitsBox(p, q, box, RAY_MARGIN)) && boxToPoint(box, c) >= arcR(a) + ARC_MARGIN;
+  const K_PENALTY = 16;                 // one angular step off the bisector costs as much as 16 units of radius
+  const search = (a, w, h, blockers) => {
+    const mid = a.start + a.span / 2;
+    const r0 = arcR(a) + 16;
+    let best = null;                    // lowest score = r + K_PENALTY·|k|
+    for (const k of [0, -1, 1, -2, 2, -3, 3]) {
+      const d = dirOf(mid + (k * a.span) / 10);
+      for (let r = r0, i = 0; i < 48; r += 4, i++) {
+        const score = r + K_PENALTY * Math.abs(k);
+        if (best && score >= best.score) break;
+        const x = c[0] + r * d[0], y = c[1] + r * d[1];
+        const box = boxOf(x, y, w, h);
+        if (!inView(box) || !wedgeClear(box, a) || blockers.some(b => boxesOverlap(box, b, LABEL_GAP_BOX))) continue;
+        best = { x, y, box, r, k, nudged: i, ok: true, score };
+        break;
+      }
+    }
+    if (best) return best;
+    // nothing fits: the nearest bisector spot that still clears the rays and stays in view, else arc + 16
+    for (let r = r0, i = 0; i < 48; r += 4, i++) {
+      const d = dirOf(mid); const x = c[0] + r * d[0], y = c[1] + r * d[1]; const box = boxOf(x, y, w, h);
+      if (wedgeClear(box, a) && inView(box)) return { x, y, box, r, k: 0, nudged: i, ok: false };
+    }
+    const d = dirOf(mid); const x = c[0] + r0 * d[0], y = c[1] + r0 * d[1];
+    return { x, y, box: boxOf(x, y, w, h), r: r0, k: 0, nudged: 0, ok: false };
+  };
   for (const L of exprLabels) {
     const a = L.angle;
-    const mid = a.start + a.span / 2, d = dirOf(mid);
     const w = textWidth(L.text, EXPR_FS, true), h = EXPR_FS * 1.3;
-    let r = arcR(a) + 16, x, y, box, nudged = 0;
-    for (let i = 0; i < 40; i++) {
-      x = c[0] + r * d[0]; y = c[1] + r * d[1];
-      box = boxOf(x, y, w, h);
-      const hit = raySegs.some(([p, q]) => segHitsBox(p, q, box, RAY_MARGIN)) || placedBoxes.some(b => boxesOverlap(box, b, LABEL_GAP_BOX)) || boxToPoint(box, c) < arcR(a) + ARC_MARGIN;
-      if (!hit && inView(box)) break;
-      if (!inView(box) && i > 0 && !hit) break;          // ran out of room: keep the last position, clamp below
-      r += 4; nudged++;
+    let res = search(a, w, h, [...placedBoxes, ...letterBoxes()]);
+    if (!res.ok) {
+      // try with ray letters out of the way: flip each colliding letter across its ray, keep flips that help
+      const free = search(a, w, h, placedBoxes);
+      if (free.ok) {
+        for (const p of pointLabels) {
+          if (p.vertex || !boxesOverlap(free.box, p.box, LABEL_GAP_BOX)) continue;
+          const d = p.ray.dir, o = p.off, par = o[0] * d[0] + o[1] * d[1];
+          const flipped = [2 * par * d[0] - o[0], 2 * par * d[1] - o[1]];
+          const alt = placeLetter(p.ray, flipped);
+          const altHits = boxesOverlap(alt.box, free.box, LABEL_GAP_BOX) || raySegs.some(([q1, q2]) => segHitsBox(q1, q2, alt.box, 2)) || pointLabels.some(q => q !== p && boxesOverlap(alt.box, q.box, 2));
+          if (!altHits) Object.assign(p, alt, { flipped: true });
+        }
+        res = search(a, w, h, [...placedBoxes, ...letterBoxes()]);
+      }
     }
     const o = offA[a.id] ?? offA[`${a.x}-${a.y}`] ?? [0, 0];
-    [x, y] = clampBox(x + o[0], y + o[1], w, h);
-    box = boxOf(x, y, w, h);
-    L.x = x; L.y = y; L.box = box; L.r = r; L.nudged = nudged;
+    const [x, y] = clampBox(res.x + o[0], res.y + o[1], w, h);
+    const box = boxOf(x, y, w, h);
+    L.x = x; L.y = y; L.box = box; L.r = res.r; L.k = res.k; L.nudged = res.nudged; L.fits = res.ok;
     placedBoxes.push(box);
   }
 
@@ -234,7 +274,7 @@ function layoutFan(model, opts) {
       const r0 = a.level === 0 ? 0 : R1 + (a.level - 1) * BAND;
       const r1 = a.level === 0 ? R1 : R1 + a.level * BAND;
       wedges.push({
-        angle: a, r0, r1,
+        angle: a, r0, r1, center: c,
         hit: a.level === 0 ? sectorPath(c, r1, a.start, a.span) : bandPath(c, r0, r1, a.start, a.span),
         fill: sectorPath(c, r1, a.start, a.span),
         ariaLabel: a.label ? a.label : `angle ${a.name}`,
@@ -371,20 +411,24 @@ export function renderModel(model, opts = {}) {
     out.push('</g>');
   }
 
-  // wedges first so letters and dots stay on top for pointer hits
+  // wedges first so letters and dots stay on top for pointer hits. The transparent hit <path> is the
+  // button (role/tabindex/aria-label); the fill path after it paints the state and never takes hits.
   if (L.wedges.length) {
     out.push('<g class="fig-wedges">');
     for (const w of L.wedges) {
       const a = w.angle;
-      out.push(`<g class="fig-wedge" role="button" tabindex="0" aria-label="${esc(w.ariaLabel)}" aria-pressed="false" data-angle="${a.id}" data-name="${a.name}"${a.alias ? ` data-alias="${a.alias}"` : ''} data-deg="${f1(a.deg)}" data-level="${a.level}">` +
-        `<path class="fig-wedge-fill" d="${w.fill}"/><path class="fig-wedge-hit" d="${w.hit}"/></g>`);
+      const data = `data-angle="${a.id}" data-name="${a.name}"${a.alias ? ` data-alias="${a.alias}"` : ''} data-deg="${f1(a.deg)}" data-level="${a.level}"`;
+      out.push(`<g class="fig-wedge" ${data}>` +
+        `<path class="fig-wedge-hit" role="button" tabindex="0" aria-label="${esc(w.ariaLabel)}" aria-pressed="false" ${data} d="${w.hit}"/>` +
+        `<path class="fig-wedge-fill" d="${w.fill}"/></g>`);
     }
     out.push('</g>');
   }
 
   out.push('<g class="fig-points">');
   if (L.kind === 'fan') {
-    out.push(`<circle class="fig-pt-dot" data-point="${model.vertex}" cx="${f1(L.center[0])}" cy="${f1(L.center[1])}" r="3.5"/>`);
+    // the vertex dot follows `dots` (D5 / AH / D7 print none); the 12 px hit circle is always there for letter taps
+    if (model.dots !== false) out.push(`<circle class="fig-pt-dot" data-point="${model.vertex}" cx="${f1(L.center[0])}" cy="${f1(L.center[1])}" r="3.5"/>`);
     out.push(`<circle class="fig-pt-hit" data-point="${model.vertex}" cx="${f1(L.center[0])}" cy="${f1(L.center[1])}" r="12"/>`);
     for (const r of Object.values(L.rays)) {
       if (r.dot) out.push(`<circle class="fig-pt-dot" data-point="${r.n}" cx="${f1(r.dot[0])}" cy="${f1(r.dot[1])}" r="3.5"/>`);
@@ -414,7 +458,7 @@ export function renderModel(model, opts = {}) {
 const cache = new Map();
 const CACHE_MAX = 200;
 function memoKey(fig, opts) {
-  return JSON.stringify([fig.id, opts.rename ?? null, opts.labels ?? null, opts.notToScale ?? null, opts.rotate ?? 0, !!opts.mirror, opts.wedges ?? null, opts.hideLetters ?? null]);
+  return JSON.stringify([fig.id, opts.rename ?? null, opts.labels ?? null, opts.notToScale ?? null, opts.rotate ?? 0, !!opts.mirror, opts.wedges ?? null, opts.hideLetters ?? null, opts.ticks ?? null, opts.arcs ?? null, opts.labelOffsets ?? null]);
 }
 
 /**
@@ -449,21 +493,27 @@ export function element(fig, opts = {}) {
 export const WEDGE_STATES = Object.freeze(['hover', 'selected', 'ok', 'bad', 'linked']);
 export const WEDGE_SELECTOR = '.fig-wedge';
 
-/** The wedge <g> for an angle id ('C-D'), name ('CFD') or alias ('UL'); null when absent. */
+/** The wedge <g> for an angle id ('C-D'), name ('CFD'), alias ('UL') or a wedge/button element
+ *  (an event target inside a wedge resolves to its group); null when absent. */
 export function wedgeEl(root, ref) {
+  if (ref && typeof ref === 'object' && ref.closest) return ref.closest(WEDGE_SELECTOR);
   if (!root?.querySelectorAll) return null;
   for (const el of root.querySelectorAll(WEDGE_SELECTOR)) {
     if (el.dataset.angle === ref || el.dataset.name === ref || (el.dataset.alias && el.dataset.alias === ref)) return el;
   }
   return null;
 }
-/** Toggle one state class (`is-selected`, …) on a wedge; `selected` also mirrors aria-pressed. */
+/** The focusable button <path role="button"> of a wedge (for focus() / aria); null when absent. */
+export function wedgeButton(root, ref) {
+  return wedgeEl(root, ref)?.querySelector('.fig-wedge-hit') ?? null;
+}
+/** Toggle one state class (`is-selected`, …) on a wedge; `selected` also mirrors aria-pressed on the button. */
 export function setWedgeState(root, ref, state, on = true) {
   if (!WEDGE_STATES.includes(state)) throw new Error(`unknown wedge state ${state}`);
   const el = wedgeEl(root, ref);
   if (!el) return null;
   el.classList.toggle(`is-${state}`, !!on);
-  if (state === 'selected') el.setAttribute('aria-pressed', on ? 'true' : 'false');
+  if (state === 'selected') el.querySelector('.fig-wedge-hit')?.setAttribute('aria-pressed', on ? 'true' : 'false');
   return el;
 }
 /** Remove the given states (default: all) from every wedge under root. */
@@ -471,6 +521,58 @@ export function clearWedgeStates(root, states = WEDGE_STATES) {
   if (!root?.querySelectorAll) return;
   for (const el of root.querySelectorAll(WEDGE_SELECTOR)) {
     for (const s of states) el.classList.remove(`is-${s}`);
-    if (states.includes('selected')) el.setAttribute('aria-pressed', 'false');
+    if (states.includes('selected')) el.querySelector('.fig-wedge-hit')?.setAttribute('aria-pressed', 'false');
   }
+}
+
+// ------------------------------------------------------------------------------------------------
+// layout lint (DOM-free): what the dev page checks in the browser, computable in node --test
+
+/** Bounding box of a sector (centre, arc endpoints, and every axis extreme inside the arc). */
+function sectorBox(c, r, start, span) {
+  const xs = [c[0]], ys = [c[1]];
+  const push = (deg) => { const [x, y] = pt(c, r, deg); xs.push(x); ys.push(y); };
+  push(start); push(start + span);
+  for (const k of [0, 90, 180, 270]) if (norm(k - start) < span) push(k);
+  return { x0: Math.min(...xs), y0: Math.min(...ys), x1: Math.max(...xs), y1: Math.max(...ys) };
+}
+
+/**
+ * Layout problems for a resolved model, as human-readable strings ([] when clean): text boxes
+ * outside the viewBox inset, a label box crossed by a stroke, two text boxes (or a text box and the
+ * chip) overlapping, a wedge whose bounding box is under `minPx` (default 44) CSS px when the SVG
+ * is `widthPx` (default 375 − 2·16 gutter = 343) wide. Opts also reach layout() (wedges on/off).
+ */
+export function lint(model, opts = {}) {
+  const L = layout(model, opts);
+  const scale = (opts.widthPx ?? 343) / VIEW.w;
+  const minPx = opts.minPx ?? 44;
+  const issues = [];
+  const texts = [
+    ...L.pointLabels.map(p => ({ text: p.n, box: p.box, kind: 'letter' })),
+    ...(L.segLabels ?? []).map(s => ({ text: s.text, box: s.box, kind: 'expr' })),
+    ...L.exprLabels.map(e => ({ text: e.text, box: e.box, kind: 'expr' })),
+  ];
+  for (const t of texts) if (!inView(t.box)) issues.push(`clipped: "${t.text}"`);
+  const segs = L.strokes.map(s => [s.from, s.to]);
+  for (const t of texts) if (segs.some(([p, q]) => segHitsBox(p, q, t.box, 1))) issues.push(`label on a stroke: "${t.text}"`);
+  for (let i = 0; i < texts.length; i++) for (let j = i + 1; j < texts.length; j++) {
+    if (boxesOverlap(texts[i].box, texts[j].box, 0)) issues.push(`overlap: "${texts[i].text}" × "${texts[j].text}"`);
+  }
+  if (L.chip) {
+    const cb = { x0: L.chip.x, y0: L.chip.y, x1: L.chip.x + L.chip.w, y1: L.chip.y + L.chip.h };
+    for (const t of texts) if (boxesOverlap(t.box, cb, 0)) issues.push(`chip overlaps "${t.text}"`);
+  }
+  for (const a of L.arcs) {
+    // an expression label box must clear its own arc (the text would sit on the curve)
+    for (const e of L.exprLabels) if (e.angle.key === a.angle.key && a.center && boxToPoint(e.box, a.center) < a.r - 0.5) issues.push(`label on its arc: "${e.text}"`);
+  }
+  for (const w of L.wedges) {
+    const c = w.center ?? L.center;
+    if (!c) continue;
+    const b = sectorBox(c, w.r1, w.angle.start, w.angle.span);
+    const wpx = (b.x1 - b.x0) * scale, hpx = (b.y1 - b.y0) * scale;
+    if (Math.max(wpx, hpx) < minPx || wpx * hpx < minPx * minPx) issues.push(`small wedge: ${w.angle.name} ${wpx.toFixed(0)}×${hpx.toFixed(0)} px`);
+  }
+  return issues;
 }

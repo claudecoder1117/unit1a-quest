@@ -23,7 +23,8 @@
 // tags:['vertex-not-middle', 'confused-comp-supp', 'confused-vertical-linear', 'not-adjacent',
 //       'adjacent-not-linear', 'adjacent-as-nonexample']
 
-import { relate, findAngle, getAngle, normRelation, RELATIONS, fanAt, rayByName } from '../figure/model.js';
+import { relate, findAngle, getAngle, normRelation, RELATIONS, fanAt, rayByName, resolve } from '../figure/model.js';
+import { getFigure } from '../../data/figures.js';
 
 /** The S3 typed-name regex, applied after trim + NFKC + uppercase + whitespace collapse. */
 export const NAME_RE = /^(∠|<|ANGLE\s*)?([A-Z])([A-Z])([A-Z])$/;
@@ -219,9 +220,37 @@ export function gradePairs(part, picks, model, ctx = {}) {
   return { ok, kind, credit, msg, tags, normalized: validResults.map(r => r.pairName), results, valid, count, relation };
 }
 
-/** S3 dispatcher shape: grade(part, raw, ctx) with raw = picks and the model on ctx.model / ctx.figure / part.model. */
+// ------------------------------------------------------------------------------------------------
+// model resolution for the dispatcher: a resolved model, a raw figure (kind fan/poly), or the card's
+// figure spec {id:'F1', rename, labels, …} (resolved against data/figures.js and memoised)
+
+const modelCache = new Map();
+/**
+ * Whatever the caller has → a resolved model: ctx.model (already resolved) · ctx.figure / part.figure
+ * as a resolved model, a raw figure object (has `kind`) or a card figure spec (has `id`, resolved
+ * through data/figures.js with its rename/labels/rotate/mirror). Returns null when nothing usable.
+ */
+export function resolveModel(part, ctx = {}) {
+  const cand = ctx.model ?? ctx.figure ?? part?.model ?? part?.figure ?? null;
+  if (!cand || typeof cand !== 'object') return null;
+  if (cand.kind === 'fan' || cand.kind === 'poly') return cand.figId ? cand : resolve(cand, {});
+  if (typeof cand.id === 'string') {
+    const key = JSON.stringify([cand.id, cand.rename ?? null, cand.labels ?? null, cand.rotate ?? 0, !!cand.mirror, cand.ticks ?? null]);
+    if (modelCache.has(key)) return modelCache.get(key);
+    const fig = getFigure(cand.id);
+    if (!fig) return null;
+    const m = resolve(fig, cand);
+    if (modelCache.size >= 100) modelCache.delete(modelCache.keys().next().value);
+    modelCache.set(key, m);
+    return m;
+  }
+  return null;
+}
+
+/** S3 dispatcher shape: grade(part, raw, ctx) with raw = picks and the figure on ctx.model / ctx.figure / part.figure. */
 export function grade(part, raw, ctx = {}) {
-  const model = ctx.model ?? ctx.figure ?? part?.model;
+  const model = resolveModel(part, ctx);
+  if (!model) throw new Error('pairs: no figure — pass ctx.model (resolved) or ctx.figure / part.figure ({id, rename, labels})');
   return gradePairs(part, raw, model, ctx);
 }
 

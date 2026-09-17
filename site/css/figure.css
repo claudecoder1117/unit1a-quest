@@ -61,10 +61,11 @@
 }
 .fig-paper .fig-label, .paper .fig-label { stroke: var(--paper, #FBFAF5); }
 
-/* wedges: <g class="fig-wedge" role="button"> holding a visual sector (.fig-wedge-fill) and the
-   transparent hit region (.fig-wedge-hit: sector for atomic angles, annular band for composites).
-   States: hover 18 % / selected 32 % / ok / bad / linked (input focus ↔ wedge, 18 %). */
-.fig-wedge { cursor: pointer; outline: none; }
+/* wedges: <g class="fig-wedge"> holding the transparent hit region — the button:
+   <path class="fig-wedge-hit" role="button" tabindex="0" aria-label="angle GFC"> (a sector for atomic
+   angles, an annular band for composites) — followed by the visual sector (.fig-wedge-fill).
+   States (classes on the <g>): hover 18 % / selected 32 % / ok / bad / linked (input focus ↔ wedge, 18 %). */
+.fig-wedge { cursor: pointer; }
 .fig-wedge-fill {
   fill: var(--accent, #0A8FB5);
   fill-opacity: 0;
@@ -72,21 +73,22 @@
   pointer-events: none;
   transition: fill-opacity var(--dur-1, 120ms) var(--ease, ease);
 }
-.fig-wedge-hit { fill: transparent; stroke: none; pointer-events: all; }
+.fig-wedge-hit { fill: transparent; stroke: none; pointer-events: all; outline: none; }
 @media (hover: hover) { .fig-wedge:hover .fig-wedge-fill { fill-opacity: .18; } }
 .fig-wedge.is-hover .fig-wedge-fill,
 .fig-wedge.is-linked .fig-wedge-fill { fill-opacity: .18; }
 .fig-wedge.is-selected .fig-wedge-fill { fill-opacity: .32; }
 .fig-wedge.is-ok .fig-wedge-fill { fill: var(--ok, #178A55); fill-opacity: .32; }
 .fig-wedge.is-bad .fig-wedge-fill { fill: var(--bad, #D92D4C); fill-opacity: .32; }
-.fig-wedge:focus-visible .fig-wedge-fill {
+/* keyboard focus ring: the fill path directly follows the focused button path */
+.fig-wedge-hit:focus-visible + .fig-wedge-fill {
   fill-opacity: .24;
   stroke: var(--accent, #0A8FB5);
   stroke-width: 2;
   stroke-linejoin: round;
 }
-.fig-wedge.is-ok:focus-visible .fig-wedge-fill { stroke: var(--ok, #178A55); }
-.fig-wedge.is-bad:focus-visible .fig-wedge-fill { stroke: var(--bad, #D92D4C); }
+.fig-wedge.is-ok .fig-wedge-hit:focus-visible + .fig-wedge-fill { stroke: var(--ok, #178A55); }
+.fig-wedge.is-bad .fig-wedge-hit:focus-visible + .fig-wedge-fill { stroke: var(--bad, #D92D4C); }
 
 .fig-chip rect { fill: var(--surface2, #EEF2F9); stroke: var(--line, #D8DFEC); stroke-width: 1; }
 .fig-chip text {

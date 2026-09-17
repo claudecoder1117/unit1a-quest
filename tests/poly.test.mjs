@@ -656,3 +656,87 @@ describe('factorStructure edge cases', () => {
     assert.equal(diagnoseMismatch(P('x^3'), P('x^2')).tag, null);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Bounded work: no student string may spin a grader. (Found by fuzzing the T02
+// verification pass: `parseRational('x^1000000')` — reachable from the
+// `equation` field, which parses both sides as rational functions — sat inside
+// polyPow multiplying a degree-1 000 000 polynomial and never returned.)
+// ---------------------------------------------------------------------------
+describe('every parser returns in bounded time and never throws', () => {
+  const ms = (fn) => { const t0 = Date.now(); const out = fn(); return { out, dt: Date.now() - t0 }; };
+
+  test('a huge exponent is a degree/size refusal, not a hang, in every algebra', () => {
+    for (const raw of ['x^1000000', '(x+1)^99999', 'x^13', '2^200']) {
+      for (const [name, fn] of [
+        ['parsePoly', () => parsePoly(raw, { var: 'x' })],
+        ['parseRational', () => parseRational(raw, { var: 'x' })],
+        ['parseLinear', () => parseLinear(raw)],
+        ['factorStructure', () => factorStructure(raw, { var: 'x' })],
+        ['expandText', () => expandText(raw, { var: 'x' })],
+      ]) {
+        const { out, dt } = ms(fn);
+        assert.equal(out.ok, false, `${name}(${raw}) must refuse`);
+        assert.ok(['degree', 'toolarge', 'nonlinear', 'precision', 'exponent'].includes(out.err),
+          `${name}(${raw}) err was ${out.err}`);
+        assert.ok(dt < 500, `${name}(${raw}) took ${dt} ms`);
+      }
+    }
+  });
+
+  test('rational functions the equation grader really needs still parse', () => {
+    const lhs = parseRational('(180-x)/(90-x)', { var: 'x' });
+    const rhs = parseRational('5/2', { var: 'x' });
+    assert.equal(lhs.ok && rhs.ok, true);
+    const d = ratFunSub(lhs, rhs);
+    assert.equal(formatPoly(polyCanonical(d.num), 'x'), `x ${M} 30`);
+    assert.equal(parseRational('x^6', { var: 'x' }).ok, true, 'degree 6 is inside the cap');
+    assert.equal(parseRational('(x+1)(x+2)(x+3)(x+4)', { var: 'x' }).ok, true);
+  });
+
+  test('a pasted document is refused by every entry point before normalizing', () => {
+    const huge = '3'.repeat(100000);
+    for (const [name, fn] of [
+      ['parsePoly', () => parsePoly(huge, { var: 'x' })],
+      ['parseRational', () => parseRational(huge, { var: 'x' })],
+      ['parseLinear', () => parseLinear(huge)],
+      ['factorStructure', () => factorStructure(huge, { var: 'x' })],
+    ]) {
+      const { out, dt } = ms(fn);
+      assert.equal(out.ok, false, name);
+      assert.equal(out.err, 'toolong', name);
+      assert.ok(dt < 100, `${name} took ${dt} ms`);
+    }
+    const { out, dt } = ms(() => detectRootSet(huge));
+    assert.equal(out.isRootSet, false);
+    assert.ok(dt < 100, `detectRootSet took ${dt} ms`);
+  });
+
+  test('factorStructure treats an empty widget value as an empty answer, not a crash', () => {
+    for (const v of [null, undefined, '', '   ', 42, {}, { t: 'nope' }]) {
+      const r = factorStructure(v, { var: 'x' });
+      assert.equal(r.ok, false, JSON.stringify(v));
+      assert.ok(['empty', 'syntax', 'char'].includes(r.err), `${JSON.stringify(v)} → ${r.err}`);
+    }
+  });
+
+  test('hostile strings return result objects from every entry point', () => {
+    const evil = ['((((', '))))', '1/0', '0/0', '3--2', 'x^', 'x^-2', 'x^2.5', '(x+1)'.repeat(12),
+      'x'.repeat(50), '\u00bd\u00bd', 'x = = 3', '\ud83d\ude00', '2^^3', '1(2)3', '('.repeat(5000) + 'x',
+      '-'.repeat(5000) + 'x', '1+'.repeat(5000) + '1', null, undefined, 42];
+    for (const raw of evil) {
+      for (const [name, fn] of [
+        ['parsePoly', () => parsePoly(raw, { var: 'x' })],
+        ['parseRational', () => parseRational(raw, { var: 'x' })],
+        ['parseLinear', () => parseLinear(raw)],
+        ['factorStructure', () => factorStructure(raw, { var: 'x' })],
+        ['expandText', () => expandText(raw, { var: 'x' })],
+        ['detectRootSet', () => detectRootSet(raw)],
+      ]) {
+        const { out, dt } = ms(fn);
+        assert.equal(typeof out, 'object', `${name}(${JSON.stringify(String(raw))})`);
+        assert.ok(dt < 200, `${name}(${JSON.stringify(String(raw))}) took ${dt} ms`);
+      }
+    }
+  });
+});

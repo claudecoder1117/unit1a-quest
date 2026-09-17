@@ -12,6 +12,11 @@ import { cyrb53, seed32, seedTag, mulberry32, rngFrom } from '../site/js/rng.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const JS_DIR = join(ROOT, 'site', 'js');
+// The policy names site/js, but everything the browser runs is held to it:
+// site/data/*.js and the root-level site/*.js (version.js, a future sw.js)
+// ship in the same artifact, and one unseeded draw there breaks RETRY SAME SEED
+// just as badly. qa/ is dev-only tooling and is not served, so it is not scanned.
+const SITE_DIR = join(ROOT, 'site');
 const FORBIDDEN = ['Math', 'random'].join('.'); // spelled indirectly so this file never contains the literal
 
 // Strip comments and string/template literals so a comment such as
@@ -55,11 +60,13 @@ function walk(dir, out = []) {
   return out;
 }
 
-describe('no global random source under site/js', () => {
-  const files = walk(JS_DIR);
-  test('site/js contains modules to scan', () => {
-    assert.ok(files.length >= 3, `expected site/js to hold modules, found ${files.length}`);
+describe('no global random source in anything site/ serves', () => {
+  const files = walk(SITE_DIR);
+  test('site/ contains modules to scan, site/js among them', () => {
+    assert.ok(files.length >= 3, `expected site/ to hold modules, found ${files.length}`);
     assert.ok(files.some((f) => f.endsWith('rng.js')), 'site/js/rng.js exists');
+    assert.ok(walk(JS_DIR).length >= 3, 'site/js is scanned');
+    assert.ok(files.some((f) => f.includes(join('site', 'data'))), 'site/data is scanned too');
   });
   for (const f of files) {
     test(`${relative(ROOT, f)} does not call ${FORBIDDEN}`, () => {

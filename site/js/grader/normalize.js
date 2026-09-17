@@ -21,7 +21,7 @@
 export class ParseError extends Error {
   /**
    * @param {string} code   machine code ('syntax','char','variable','divzero','toolarge',
-   *                        'exponent','equals','div-nonconst','degree','wrong-var','multi-var','empty')
+   *                        'exponent','equals','div-nonconst','degree','wrong-var','multi-var','empty','toolong')
    * @param {string} message student-facing default message
    * @param {object} [extra] extra fields (pos, got, want, vars …)
    */
@@ -321,6 +321,21 @@ export function tokenize(s) {
  *   | {t:'pow', a:Ast, k:number}} Ast
  */
 
+/** hard limits: a real answer is < 100 tokens and nests a handful deep. Both
+ *  caps keep the recursive-descent parser (and evalAst, which walks the AST the
+ *  same way) inside the JS stack — a pasted `((((…` or `1+1+1+…` must come back
+ *  as a graded "too long", never as an uncaught RangeError in the widget. */
+export const MAX_TOKENS = 1000;
+export const MAX_DEPTH = 120;
+/** longest student answer any grader will look at (a field holds a line, not a
+ *  pasted document; normalizeText's regexes go quadratic on a 100 000-char run). */
+export const MAX_INPUT = 2000;
+
+/** true when `raw` is too long to be an answer — checked BEFORE normalizing. */
+export function isTooLong(raw) {
+  return raw != null && String(raw).length > MAX_INPUT;
+}
+
 /**
  * parseExpr — tokens (or normalized text) → AST. Throws ParseError with codes
  * 'syntax' | 'char' | 'equals' | 'exponent' | 'empty'.
@@ -335,6 +350,11 @@ export function parseExpr(input) {
   const fail = (code, msg, tok) => { throw new ParseError(code, msg, { pos: tok ? tok.i : 0 }); };
 
   if (toks.length === 1) fail('empty', 'type an answer', toks[0]);
+  if (toks.length > MAX_TOKENS) fail('toolong', 'that answer is too long to read', toks[0]);
+
+  let depth = 0;
+  const enter = (tok) => { if (++depth > MAX_DEPTH) fail('toolong', 'too many parentheses', tok); };
+  const leave = () => { depth--; };
 
   function expr() {
     let node = term();
@@ -384,7 +404,9 @@ export function parseExpr(input) {
     const t = peek();
     if (t.t === 'op' && (t.v === '-' || t.v === '+')) {
       next();
+      enter(t);
       const a = unary();
+      leave();
       return { t: t.v === '-' ? 'neg' : 'pos', a };
     }
     return pow();
@@ -411,7 +433,9 @@ export function parseExpr(input) {
     if (t.t === 'num') return { t: 'num', v: t.v, i: t.i };
     if (t.t === 'var') return { t: 'var', v: t.v, i: t.i };
     if (t.t === 'lp') {
+      enter(t);
       const inner = expr();
+      leave();
       const c = next();
       if (c.t !== 'rp') fail('syntax', 'missing a closing )', c);
       return inner;
@@ -515,7 +539,7 @@ export const NUM = {
  * @property {'rational'|'float'} [kind]
  * @property {string} [text]          canonical spelling ("11/2", "171.0000001")
  * @property {string} normalized      the normalized input
- * @property {string} [err]           'empty'|'comma'|'sci'|'variable'|'syntax'|'char'|'equals'|'divzero'|'exponent'|'toolarge'
+ * @property {string} [err]           'empty'|'comma'|'sci'|'variable'|'syntax'|'char'|'equals'|'divzero'|'exponent'|'toolarge'|'toolong'
  * @property {string} [msg]           default student-facing message
  * @property {string[]} [vars]        letters seen (err 'variable')
  */
@@ -530,6 +554,9 @@ export const NUM = {
  * @returns {NumResult}
  */
 export function parseNumber(raw, opts = {}) {
+  if (isTooLong(raw)) {
+    return { ok: false, err: 'toolong', msg: 'that answer is too long to read', normalized: '' };
+  }
   const normalized = normalizeText(raw, opts);
   const fail = (err, msg, extra) => ({ ok: false, err, msg, normalized, ...(extra || {}) });
   if (!normalized) return fail('empty', 'type an answer');
@@ -548,6 +575,9 @@ export function parseNumber(raw, opts = {}) {
     v = evalAst(parseExpr(tokenize(normalized)), NUM);
   } catch (e) {
     if (e instanceof ParseError) return fail(e.code, e.message, { pos: e.pos, vars: e.vars });
+    // last resort: a stack overflow from pathological input is a graded
+    // "too long", never an exception escaping into the widget.
+    if (e instanceof RangeError) return fail('toolong', 'that answer is too long to read');
     throw e;
   }
   if (isRat(v)) {

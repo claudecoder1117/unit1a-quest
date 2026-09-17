@@ -27,8 +27,8 @@
 <h1>T04 — figures at <span id="w"></span> px</h1>
 <div id="out"></div>
 <script type="module">
-  import { figures } from '../site/data/figures.js';
-  import { render, element, setWedgeState } from '../site/js/figure/svg.js';
+  import { figures, F2_TICKS } from '../site/data/figures.js';
+  import { render, element, setWedgeState, lint } from '../site/js/figure/svg.js';
   import { resolve, angles, pairs, validate } from '../site/js/figure/model.js';
 
   document.getElementById('w').textContent = innerWidth;
@@ -36,7 +36,9 @@
   const cases = [
     ['F1G (warm-up, rename A→G)', figures.F1, { rename: { A: 'G' } }],
     ['F1A (ang-10 labels)', figures.F1, { labels: [{ angle: ['B', 'C'], text: '−x + 84' }, { angle: ['A', 'E'], text: '2x² − 4x + 3' }] }],
-    ['F2 (ang-04)', figures.F2, {}],
+    ['F1 (cls-01: given 31° on a 26° drawing → auto not-to-scale)', figures.F1, { labels: [{ angle: ['C', 'D'], text: '31°' }] }],
+    ['F2 (ang-04, as printed: no ticks)', figures.F2, {}],
+    ['F2 with F2_TICKS (solution step / variant)', figures.F2, { ticks: F2_TICKS }],
     ['D5 (doc-05)', figures.D5, {}],
     ['D7 (doc-07)', figures.D7, {}],
     ['AH (ang-05, card labels)', figures.AH, { labels: [{ angle: ['M', 'H'], text: 'x² + 3' }, { angle: ['H', 'C'], text: '11 − 7x' }] }],
@@ -52,9 +54,9 @@
     const svg = element(fig, opts);
     paper.appendChild(svg); card.appendChild(paper);
     const m = resolve(fig, opts);
-    const issues = validate(m);
+    const issues = [...validate(m), ...lint(m, { widthPx: svg.getBoundingClientRect().width || 343 })];
     const p = document.createElement('p'); p.className = 'list';
-    p.innerHTML = `${issues.length ? '<span class="bad">' + issues.join('; ') + '</span>' : '<span class="ok">valid</span>'} · ${angles(m).length} angles: ${angles(m).map(a => a.name + (a.alias ? '(' + a.alias + ')' : '')).join(' ')} · LP ${pairs(m, 'linearPair').length} · vert ${pairs(m, 'vertical').length} · comp ${pairs(m, 'complementary').length} · supp ${pairs(m, 'supplementary').length}`;
+    p.innerHTML = `${issues.length ? '<span class="bad">' + issues.join('; ') + '</span>' : '<span class="ok">valid · lint clean</span>'} · ${angles(m).length} angles: ${angles(m).map(a => a.name + (a.alias ? '(' + a.alias + ')' : '')).join(' ')} · LP ${pairs(m, 'linearPair').length} · vert ${pairs(m, 'vertical').length} · comp ${pairs(m, 'complementary').length} · supp ${pairs(m, 'supplementary').length}${m.notToScale ? ' · not to scale' : ''}`;
     card.appendChild(p);
     out.appendChild(card);
     // wedge-state demo on the first figure: selected / ok / bad / linked
@@ -62,7 +64,6 @@
       setWedgeState(svg, 'CFD', 'ok'); setWedgeState(svg, 'BFC', 'selected'); setWedgeState(svg, 'CFG', 'bad'); setWedgeState(svg, 'EFG', 'linked');
     }
     if (title.startsWith('D7')) setWedgeState(svg, 'UL', 'selected');
-    if (title.startsWith('F2')) svg.querySelectorAll('.fig-wedge').forEach(w => w.remove());
   }
   // tell the screenshot script whether any label box crosses the viewBox edge or another element
   const report = [];

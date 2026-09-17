@@ -10,7 +10,7 @@
 import {
   ParseError, gcd, lcm, rat, isRat, ratAdd, ratSub, ratMul, ratDiv, ratNeg, ratAbs, ratEq,
   ratIsInt, ratIsZero, ratSign, ratToNumber, ratPow, ratToString, ratFromDecimal, ratCmp, toRat,
-  normalizeText, tokenize, parseExpr, evalAst, astVars, parseNumber,
+  normalizeText, tokenize, parseExpr, evalAst, astVars, parseNumber, isTooLong,
 } from './normalize.js';
 
 export { ParseError, tokenize, parseExpr, evalAst, astVars };
@@ -431,6 +431,11 @@ export function polyAlgebra(opts = {}) {
 }
 
 function failFrom(e, normalized) {
+  // A stack overflow from pathological input is a graded "too long", never an
+  // exception escaping into the widget (parseExpr's caps make it unreachable).
+  if (e instanceof RangeError) {
+    return { ok: false, err: 'toolong', msg: 'that answer is too long to read', normalized };
+  }
   if (!(e instanceof ParseError)) throw e;
   const out = { ok: false, err: e.code, msg: e.message, normalized };
   for (const k of ['pos', 'got', 'want', 'vars']) if (e[k] !== undefined) out[k] = e[k];
@@ -445,7 +450,7 @@ function failFrom(e, normalized) {
  * @property {string[]} [vars]    letters seen, first-appearance order
  * @property {string|null} [var]  the variable used (opts.var or the letter seen)
  * @property {string} normalized
- * @property {string} [err]  'empty'|'syntax'|'char'|'equals'|'exponent'|'wrong-var'|'multi-var'|'div-nonconst'|'divzero'|'degree'|'precision'|'toolarge'
+ * @property {string} [err]  'empty'|'syntax'|'char'|'equals'|'exponent'|'wrong-var'|'multi-var'|'div-nonconst'|'divzero'|'degree'|'precision'|'toolarge'|'toolong'
  * @property {string} [msg]
  */
 
@@ -459,6 +464,7 @@ function failFrom(e, normalized) {
  * @returns {PolyResult}
  */
 export function parsePoly(raw, opts = {}) {
+  if (isTooLong(raw)) return { ok: false, err: 'toolong', msg: 'that answer is too long to read', normalized: '' };
   const normalized = normalizeText(raw, { prefix: false, units: false, ...(opts.normalize || {}) });
   if (!normalized) return { ok: false, err: 'empty', msg: 'type an answer', normalized };
   try {
@@ -528,6 +534,11 @@ export function expandText(raw, opts = {}) {
 export function factorStructure(astOrRaw, opts = {}) {
   let ast = astOrRaw;
   let normalized = '';
+  // a widget's empty raw() (null / undefined / a non-AST object) is an empty
+  // answer, never a crash on `.t`
+  if (astOrRaw == null || (typeof astOrRaw !== 'string' && typeof astOrRaw.t !== 'string')) {
+    return { ok: false, err: 'empty', msg: 'type an answer', normalized: '' };
+  }
   if (typeof astOrRaw === 'string') {
     const r = parsePoly(astOrRaw, opts);
     if (!r.ok) return r;
@@ -585,8 +596,16 @@ export function factorStructure(astOrRaw, opts = {}) {
       if (polyIsZero(d)) throw new ParseError('divzero', 'division by zero');
       constant = ratDiv(constant, ratPow(polyCoeff(d, 0), mult));
     }
+    const maxExpand = (opts.maxDegree ?? 6) * 2;
     let expanded = polyConst(constant);
-    for (const f of factors) expanded = polyMul(expanded, polyPow(f.poly, f.mult));
+    for (const f of factors) {
+      // parsePoly already caps the degree; this also holds when a caller hands
+      // us an AST parsed elsewhere, so `(x+1)^999999` can never spin in polyPow.
+      if (f.degree * f.mult > maxExpand) {
+        throw new ParseError('degree', `degree above ${maxExpand} — check the exponents`);
+      }
+      expanded = polyMul(expanded, polyPow(f.poly, f.mult));
+    }
     const nonConstantCount = factors.reduce((s, f) => s + f.mult, 0);
     const gcfIncomplete = factors.some((f) => f.integer && f.content.n > 1);
     const hasRational = !ratIsInt(constant) || factors.some((f) => !f.integer);
@@ -638,6 +657,7 @@ export function diagnoseMismatch(got, target) {
  * @returns {{isRootSet:boolean, roots:(Rat|number)[], tokens:string[]}}
  */
 export function detectRootSet(raw) {
+  if (isTooLong(raw)) return { isRootSet: false, roots: [], tokens: [] };
   const s = String(raw ?? '').replace(/[{}]/g, ' ');
   const hadEquals = s.includes('=');
   const tokens = s.split(/[,;\n]|\b(?:or|and)\b/i).map((t) => t.trim()).filter(Boolean);
@@ -677,8 +697,17 @@ function rfReduce(num, den) {
  * @param {{var?:string, maxDegree?:number}} [opts]
  */
 export function ratFunAlgebra(opts = {}) {
-  const P = polyAlgebra({ ...opts, maxDegree: (opts.maxDegree ?? 6) * 2 });
-  const mk = (num, den) => rfReduce(num, den);
+  const maxDeg = (opts.maxDegree ?? 6) * 2;
+  const P = polyAlgebra({ ...opts, maxDegree: maxDeg });
+  // Every result is degree-capped: without this an equation field accepting
+  // `x^999999` would sit in polyPow forever and freeze the tab.
+  const guard = (v) => {
+    if (polyDegree(v.num) > maxDeg || polyDegree(v.den) > maxDeg) {
+      throw new ParseError('degree', `degree above ${maxDeg} — check the exponents`);
+    }
+    return v;
+  };
+  const mk = (num, den) => guard(rfReduce(num, den));
   return {
     num: (t) => mk(P.num(t), polyConst(1)),
     variable: (n) => mk(P.variable(n), polyConst(1)),
@@ -690,7 +719,12 @@ export function ratFunAlgebra(opts = {}) {
       if (polyIsZero(b.num)) throw new ParseError('divzero', 'division by zero');
       return mk(polyMul(a.num, b.den), polyMul(a.den, b.num));
     },
-    pow: (a, k) => mk(polyPow(a.num, k), polyPow(a.den, k)),
+    pow: (a, k) => {
+      if (k > 40) throw new ParseError('toolarge', 'that exponent is too large');
+      const d = Math.max(polyDegree(a.num), polyDegree(a.den));
+      if (d > 0 && d * k > maxDeg) throw new ParseError('degree', `degree above ${maxDeg} — check the exponents`);
+      return mk(polyPow(a.num, k), polyPow(a.den, k));
+    },
     get variableSeen() { return P.variableSeen; },
   };
 }
@@ -702,6 +736,7 @@ export function ratFunAlgebra(opts = {}) {
  * @returns {{ok:true, num:Poly, den:Poly, ast:object, vars:string[], var:string|null, normalized:string}|{ok:false, err:string, msg:string, normalized:string}}
  */
 export function parseRational(raw, opts = {}) {
+  if (isTooLong(raw)) return { ok: false, err: 'toolong', msg: 'that answer is too long to read', normalized: '' };
   const normalized = normalizeText(raw, { prefix: false, units: false, ...(opts.normalize || {}) });
   if (!normalized) return { ok: false, err: 'empty', msg: 'type an answer', normalized };
   try {
@@ -785,6 +820,7 @@ export function linearAlgebra(opts = {}) {
  * @returns {{ok:true, k:Rat, coef:Record<string,Rat>, ast:object, vars:string[], normalized:string}|{ok:false, err:string, msg:string, normalized:string}}
  */
 export function parseLinear(raw, opts = {}) {
+  if (isTooLong(raw)) return { ok: false, err: 'toolong', msg: 'that answer is too long to read', normalized: '' };
   const normalized = normalizeText(raw, { prefix: false, units: false, ...(opts.normalize || {}) });
   if (!normalized) return { ok: false, err: 'empty', msg: 'type an answer', normalized };
   try {

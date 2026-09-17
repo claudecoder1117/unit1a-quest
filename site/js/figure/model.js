@@ -14,14 +14,19 @@
 //
 // Angles are every ∠XVY with 0 < measure < 180 (composite ones included; straight angles excluded).
 // Relations are STRUCTURAL: linearPair / vertical / adjacent from ray sharing and `lines`;
-// supplementary / complementary from measures in a GENERIC instance — every ray whose direction is
+// supplementary / complementary from measures in GENERIC instances — every ray whose direction is
 // not tied to the first ray by `lines` / `rightMarks` is nudged by a generic amount (F1's C, drawn at
-// 31°, lands at 35.37° exactly as the spec says) so only relations that hold for every drawing of the
-// figure survive. `measure()` always reports the DRAWN instance (what the arithmetic feedback shows).
+// 26° on the scan, lands at 35.37° exactly as the spec says) so only relations that hold for every
+// drawing of the figure survive. A sum counts only when it holds in TWO independent generic instances
+// (different nudge sizes), so no single lucky nudge can fake a 90° / 180° sum. `measure()` always
+// reports the DRAWN instance (what the arithmetic feedback shows).
 //
 // DOM-free; imports nothing; runs identically under node --test and in the browser.
 
-export const GENERIC_NUDGE = 4.37;           // 31 + 4.37 = 35.37 (COMPOSED S3)
+export const GENERIC_DEG = 35.37;            // where F1's free ray C lands in the generic instance (COMPOSED S3)
+export const GENERIC_NUDGE = 9.37;           // 26 (scan) + 9.37 = 35.37
+const GENERIC_NUDGE_2 = 7.13;                // the second, independent instance
+const GENERIC_DECAY = [0.7, 0.6];            // per extra free component, per instance
 export const EPS = 1e-6;
 export const RELATIONS = Object.freeze(['linearPair', 'vertical', 'adjacent', 'nonAdjacent', 'supplementary', 'complementary']);
 /** The T-fig-pairs generator's angle set (COMPOSED S2): no two sum to 90 or 180, none is 45 or 90. */
@@ -102,10 +107,18 @@ function rotatePoint([x, y], [cx, cy], deg, mirror) {
   return [cx + dx * c + dy * s, cy - dx * s + dy * c];
 }
 
+/** A label text that is just a number of degrees ("31°", "31", "62.5 °") → that number; else null. */
+function numericDegrees(text) {
+  const m = /^\s*([0-9]+(?:\.[0-9]+)?)\s*[°º˚]?\s*$/.exec(String(text ?? ''));
+  return m ? Number(m[1]) : null;
+}
+
 /**
- * Card figure spec → concrete drawn model. opts: { rename:{A:'G'}, labels:[…] (replaces the figure's
- * default labels when given), notToScale (default: auto — any label text contains a letter),
- * rotate (degrees, generated variants use multiples of 15), mirror (bool) }.
+ * Card figure spec → concrete drawn model. opts (the card's `figure` object, S6): { rename:{A:'G'},
+ * labels:[…] (replaces the figure's default labels when given), notToScale (default: auto — any label
+ * text contains a letter, or a numeric angle label differs from the drawn measure by > 0.5°),
+ * rotate (degrees, generated variants use multiples of 15), mirror (bool), ticks (poly only: replaces
+ * the figure's tick groups, e.g. figures.F2_TICKS), arcs (fan only: decorative arcs [[X,Y], …]) }.
  * The returned model is what angles()/pairs()/measure()/svg render() consume.
  */
 export function resolve(fig, opts = {}) {
@@ -116,18 +129,35 @@ export function resolve(fig, opts = {}) {
   m.labels = Array.isArray(opts.labels) ? structuredClone(opts.labels) : (m.labels ?? []);
   m.rotate = Number(opts.rotate) || 0;
   m.mirror = !!opts.mirror;
-  m.notToScale = opts.notToScale ?? m.labels.some(l => /[a-z]/i.test(String(l.text ?? '')));
   if (m.kind === 'fan') {
     m.center = m.center ?? [200, 150];
     m.rays = m.rays.map(r => ({ ...r, deg: norm((m.mirror ? 180 - r.deg : r.deg) + m.rotate) }));
-    m.lines = m.lines ?? []; m.rightMarks = m.rightMarks ?? []; m.arcs = m.arcs ?? [];
+    m.lines = m.lines ?? []; m.rightMarks = m.rightMarks ?? [];
+    m.arcs = Array.isArray(opts.arcs) ? structuredClone(opts.arcs) : (m.arcs ?? []);
   } else {
     const pts = Object.values(m.points);
     const c = [pts.reduce((s, p) => s + p[0], 0) / pts.length, pts.reduce((s, p) => s + p[1], 0) / pts.length];
     if (m.rotate || m.mirror) m.points = Object.fromEntries(Object.entries(m.points).map(([k, p]) => [k, rotatePoint(p, c, m.rotate, m.mirror)]));
-    m.segments = m.segments ?? []; m.ticks = m.ticks ?? []; m.rightMarks = m.rightMarks ?? [];
+    m.segments = m.segments ?? []; m.rightMarks = m.rightMarks ?? [];
+    m.ticks = Array.isArray(opts.ticks) ? structuredClone(opts.ticks) : (m.ticks ?? []);
   }
   m.labelOffsets = { angle: {}, seg: {}, point: {}, ...(m.labelOffsets ?? {}) };
+  if (opts.labelOffsets && typeof opts.labelOffsets === 'object') {   // a card may override single entries
+    for (const cat of ['angle', 'seg', 'point']) if (opts.labelOffsets[cat]) m.labelOffsets[cat] = { ...m.labelOffsets[cat], ...structuredClone(opts.labelOffsets[cat]) };
+  }
+  if (opts.notToScale != null) m.notToScale = !!opts.notToScale;
+  else {
+    let nts = m.labels.some(l => /[a-z]/i.test(String(l.text ?? '')));
+    for (const l of m.labels) {
+      if (nts || !l.angle) continue;
+      const val = numericDegrees(l.text);
+      if (val == null) continue;
+      const [x, v, y] = l.angle.length === 3 ? l.angle : [l.angle[0], m.kind === 'fan' ? m.vertex : undefined, l.angle[1]];
+      const drawn = measure(m, x, y, v);
+      if (Number.isFinite(drawn) && Math.abs(drawn - val) > 0.5) nts = true;
+    }
+    m.notToScale = nts;
+  }
   return m;
 }
 
@@ -366,8 +396,13 @@ export function measure(model, x, y, v) {
 // structure: which rays are tied to which, and the generic instance
 
 const structCache = new WeakMap();
-/** Union-find over rays through `lines` and `rightMarks`. Component 0 holds rays[0]; every other
- *  component is free and gets its own generic nudge (4.37°, then ×0.7 per extra component). */
+/**
+ * Union-find over rays through `lines` and `rightMarks`. Component 0 holds rays[0]; every other
+ * component is free and gets its own generic nudge in each of the two instances: 9.37° (then ×0.7
+ * per extra component) and 7.13° (×0.6). A component's nudge is capped at half the smallest
+ * counter-clockwise gap from one of its rays to a ray of ANOTHER component, so the cyclic order of
+ * the rays — and with it every angle's identity — is the same in the drawn and generic instances.
+ */
 export function structure(fan) {
   if (structCache.has(fan)) return structCache.get(fan);
   const idx = new Map(fan.rays.map((r, i) => [r, i]));
@@ -378,33 +413,58 @@ export function structure(fan) {
   for (const [x, y] of fan.rightMarks ?? []) union(x, y);
   const roots = [];
   const comp = new Map();
-  fan.rays.forEach((r, i) => { const root = find(i); if (!roots.includes(root)) roots.push(root); comp.set(r.n, roots.indexOf(root)); for (const a of r.names ?? []) comp.set(a, roots.indexOf(root)); });
-  const degs = fan.rays.map(r => norm(r.deg)).sort((a, b) => a - b);
-  let minGap = 360;
-  for (let i = 0; i < degs.length; i++) { const g = norm(degs[(i + 1) % degs.length] - degs[i]) || 360; if (g < minGap) minGap = g; }
-  const base = Math.min(GENERIC_NUDGE, minGap / 3);
-  const nudges = roots.map((_, k) => (k === 0 ? 0 : base * Math.pow(0.7, k - 1)));
+  const compOf = fan.rays.map((r, i) => { const root = find(i); if (!roots.includes(root)) roots.push(root); const k = roots.indexOf(root); comp.set(r.n, k); for (const a of r.names ?? []) comp.set(a, k); return k; });
+  // safe shift per component: half the smallest ccw gap to a ray outside the component
+  const order = fan.rays.map((r, i) => ({ deg: norm(r.deg), k: compOf[i] })).sort((a, b) => a.deg - b.deg);
+  const maxShift = roots.map(() => 360);
+  for (let i = 0; i < order.length; i++) {
+    const me = order[i];
+    for (let j = 1; j <= order.length; j++) {
+      const o = order[(i + j) % order.length];
+      if (o.k === me.k) continue;
+      const gap = norm(o.deg - me.deg) || 360;
+      maxShift[me.k] = Math.min(maxShift[me.k], gap / 2);
+      break;
+    }
+  }
+  const nudgeSet = (base, decay) => roots.map((_, k) => (k === 0 ? 0 : Math.min(base * Math.pow(decay, k - 1), maxShift[k])));
+  const nudges = nudgeSet(GENERIC_NUDGE, GENERIC_DECAY[0]);
+  const nudges2 = nudgeSet(GENERIC_NUDGE_2, GENERIC_DECAY[1]);
   const free = new Set([...comp.entries()].filter(([, c]) => c !== 0).map(([n]) => n));
-  const s = { comp, nudges, free, components: roots.length };
+  const s = { comp, nudges, nudges2, free, components: roots.length, maxShift };
   structCache.set(fan, s);
   return s;
 }
 
 const genericCache = new WeakMap();
-/** The generic instance: same structure, free components nudged so only structural sums hit 90/180. */
-export function generic(model) {
-  if (genericCache.has(model)) return genericCache.get(model);
+const genericCache2 = new WeakMap();
+function makeGeneric(model, which) {
+  const cacheMap = which === 2 ? genericCache2 : genericCache;
+  if (cacheMap.has(model)) return cacheMap.get(model);
   let g;
   if (model.kind === 'poly') {
-    g = { ...model, generic: true };
-    const fans = polyFans(model).map(generic);
+    g = { ...model, generic: which };
+    const fans = polyFans(model).map(f => makeGeneric(f, which));
     fanCache.set(g, fans);
   } else {
     const s = structure(model);
-    g = { ...model, generic: true, rays: model.rays.map(r => ({ ...r, deg: norm(r.deg + s.nudges[s.comp.get(r.n)]), free: s.free.has(r.n) })) };
+    const n = which === 2 ? s.nudges2 : s.nudges;
+    g = { ...model, generic: which, rays: model.rays.map(r => ({ ...r, deg: norm(r.deg + n[s.comp.get(r.n)]), free: s.free.has(r.n) })) };
   }
-  genericCache.set(model, g);
+  cacheMap.set(model, g);
   return g;
+}
+/** The generic instance: same structure, free components nudged so only structural sums hit 90/180.
+ *  (F1's C lands at 35.37°.) A generic model is its own generic instance. */
+export function generic(model) {
+  if (model.generic) return model;
+  return makeGeneric(model, 1);
+}
+/** The second, independent generic instance (different nudge sizes) — a sum is structural only if it
+ *  holds in both. */
+export function generic2(model) {
+  if (model.generic) return model;
+  return makeGeneric(model, 2);
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -433,14 +493,19 @@ export function relate(model, A, B) {
   }
   const oa = opposite(fan, a.a), ob = opposite(fan, a.b);
   const vertical = sameVertex && !sameAngle && shared.length === 0 && !!oa && !!ob && raysB.includes(oa) && raysB.includes(ob);
-  const ga = getAngle(generic(model), a.key), gb = getAngle(generic(model), b.key);
+  const g1 = generic(model), g2 = generic2(model);
+  const ga = getAngle(g1, a.key), gb = getAngle(g1, b.key);
+  const ga2 = getAngle(g2, a.key), gb2 = getAngle(g2, b.key);
   const sum = a.deg + b.deg;
   const sumGeneric = (ga?.deg ?? a.deg) + (gb?.deg ?? b.deg);
+  const sumGeneric2 = (ga2?.deg ?? a.deg) + (gb2?.deg ?? b.deg);
   // measure relations are only defined between angles at ONE vertex: the fans of a poly are
   // structurally independent (F2's co-interior angles at A and D sum to 180 only because BD ∥ AE,
   // a fact this unit never asks about), so cross-vertex pairs are never supplementary/complementary.
-  const supplementary = sameVertex && !sameAngle && near(sumGeneric, 180);
-  const complementary = sameVertex && !sameAngle && near(sumGeneric, 90);
+  // A sum is structural only when BOTH generic instances agree (and the drawn one, which they imply).
+  const structuralSum = (t) => near(sumGeneric, t, 1e-4) && near(sumGeneric2, t, 1e-4);
+  const supplementary = sameVertex && !sameAngle && structuralSum(180);
+  const complementary = sameVertex && !sameAngle && structuralSum(90);
   const within = (t, s, span) => norm(t - s) <= span + 1e-4;
   const contains = sameVertex && !sameAngle && ((within(b.start, a.start, a.span) && within(b.start + b.span, a.start, a.span)) || (within(a.start, b.start, b.span) && within(a.start + a.span, b.start, b.span)));
   return {
@@ -516,6 +581,15 @@ export function accidentalSumsInSet(degs, { allowRight = true } = {}) {
 
 /** Plain-English description of a fan/poly for aria-label. */
 export function describe(model) {
+  if (model.kind === 'fan' && model.hideLetters) {
+    // no printed letters (D7): describe by position names, never by the internal ray letters
+    const parts = [`${model.lines.length === 2 ? 'two lines crossing' : `${model.rays.length} rays from one point`}`];
+    const alias = (x, y) => Object.entries(model.angleNames ?? {}).find(([, [p, q]]) => (p === x && q === y) || (p === y && q === x))?.[0];
+    const names = Object.keys(model.angleNames ?? {}).map(k => ALIAS_LABELS[k] ?? k);
+    if (names.length) parts.push(`angles ${names.join(', ')}`);
+    for (const l of model.labels) if (l.angle) { const [x, y] = l.angle.length === 3 ? [l.angle[0], l.angle[2]] : l.angle; const a = alias(x, y); parts.push(`${a ? (ALIAS_LABELS[a] ?? a) : 'an angle'} labelled ${l.text}`); }
+    return parts.join('; ');
+  }
   if (model.kind === 'fan') {
     const lines = model.lines.map(([x, y]) => `line ${x}${y}`);
     const inLine = new Set(model.lines.flat());

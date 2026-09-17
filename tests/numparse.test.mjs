@@ -6,6 +6,7 @@ import {
   normalizeText, stripPrefix, parseNumber, numEquals, numIsNegOf, tolFor, DEFAULT_TOL,
   rat, ratAdd, ratMul, ratDiv, ratEq, ratToString, ratFromDecimal, toRat, toNumber, formatNumber,
   tokenize, parseExpr, evalAst, NUM, astVars, ParseError,
+  MAX_TOKENS, MAX_DEPTH, MAX_INPUT, isTooLong,
 } from '../site/js/grader/normalize.js';
 
 const R = (n, d = 1) => rat(n, d);
@@ -385,5 +386,63 @@ describe('shared tokenizer / parser / AST', () => {
     const at = (x) => ({ ...NUM, variable: () => R(x) });
     assert.deepEqual(evalAst(parseExpr('(3p-5)(p+1)'), at(7)), R(16 * 8));
     assert.deepEqual(evalAst(parseExpr('3(p - 5/3)(p + 1)'), at(7)), R(16 * 8));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Pathological input: a paste into an answer field must come back as a graded
+// refusal, never as a thrown RangeError or a frozen tab. (Found by fuzzing the
+// T02 verification pass: 2 000 nested parens overflowed the parser's stack and
+// a 100 000-character digit run spent 11 s inside normalizeText's regexes.)
+// ---------------------------------------------------------------------------
+describe('pathological input is graded, never thrown (parseNumber never throws)', () => {
+  const ms = (fn) => { const t0 = Date.now(); const out = fn(); return { out, dt: Date.now() - t0 }; };
+
+  test('deep parentheses: a legal depth parses, past MAX_DEPTH is a graded refusal', () => {
+    const deep = (n) => '('.repeat(n) + '3' + ')'.repeat(n);
+    assert.equal(parseNumber(deep(MAX_DEPTH - 1)).text, '3');
+    for (const n of [MAX_DEPTH + 1, 2000, 20000]) {
+      const r = parseNumber(deep(n));
+      assert.equal(r.ok, false, `depth ${n} must not parse`);
+      assert.equal(r.err, 'toolong');
+      assert.match(r.msg, /too (long|many)/);
+    }
+    assert.equal(parseNumber('('.repeat(20000) + '3').ok, false, 'unbalanced deep input');
+  });
+
+  test('long unary chains and long sums do not overflow the stack', () => {
+    assert.equal(parseNumber('-'.repeat(4) + '3').text, '3');
+    assert.equal(parseNumber('-'.repeat(5000) + '3').err, 'toolong');
+    assert.equal(parseNumber('1+'.repeat(5000) + '1').err, 'toolong');
+    assert.equal(parseNumber('3*'.repeat(5000) + '3').err, 'toolong');
+    // a sum just inside the token cap still evaluates (no stack overflow in evalAst)
+    const terms = Math.floor((MAX_TOKENS - 2) / 2);
+    const r = parseNumber('1+'.repeat(terms) + '1');
+    assert.equal(r.ok, true, `${terms + 1} terms should still parse`);
+    assert.equal(r.text, String(terms + 1));
+  });
+
+  test('a pasted document is refused before normalizeText touches it (< 100 ms)', () => {
+    assert.equal(isTooLong('3'.repeat(MAX_INPUT + 1)), true);
+    assert.equal(isTooLong('3'.repeat(MAX_INPUT)), false);
+    assert.equal(isTooLong('3'), false);
+    assert.equal(isTooLong(null), false);
+    const { out, dt } = ms(() => parseNumber('3'.repeat(100000)));
+    assert.equal(out.ok, false);
+    assert.equal(out.err, 'toolong');
+    assert.ok(dt < 100, `a 100 000-char paste took ${dt} ms — normalizeText must not see it`);
+  });
+
+  test('every hostile string returns a result object in bounded time', () => {
+    const evil = ['', '   ', '((((', '))))', '1/0', '0/0', '--5', '3--2', '+-3', '3+', '*3', '3*', '^2',
+      '9'.repeat(40), '1'.repeat(20) + '.' + '1'.repeat(20), '2^200', '\u00bd\u00bd', '1 1/2 1/2',
+      '\ud83d\ude00', '\t\n 3 \n', '3e', 'e3', '\u03c0', '\u221e', 'NaN', '1/2/3', '3..5', '.', '-', '/', '(',
+      '1(2)3', null, undefined, 42];
+    for (const s of evil) {
+      const { out, dt } = ms(() => parseNumber(s));
+      assert.equal(typeof out, 'object', `parseNumber(${JSON.stringify(String(s))}) returned a result`);
+      assert.equal(typeof out.ok, 'boolean');
+      assert.ok(dt < 200, `parseNumber(${JSON.stringify(String(s))}) took ${dt} ms`);
+    }
   });
 });
