@@ -1,0 +1,128 @@
+/* === T01 === theme.css — every colour token from COMPOSED S5.
+   :root = light. Dark under prefers-color-scheme guarded by :root:not([data-theme="light"]);
+   [data-theme="dark"] wins regardless of the OS. app.js writes data-theme from settings.theme
+   ("auto" removes the attribute). Non-colour tokens (type, spacing, motion) live here too so
+   every stylesheet reads one vocabulary. */
+
+:root {
+  color-scheme: light;
+
+  /* surfaces */
+  --bg: #F6F8FC;
+  --surface: #FFFFFF;
+  --surface2: #EEF2F9;
+  --paper: #FBFAF5;
+  --paper-grid: rgba(30, 60, 90, .10);
+  --line: #D8DFEC;
+
+  /* text */
+  --text: #0F1728;
+  --muted: #5B6780;
+
+  /* accent: --accent for fills/borders (>= 3:1), --accent-ink is the ONLY accent used for text (>= 4.5:1) */
+  --accent: #0A8FB5;
+  --accent-ink: #046A87;
+  --accent-alpha: rgba(10, 143, 181, .14);
+
+  /* semantics */
+  --gold: #A66F00;
+  --ok: #178A55;
+  --bad: #D92D4C;
+  --warn: #B8650A;
+  --almost: #B8650A;
+  --violet: #6B4FD8;      /* combo >= 10 (S4) */
+
+  /* figures: strokes re-theme via currentColor; arcs/expression labels >= 4.5:1 on --paper */
+  --fig-line: currentColor;
+  --fig-angle: #8A5C00;
+
+  /* rarity tints (light values chosen to stay visible on white) */
+  --bronze: #A8652A;
+  --silver: #7F8A99;
+  --plat: #2F86B3;
+
+  /* type */
+  --font-ui: Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "JetBrains Mono", SFMono-Regular, Menlo, Consolas, monospace;
+  --fs-1: 13px;
+  --fs-2: 15px;
+  --fs-3: 17px;
+  --fs-4: 22px;
+  --fs-5: 28px;
+  --fs-6: 40px;
+
+  /* layout (8 px grid) */
+  --header-h: 56px;
+  --col: 680px;
+  --rail: 320px;
+  --gutter: 16px;
+  --radius: 12px;
+  --radius-sm: 8px;
+  --tap: 44px;
+  --input-h: 48px;
+
+  /* motion */
+  --ease: cubic-bezier(.2, .8, .2, 1);
+  --dur-1: 120ms;
+  --dur-2: 200ms;
+  --dur-3: 450ms;
+
+  --shadow: 0 1px 2px rgba(15, 23, 40, .06), 0 8px 24px rgba(15, 23, 40, .06);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #0B0F17;
+    --surface: #121826;
+    --surface2: #1A2232;
+    --paper: #151C2B;
+    --paper-grid: rgba(120, 150, 200, .08);
+    --line: #26314A;
+    --text: #E6EBF5;
+    --muted: #8A96B0;
+    --accent: #38E1FF;
+    --accent-ink: #38E1FF;
+    --accent-alpha: rgba(56, 225, 255, .16);
+    --gold: #FFC542;
+    --ok: #3DD68C;
+    --bad: #FF5C7A;
+    --warn: #FFB454;
+    --almost: #FFB454;
+    --violet: #B39DFF;
+    --fig-line: currentColor;
+    --fig-angle: #FFC542;
+    --bronze: #B87333;
+    --silver: #C0C7CE;
+    --plat: #9AD7F5;
+    --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px rgba(0, 0, 0, .35);
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0B0F17;
+  --surface: #121826;
+  --surface2: #1A2232;
+  --paper: #151C2B;
+  --paper-grid: rgba(120, 150, 200, .08);
+  --line: #26314A;
+  --text: #E6EBF5;
+  --muted: #8A96B0;
+  --accent: #38E1FF;
+  --accent-ink: #38E1FF;
+  --accent-alpha: rgba(56, 225, 255, .16);
+  --gold: #FFC542;
+  --ok: #3DD68C;
+  --bad: #FF5C7A;
+  --warn: #FFB454;
+  --almost: #FFB454;
+  --violet: #B39DFF;
+  --fig-line: currentColor;
+  --fig-angle: #FFC542;
+  --bronze: #B87333;
+  --silver: #C0C7CE;
+  --plat: #9AD7F5;
+  --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px rgba(0, 0, 0, .35);
+}
+/* === /T01 === */

@@ -1,0 +1,3 @@
+/* screens.css — per-screen layout (home, binder, card, run, boss, mock, report, stats, sheet, settings,
+   onboard, night). Created by T01 (header only). Screen tickets APPEND their block, opened by a comment
+   line reading  === Txx ===  and closed by one reading  === /Txx ===  — never rewrite another ticket's block. */

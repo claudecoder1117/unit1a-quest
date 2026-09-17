@@ -1,0 +1,8 @@
+{
+  "name": "unit1a-quest",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/"
+  }
+}

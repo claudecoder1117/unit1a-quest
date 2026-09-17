@@ -1,0 +1,90 @@
+<!doctype html>
+<!-- qa/figures.html — T04 dev page (NOT served; never copied under site/). Renders the five
+     hand-modeled figures through site/js/figure/svg.js at phone width, once plain and once with
+     the card labels / renames the content tickets will pass, plus a wedge-state demo.
+     Serve the REPO ROOT (python3 -m http.server 8090 --bind 127.0.0.1) and open /qa/figures.html,
+     or run the screenshot script described in notes/T04.md. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>T04 figures</title>
+<link rel="stylesheet" href="../site/css/theme.css">
+<link rel="stylesheet" href="../site/css/figure.css">
+<style>
+  body { margin: 0; padding: 12px 16px; background: var(--bg, #F6F8FC); color: var(--text, #0F1728); font-family: var(--font-ui, system-ui, sans-serif); }
+  h1 { font-size: 15px; margin: 0 0 8px; }
+  h2 { font-size: 13px; margin: 14px 0 4px; font-weight: 600; color: var(--muted, #5B6780); }
+  .card { background: var(--surface, #fff); border: 1px solid var(--line, #D8DFEC); border-radius: 12px; padding: 8px; margin-bottom: 8px; }
+  .paper { background: var(--paper, #FBFAF5); background-image: linear-gradient(var(--paper-grid, rgba(30,60,90,.1)) 1px, transparent 1px), linear-gradient(90deg, var(--paper-grid, rgba(30,60,90,.1)) 1px, transparent 1px); background-size: 8px 8px; border-radius: 8px; }
+  .fig { outline: 1px dashed rgba(120, 120, 160, .35); }   /* shows the viewBox edge on the dev page only */
+  .list { font: 12px var(--font-mono, monospace); color: var(--muted); margin: 4px 0 0; word-break: break-word; white-space: pre-wrap; }
+  .ok { color: var(--ok); } .bad { color: var(--bad); }
+</style>
+</head>
+<body>
+<h1>T04 — figures at <span id="w"></span> px</h1>
+<div id="out"></div>
+<script type="module">
+  import { figures } from '../site/data/figures.js';
+  import { render, element, setWedgeState } from '../site/js/figure/svg.js';
+  import { resolve, angles, pairs, validate } from '../site/js/figure/model.js';
+
+  document.getElementById('w').textContent = innerWidth;
+  const out = document.getElementById('out');
+  const cases = [
+    ['F1G (warm-up, rename A→G)', figures.F1, { rename: { A: 'G' } }],
+    ['F1A (ang-10 labels)', figures.F1, { labels: [{ angle: ['B', 'C'], text: '−x + 84' }, { angle: ['A', 'E'], text: '2x² − 4x + 3' }] }],
+    ['F2 (ang-04)', figures.F2, {}],
+    ['D5 (doc-05)', figures.D5, {}],
+    ['D7 (doc-07)', figures.D7, {}],
+    ['AH (ang-05, card labels)', figures.AH, { labels: [{ angle: ['M', 'H'], text: 'x² + 3' }, { angle: ['H', 'C'], text: '11 − 7x' }] }],
+    ['F1 rotated 30°, mirrored, relabelled (variant)', figures.F1, { rotate: 30, mirror: true, rename: { A: 'K', B: 'M', C: 'P', D: 'R', E: 'S', F: 'T' } }],
+    ['F1 dark paper', figures.F1, { labels: [{ angle: ['B', 'C'], text: '−x + 84' }] }, 'dark'],
+  ];
+  for (const [title, fig, opts, theme] of cases) {
+    const card = document.createElement('div');
+    card.className = 'card';
+    if (theme) card.setAttribute('data-theme', theme);
+    const h = document.createElement('h2'); h.textContent = title; card.appendChild(h);
+    const paper = document.createElement('div'); paper.className = 'paper';
+    const svg = element(fig, opts);
+    paper.appendChild(svg); card.appendChild(paper);
+    const m = resolve(fig, opts);
+    const issues = validate(m);
+    const p = document.createElement('p'); p.className = 'list';
+    p.innerHTML = `${issues.length ? '<span class="bad">' + issues.join('; ') + '</span>' : '<span class="ok">valid</span>'} · ${angles(m).length} angles: ${angles(m).map(a => a.name + (a.alias ? '(' + a.alias + ')' : '')).join(' ')} · LP ${pairs(m, 'linearPair').length} · vert ${pairs(m, 'vertical').length} · comp ${pairs(m, 'complementary').length} · supp ${pairs(m, 'supplementary').length}`;
+    card.appendChild(p);
+    out.appendChild(card);
+    // wedge-state demo on the first figure: selected / ok / bad / linked
+    if (title.startsWith('F1G')) {
+      setWedgeState(svg, 'CFD', 'ok'); setWedgeState(svg, 'BFC', 'selected'); setWedgeState(svg, 'CFG', 'bad'); setWedgeState(svg, 'EFG', 'linked');
+    }
+    if (title.startsWith('D7')) setWedgeState(svg, 'UL', 'selected');
+    if (title.startsWith('F2')) svg.querySelectorAll('.fig-wedge').forEach(w => w.remove());
+  }
+  // tell the screenshot script whether any label box crosses the viewBox edge or another element
+  const report = [];
+  for (const svg of document.querySelectorAll('svg.fig')) {
+    const vb = svg.getBoundingClientRect();
+    for (const t of svg.querySelectorAll('text')) {
+      const b = t.getBoundingClientRect();
+      if (b.left < vb.left - 0.5 || b.right > vb.right + 0.5 || b.top < vb.top - 0.5 || b.bottom > vb.bottom + 0.5) report.push(`clipped: ${t.textContent} in ${svg.dataset.figure}`);
+    }
+    const texts = [...svg.querySelectorAll('text')].map(t => [t.textContent, t.getBoundingClientRect()]);
+    for (let i = 0; i < texts.length; i++) for (let j = i + 1; j < texts.length; j++) {
+      const a = texts[i][1], b = texts[j][1];
+      if (!(a.right < b.left || b.right < a.left || a.bottom < b.top || b.bottom < a.top)) report.push(`overlap: "${texts[i][0]}" × "${texts[j][0]}" in ${svg.dataset.figure}`);
+    }
+    for (const w of svg.querySelectorAll('.fig-wedge-hit')) {
+      const b = w.getBoundingClientRect();
+      if (Math.max(b.width, b.height) < 44) report.push(`small wedge: ${w.parentElement.dataset.name} ${b.width.toFixed(0)}×${b.height.toFixed(0)} in ${svg.dataset.figure}`);
+    }
+  }
+  window.__figReport = report;
+  const pre = document.createElement('pre'); pre.className = 'list'; pre.textContent = report.length ? report.join('\n') : 'no clipped labels, no label overlaps, no small wedges';
+  out.prepend(pre);
+</script>
+</body>
+</html>

@@ -1,0 +1,49 @@
+/* components.css — shared components (Card, Paper card, HP pips, rarity tile, skill bar, hint ladder, toast).
+   Created by T01 (header only). T08a owns the first real block; later tickets APPEND their own block,
+   opened by a comment line reading  === Txx ===  and closed by one reading  === /Txx ===  —
+   never edit another ticket's block. */
+
+/* === T05 === */
+/* mathfmt.js notation (COMPOSED S5 "Type", S9 #3). {line AB} / {seg AB} / {ray AB} render as
+   inline-block spans whose border-top IS the overline, so the bar spans exactly the letters at any
+   font size; arrowheads are ::before/::after chevrons in em units. currentColor → re-themes for free.
+   {ang ABC}, {m ABC}, {len AB} are plain text in the same mono face. No MathML, no KaTeX. */
+.mf {
+  font-family: "JetBrains Mono", SFMono-Regular, Menlo, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.mf-line, .mf-seg, .mf-ray {
+  position: relative;
+  display: inline-block;
+  vertical-align: baseline;
+  line-height: 1;
+  padding: 0.14em 0.08em 0;
+  margin-inline: 0.04em;
+  border-top: max(1px, 0.075em) solid currentColor;
+}
+.mf-line::before, .mf-line::after, .mf-ray::after {
+  content: "";
+  position: absolute;
+  top: calc(-0.5 * max(1px, 0.075em));
+  width: 0.3em;
+  height: 0.3em;
+  box-sizing: border-box;
+  border-top: max(1px, 0.075em) solid currentColor;
+  border-right: max(1px, 0.075em) solid currentColor;
+  right: -0.06em;
+  transform: translateY(-50%) rotate(45deg);
+  transform-origin: center;
+  pointer-events: none;
+}
+.mf-line::before {
+  right: auto;
+  left: -0.06em;
+  transform: translateY(-50%) rotate(-135deg);
+}
+.mf-sup {
+  font-size: 0.68em;
+  line-height: 0;
+  vertical-align: 0.5em;
+}
+/* === /T05 === */

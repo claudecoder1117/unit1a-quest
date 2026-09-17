@@ -1,0 +1,103 @@
+/* figure.css — SVG figure styling (rays, arcs, wedges, labels, not-to-scale chip).
+   Created by T01 (header only). T04 owns the first real block; append-only after that, each block
+   opened by a comment line reading  === Txx ===  and closed by one reading  === /Txx === . */
+
+/* === T04 === figure/svg.js output: strokes, marks, arcs, labels, wedges, chip.
+   Strokes use currentColor (re-theme for free); arcs + expression labels use --fig-angle;
+   label halo is --surface (paint-order: stroke). Every token has a light fallback so the
+   figure survives on its own. */
+.fig {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  height: auto;
+  aspect-ratio: 400 / 260;
+  color: var(--text, #0F1728);
+  font-family: var(--font-ui, Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif);
+  overflow: visible;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+.fig-line, .fig-ray, .fig-seg {
+  stroke: var(--fig-line, currentColor);
+  stroke-width: 2;
+  stroke-linecap: round;
+  fill: none;
+}
+.fig-mark, .fig-tick {
+  stroke: var(--fig-line, currentColor);
+  stroke-width: 1.75;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  fill: none;
+}
+.fig-arc {
+  stroke: var(--fig-angle, #8A5C00);
+  stroke-width: 1.5;
+  fill: none;
+}
+.fig-pt-dot { fill: currentColor; }
+.fig-pt-hit { fill: transparent; stroke: none; pointer-events: all; }
+
+.fig-label {
+  font-size: 15px;
+  font-weight: 600;
+  fill: currentColor;
+  text-anchor: middle;
+  dominant-baseline: central;
+  paint-order: stroke;
+  stroke: var(--surface, #FFFFFF);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
+.fig-expr {
+  font-family: var(--font-mono, "JetBrains Mono", SFMono-Regular, Menlo, Consolas, monospace);
+  font-size: 13px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  fill: var(--fig-angle, #8A5C00);
+}
+.fig-paper .fig-label, .paper .fig-label { stroke: var(--paper, #FBFAF5); }
+
+/* wedges: <g class="fig-wedge" role="button"> holding a visual sector (.fig-wedge-fill) and the
+   transparent hit region (.fig-wedge-hit: sector for atomic angles, annular band for composites).
+   States: hover 18 % / selected 32 % / ok / bad / linked (input focus ↔ wedge, 18 %). */
+.fig-wedge { cursor: pointer; outline: none; }
+.fig-wedge-fill {
+  fill: var(--accent, #0A8FB5);
+  fill-opacity: 0;
+  stroke: none;
+  pointer-events: none;
+  transition: fill-opacity var(--dur-1, 120ms) var(--ease, ease);
+}
+.fig-wedge-hit { fill: transparent; stroke: none; pointer-events: all; }
+@media (hover: hover) { .fig-wedge:hover .fig-wedge-fill { fill-opacity: .18; } }
+.fig-wedge.is-hover .fig-wedge-fill,
+.fig-wedge.is-linked .fig-wedge-fill { fill-opacity: .18; }
+.fig-wedge.is-selected .fig-wedge-fill { fill-opacity: .32; }
+.fig-wedge.is-ok .fig-wedge-fill { fill: var(--ok, #178A55); fill-opacity: .32; }
+.fig-wedge.is-bad .fig-wedge-fill { fill: var(--bad, #D92D4C); fill-opacity: .32; }
+.fig-wedge:focus-visible .fig-wedge-fill {
+  fill-opacity: .24;
+  stroke: var(--accent, #0A8FB5);
+  stroke-width: 2;
+  stroke-linejoin: round;
+}
+.fig-wedge.is-ok:focus-visible .fig-wedge-fill { stroke: var(--ok, #178A55); }
+.fig-wedge.is-bad:focus-visible .fig-wedge-fill { stroke: var(--bad, #D92D4C); }
+
+.fig-chip rect { fill: var(--surface2, #EEF2F9); stroke: var(--line, #D8DFEC); stroke-width: 1; }
+.fig-chip text {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .02em;
+  fill: var(--muted, #5B6780);
+  text-anchor: middle;
+  dominant-baseline: central;
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) { .fig-wedge-fill { transition: none; } }
+/* === /T04 === */

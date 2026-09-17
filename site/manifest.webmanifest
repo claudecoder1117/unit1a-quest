@@ -1,0 +1,15 @@
+{
+  "name": "The Packet — Unit 1A",
+  "short_name": "Packet",
+  "description": "Geometry Unit 1A study packet as a game: cards, pages, readiness.",
+  "start_url": "./index.html#/today",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0B0F17",
+  "theme_color": "#0B0F17",
+  "icons": [
+    { "src": "assets/icons/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "assets/icons/icon-maskable.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ]
+}

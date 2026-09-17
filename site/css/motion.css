@@ -1,0 +1,5 @@
+/* motion.css — the one motion language (transform/opacity only, easing var(--ease)).
+   Created by T01 (header only). Card feedback (T09), tile mint / summary (T10), level-up (T09),
+   mock timer (T13) append their blocks here, each opened by a comment line reading  === Txx ===
+   and closed by one reading  === /Txx === .
+   Global rule: base.css already zeroes every duration under prefers-reduced-motion; keep colour changes. */
