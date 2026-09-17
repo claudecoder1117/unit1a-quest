@@ -48,7 +48,7 @@ page.on('requestfailed', r => errors.push('[requestfailed] ' + r.url()));
 const statePath = opt('state', null);
 if (!flag('root') || statePath) {
   // Warm-up load on the site root so localStorage is writable for this origin before the real route.
-  await page.goto(`http://127.0.0.1:${port}/${flag('root') ? 'site/' : ''}`, { waitUntil: 'load' });
+  await page.goto(`http://127.0.0.1:${port}/${flag('root') ? 'site/' : ''}version.js`, { waitUntil: 'load' });   // T10: warm up on a non-app URL so the app cannot boot and write a fresh save over --state before the real load
   if (statePath) {
     const json = await readFile(statePath, 'utf8');
     await page.evaluate(j => localStorage.setItem('u1a.save', j), json);

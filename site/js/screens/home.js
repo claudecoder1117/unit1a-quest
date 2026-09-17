@@ -1,0 +1,247 @@
+// screens/home.js — #/today (COMPOSED S1 "Session", S4 Readiness/Streak/Levels, S7 Weak spots + plan strip).
+//
+// One primary button that names the next correct action (page.js `nextAction`), the plan strip SLOT
+// (T14's plan.js fills `#plan-strip`; a minimal day-pill fallback is drawn here so the screen is never blank),
+// weak spots (n ≥ 1 ∧ m_shown < 70, at most 5, each with a "Drill 5" link), the Readiness ring (88 px,
+// dashed track while provisional), the streak protractor arc (10° per day) and the level ring with its rank.
+// On every visit: schedule.js housekeeping (mastery decay, frozen pruning, the daily-goal check), today's
+// Readiness logged to forecastLog[], and `setHeader({ readiness, provisional })` for the shell.
+//
+// Registered in screens/index.js as screens['/today'] = mountHome  →  (params, query, ctx) => (el) => cleanup.
+
+import { h, bus, navigate, setHeader, levelFor, xpForLevel, rankFor } from '../app.js';
+import { getState, update } from '../store.js';
+import { todayISO, daysUntilTest, addDays, weekday } from '../days.js';
+import { readiness, logForecast, weakSpots, skillStates, coverageCount, sparkline } from '../readiness.js';
+import { housekeep } from '../schedule.js';
+import { nextAction, startPage, resumePage, bossReady } from '../page.js';
+
+const DOW = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
+
+/** A real <svg> (SVG namespace) from markup — h('svg') would create an HTMLUnknownElement whose circles never draw. */
+function svg(viewBox, inner) {
+  const t = document.createElement('template');
+  t.innerHTML = `<svg viewBox="${viewBox}" aria-hidden="true" focusable="false">${inner}</svg>`;
+  return t.content.firstElementChild;
+}
+const RING_R = 40, RING_C = 2 * Math.PI * RING_R;          // 88 px ring, stroke 6
+const pct = x => `${Math.round(x * 100)} %`;
+
+/* ---------------- pieces ---------------- */
+function readinessRing(rd) {
+  const off = RING_C * (1 - rd.r / 100);
+  return h('div.rd-ring', { role: 'img', 'aria-label': `Readiness ${rd.r}${rd.provisional ? ' (provisional)' : ''} — ${rd.band.label}`, dataset: { provisional: String(rd.provisional), band: rd.band.key } },
+    svg('0 0 88 88', `<circle class="rd-track" cx="44" cy="44" r="${RING_R}"/>` +
+      `<circle class="rd-fill" cx="44" cy="44" r="${RING_R}" stroke-dasharray="${RING_C.toFixed(2)}" stroke-dashoffset="${off.toFixed(2)}" data-empty="${rd.r <= 0}"/>`),
+    h('span.rd-num.mono', String(rd.r)),
+  );
+}
+
+function streakArc(streak) {
+  const deg = Math.min(180, streak.count * 10);
+  const a = Math.PI * deg / 180, cx = 40, cy = 40, R = 32;
+  const ex = cx - R * Math.cos(a), ey = cy - R * Math.sin(a);
+  const d = deg <= 0 ? '' : `M ${cx - R} ${cy} A ${R} ${R} 0 0 1 ${ex.toFixed(2)} ${ey.toFixed(2)}`;
+  const ticks = [];
+  for (let t = 0; t <= 180; t += 30) {
+    const ta = Math.PI * t / 180, x1 = cx - (R + 4) * Math.cos(ta), y1 = cy - (R + 4) * Math.sin(ta), x2 = cx - (R + 8) * Math.cos(ta), y2 = cy - (R + 8) * Math.sin(ta);
+    ticks.push(`<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}"/>`);
+  }
+  const label = streak.count > 0 ? `${streak.count} day${streak.count === 1 ? '' : 's'}` : `0 (best ${streak.best})`;
+  return h('div.stat.stat-streak', { role: 'img', 'aria-label': `Streak ${label}` },
+    svg('0 0 80 46', `<path class="arc-track" d="M ${cx - R} ${cy} A ${R} ${R} 0 0 1 ${cx + R} ${cy}"/>` +
+      `<g class="arc-ticks">${ticks.join('')}</g>` +
+      `<path class="arc-fill" d="${d}"/>` +
+      `<line class="arc-base" x1="4" y1="${cy}" x2="76" y2="${cy}"/>` +
+      `<circle class="arc-pivot" cx="${cx}" cy="${cy}" r="2.5"/>`),
+    h('span.stat-num.mono', streak.count > 0 ? String(streak.count) : `0`),
+    h('span.stat-label.muted', streak.count > 0 ? 'day streak' : `streak · best ${streak.best}`),
+  );
+}
+
+function levelRing(xp) {
+  const L = levelFor(xp), lo = xpForLevel(L), hi = xpForLevel(L + 1);
+  const p = Math.max(0, Math.min(1, (xp - lo) / (hi - lo)));
+  const C = 2 * Math.PI * 20;
+  return h('div.stat.stat-level', { role: 'img', 'aria-label': `Level ${L} ${rankFor(L)}, ${Math.round(xp - lo)} of ${hi - lo} XP to level ${L + 1}` },
+    h('div.lv-ring',
+      svg('0 0 48 48', `<circle class="lv-track" cx="24" cy="24" r="20"/>` +
+        `<circle class="lv-fill" cx="24" cy="24" r="20" stroke-dasharray="${C.toFixed(2)}" stroke-dashoffset="${(C * (1 - p)).toFixed(2)}" data-empty="${p <= 0}"/>`),
+      h('span.lv-num.mono', String(L))),
+    h('span.stat-num', rankFor(L)),
+    h('span.stat-label.muted.mono', `${Math.round(xp - lo)} / ${hi - lo} XP`),
+  );
+}
+
+function goalMeter(state, today) {
+  const d = state.daily?.[today] ?? {};
+  const goal = state.settings?.dailyGoal ?? 400;
+  const xp = d.xp ?? 0;
+  const p = Math.max(0, Math.min(1, xp / goal));
+  return h('div.stat.stat-goal',
+    h('div.goal-bar', { role: 'progressbar', 'aria-valuemin': '0', 'aria-valuemax': String(goal), 'aria-valuenow': String(xp), 'aria-label': 'Daily goal' },
+      h('div.goal-fill', { style: { transform: `scaleX(${p})` }, dataset: { met: String(d.goalMet === true) } })),
+    h('span.stat-num.mono', `${xp} / ${goal}`),
+    h('span.stat-label.muted', d.goalMet ? 'goal met · today' : `XP today · ${d.clears ?? 0} clear${(d.clears ?? 0) === 1 ? '' : 's'}`),
+  );
+}
+
+/** Fallback plan pills — T14 replaces the contents of #plan-strip (data-slot="plan"). */
+function planStrip(state, today, D) {
+  const wrap = h('div#plan-strip.plan-strip', { dataset: { slot: 'plan', owner: 'T14' }, 'aria-label': 'Study plan' });
+  if (D == null) {
+    wrap.append(h('p.muted.fs-1', 'No test date — pages run at 12 new a day. ', h('a', { href: '#/settings' }, 'Set the test date'), ' to see the plan.'));
+    return wrap;
+  }
+  if (D < 0) { wrap.append(h('p.muted.fs-1', 'The test is done. The Binder, Bosses and Mock stay open.')); return wrap; }
+  const span = Math.min(D, 9);
+  // pill k = "k days until the test" on that day; its calendar date is today + (D − k); today is k = D
+  const list = h('ol.plan-pills');
+  for (let k = span; k >= 0; k--) {
+    const iso = addDays(today, D - k);
+    const done = !!state.daily?.[iso]?.goalMet;
+    const isToday = k === D;
+    const label = k === 0 ? 'Test' : k === 1 ? 'Night' : `D−${k}`;
+    const sub = `${DOW[weekday(iso)]} ${iso.slice(8)}`;
+    const href = k === 0 ? '#/morning' : k === 1 ? '#/night' : '#/today';
+    list.append(h('li.plan-pill', { dataset: { state: done ? 'done' : isToday ? 'today' : k < D ? 'planned' : 'past', kind: k <= 1 ? 'fixed' : 'page' }, 'aria-current': isToday ? 'date' : null },
+      h('a', { href, title: iso }, h('span.pill-day', label), h('span.pill-sub.mono', sub))));
+  }
+  wrap.append(list);
+  return wrap;
+}
+
+function weakList(state) {
+  const ws = weakSpots(state);
+  const sec = h('section.card.home-weak', { 'aria-labelledby': 'weak-h' }, h('h2#weak-h.fs-3', 'Weak spots'));
+  if (!ws.length) {
+    sec.append(h('p.muted.empty', 'No weak spots yet — take the Baseline or run a Page.'));
+    return sec;
+  }
+  sec.append(h('ul.weak-list', ws.map(w => h('li.weak-row',
+    h('div.weak-main',
+      h('span.weak-name', w.name),
+      h('span.skill-bar', { 'aria-hidden': 'true' }, h('span.skill-fill', { style: { transform: `scaleX(${Math.max(0.02, w.mShown / 100)})` } }))),
+    h('span.weak-m.mono', { 'aria-label': `mastery ${Math.round(w.mShown)}` }, String(Math.round(w.mShown))),
+    h('a.btn.btn-drill', { href: w.drill }, 'Drill 5'),
+  ))));
+  return sec;
+}
+
+function skillRail(state) {
+  const rail = h('aside.rail.home-rail', { 'aria-labelledby': 'skills-h' }, h('h2#skills-h.fs-3', 'Skills'));
+  const list = h('ul.skill-list');
+  for (const s of skillStates(state)) {
+    const tone = s.untested ? 'untested' : s.mastered ? 'mastered' : s.weak ? 'weak' : 'ok';
+    list.append(h('li.skill-row', { dataset: { tone } },
+      h('span.skill-name', s.name, s.placed ? h('span.skill-tag.mono', { title: 'placed' }, ' ·placed') : null),
+      h('span.skill-bar', { 'aria-hidden': 'true' }, h('span.skill-fill', { style: { transform: `scaleX(${s.untested ? 0 : Math.max(0.02, s.mShown / 100)})` } })),
+      h('span.skill-m.mono', s.untested ? '—' : String(Math.round(s.mShown))),
+    ));
+  }
+  rail.append(list, h('p.muted.fs-1', 'Greyed skills are untested — never listed as weak.'));
+  return rail;
+}
+
+function heroBlock(state, rd, today) {
+  const cov = coverageCount(state);
+  const D = daysUntilTest(state.settings?.testDate, today);
+  const mockLine = rd.provisional
+    ? h('p.rd-note.muted.fs-1', rd.label)
+    : h('p.rd-note.muted.fs-1', `locked by ${rd.mock.kind === 'mock' ? 'Mock' : rd.mock.kind === 'baseline' ? 'Baseline' : 'Night Before'} · ${pct(rd.mock.accuracy)}`);
+  const spark = sparkline(state, 7);
+  const sparkEl = spark.length >= 2 ? sparklineSvg(spark) : null;
+  return h('section.card.home-hero', { 'aria-labelledby': 'rd-h' },
+    readinessRing(rd),
+    h('div.hero-text',
+      h('p#rd-h.eyebrow.muted', 'Readiness'),
+      h('p.rd-band', { dataset: { band: rd.band.key } }, rd.band.label),
+      mockLine,
+      h('p.rd-terms.mono.fs-1.muted', `mastery ${pct(rd.M)} · binder ${cov.cleared}/${cov.total}${D != null && D >= 0 ? ` · T−${D}` : ''}`),
+      sparkEl,
+    ),
+  );
+}
+
+function sparklineSvg(points) {
+  const w = 96, hgt = 24, n = points.length;
+  const xs = i => (n === 1 ? w / 2 : (i / (n - 1)) * (w - 4) + 2);
+  const ys = r => hgt - 2 - (Math.max(0, Math.min(100, r)) / 100) * (hgt - 4);
+  const d = points.map((p, i) => `${i ? 'L' : 'M'} ${xs(i).toFixed(1)} ${ys(p.r).toFixed(1)}`).join(' ');
+  return h('div.rd-spark', { role: 'img', 'aria-label': `Readiness over the last ${n} days: ${points.map(p => p.r).join(', ')}` },
+    svg(`0 0 ${w} ${hgt}`, `<path d="${d}"/>`));
+}
+
+/* ---------------- the screen ---------------- */
+function render(el, state, today) {
+  const rd = readiness(state);
+  setHeader({ readiness: rd.r, provisional: rd.provisional });
+  const D = daysUntilTest(state.settings?.testDate, today);
+  const act = nextAction(state, { today });
+  const ip = resumePage(state);
+  const boss = bossReady(state)[0] ?? null;
+
+  const primary = h('a.btn.btn-primary.home-primary', { href: act.href, dataset: { kind: act.kind } }, act.label);
+  primary.addEventListener('click', (ev) => {
+    if (act.kind !== 'page') return;
+    ev.preventDefault();
+    update(s => { startPage(s); });
+    navigate('/run/page');
+  });
+  const sub = [];
+  if (act.kind === 'page' && act.page) {
+    const m = act.page.meta;
+    const est = Math.round(act.page.queue.reduce((t, it) => t + ({ 1: 0.5, 2: 1.5, 3: 3, 4: 5 }[it.tier] ?? 1.5), 0));
+    sub.push(`~${est} min`, `seed ${m.seedTag}`);
+    if (m.warn) sub.push(`plan wants ${m.q} new a day — holding at 12`);
+    if (m.carried.length) sub.push(`${m.carried.length} hard item${m.carried.length === 1 ? '' : 's'} carried to the next page`);
+  } else if (act.kind === 'resume' && ip) {
+    sub.push(`started ${new Date(ip.startedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`, `${ip.queue.filter(q => q.done).length} answered`);
+  } else if (act.kind === 'warmup') sub.push('3 short screens, every one skippable · a placement earns XP');
+  else if (act.kind === 'night') sub.push('30 minutes: notation flash · final sweep · mini-mock · the sheet');
+  else if (act.kind === 'morning') sub.push('5 minutes of things you already know, then Go.');
+  else if (act.kind === 'mock') sub.push('20 items · 40 min · locks Readiness');
+  else if (act.kind === 'boss') sub.push('6 items · 3 hearts · no hints');
+  else if (act.kind === 'missed') sub.push('every original you did not get first try, until you do');
+
+  const secondary = h('nav.home-links', { 'aria-label': 'More' },
+    act.kind !== 'page' && act.kind !== 'resume' && D !== 0 && D !== 1 ? h('a.btn', { href: '#/run/page', onclick: (ev) => { ev.preventDefault(); update(s => { startPage(s); }); navigate('/run/page'); } }, 'Run a page') : null,
+    ip && act.kind !== 'resume' ? h('a.btn', { href: '#/run/page' }, 'Continue page') : null,
+    boss && act.kind !== 'boss' ? h('a.btn', { href: `#/boss/${boss.id}` }, `Boss: ${boss.name}`) : null,
+    h('a.btn', { href: '#/binder' }, 'Binder'),
+    h('a.btn', { href: '#/mock' }, 'Mock'),
+    h('a.btn', { href: '#/stats' }, 'Stats'),
+    h('a.btn', { href: '#/sheet' }, 'Sheet'),
+  );
+
+  const col = h('div.col',
+    heroBlock(state, rd, today),
+    h('div.home-cta', primary, sub.length ? h('p.home-cta-sub.muted.fs-1', sub.join(' · ')) : null),
+    planStrip(state, today, D),
+    h('section.card.home-today', { 'aria-label': 'Today' }, goalMeter(state, today), streakArc(state.streak ?? { count: 0, best: 0 }), levelRing(state.xp ?? 0)),
+    weakList(state),
+    secondary,
+  );
+  // NOT `.screen` (that caps the whole grid at 680 px) — `.with-rail` lays out the 680 column + 320 rail (T01)
+  el.replaceChildren(h('section.home.with-rail', { 'aria-label': 'Today' }, col, skillRail(state)));
+}
+
+/** screens['/today'] — (params, query, ctx) => (el) => cleanup */
+export function mountHome() {
+  return (el) => {
+    const today = todayISO();
+    // housekeeping + today's forecast point, once per visit, BEFORE subscribing (so the write never re-triggers
+    // itself) — and only written when something actually changed (a Home visit must not dirty the save).
+    const probe = structuredClone(getState());
+    const r = housekeep(probe, { today });
+    const f = logForecast(probe, { today });
+    if (r.decayed || r.pruned || f.changed || JSON.stringify(probe.daily?.[today]) !== JSON.stringify(getState().daily?.[today])) {
+      update(s => { housekeep(s, { today }); logForecast(s, { today }); });
+    }
+    render(el, getState(), today);
+    const off = bus.on('state', (s) => { if (el.isConnected) render(el, s, todayISO()); });
+    return () => { off(); };
+  };
+}
+
+export default mountHome;

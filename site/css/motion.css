@@ -3,3 +3,47 @@
    mock timer (T13) append their blocks here, each opened by a comment line reading  === Txx ===
    and closed by one reading  === /Txx === .
    Global rule: base.css already zeroes every duration under prefers-reduced-motion; keep colour changes. */
+
+/* === T09 === Card feedback + level-up (COMPOSED S5 "Motion"): transform/opacity only, easing var(--ease).
+   Correct: 80 ms hit-stop on the stage (animation-play-state: paused), 180 ms ok-tint pulse, the ✓ drawn via
+   stroke-dashoffset 240 ms, XP tween 400 ms (JS), HP pip fill 200 ms (widgets.css). Wrong: the widget shakes
+   the offending part (base.js flash) and the card nudges 8 px toward the dock. Result strip 200 ms with its
+   height reserved by the surface it lands in. Figure entry draws itself in over 150 ms. Level-up: 500 ms
+   radial wipe from the level ring, the rank name types in; never modal. base.css zeroes durations under
+   prefers-reduced-motion; colour changes are kept. */
+.card-stage.is-hit, .card-stage.is-hit * { animation-play-state: paused !important; }
+@keyframes card-ok-tint { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 55%, transparent); } 100% { box-shadow: 0 0 0 10px transparent; } }
+.card-stage.is-ok .card-paper { animation: card-ok-tint 180ms var(--ease) 1; border-color: var(--ok); }
+@keyframes card-nudge { 0% { transform: translateY(0); } 45% { transform: translateY(8px); } 100% { transform: translateY(0); } }
+.card-stage.is-nudge { animation: card-nudge var(--dur-1) var(--ease) 1; }
+
+.card-result { opacity: 0; transform: translateY(16px); transition: opacity var(--dur-2) var(--ease), transform var(--dur-2) var(--ease); }
+.card-result.is-in { opacity: 1; transform: none; }
+.card-tick svg path { stroke-dasharray: 1; stroke-dashoffset: 1; transition: stroke-dashoffset 240ms var(--ease) 120ms; }
+.card-tick.is-draw svg path { stroke-dashoffset: 0; }
+
+.hint-row, .sol-step { opacity: 0; transform: translateY(6px); transition: opacity var(--dur-2) var(--ease), transform var(--dur-2) var(--ease); }
+.hint-row.is-in, .sol-step.is-in { opacity: 1; transform: none; }
+
+@keyframes fig-draw { from { stroke-dashoffset: 1; } to { stroke-dashoffset: 0; } }
+.card-figure.is-enter .fig-strokes line { stroke-dasharray: 1; animation: fig-draw 150ms var(--ease) both; }
+.card-figure.is-enter .fig-labels, .card-figure.is-enter .fig-arcs, .card-figure.is-enter .fig-marks { animation: card-fade-in 200ms var(--ease) 100ms both; }
+@keyframes card-fade-in { from { opacity: 0; } to { opacity: 1; } }
+
+.levelup-wipe { transition: transform 500ms var(--ease); }
+.levelup.is-in .levelup-wipe { transform: scale(80); }
+.levelup-card { transition: opacity var(--dur-2) var(--ease) 200ms, transform var(--dur-2) var(--ease) 200ms; }
+.levelup.is-in .levelup-card { opacity: 1; transform: translate(-50%, 8px); }
+@keyframes levelup-type { from { max-width: 0; } to { max-width: 12em; } }
+.levelup.is-in .levelup-rank { animation: levelup-type 500ms steps(12, end) 300ms both; }
+.levelup.is-out { opacity: 0; transition: opacity var(--dur-3) var(--ease); }
+
+@media (prefers-reduced-motion: reduce) {
+  .card-result, .hint-row, .sol-step { opacity: 1; transform: none; transition: none; }
+  .card-tick svg path { stroke-dashoffset: 0; transition: none; }
+  .card-figure.is-enter .fig-strokes line, .card-figure.is-enter .fig-labels, .card-figure.is-enter .fig-arcs, .card-figure.is-enter .fig-marks { animation: none; }
+  .levelup-wipe { transform: scale(80); transition: none; }
+  .levelup-card { opacity: 1; transition: none; }
+  .levelup.is-in .levelup-rank { animation: none; }
+}
+/* === /T09 === */

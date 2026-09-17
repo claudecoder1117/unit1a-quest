@@ -4,6 +4,7 @@
 import { load, update, subscribe, flags, getState } from './store.js';
 import { daysUntilTest } from './days.js';
 import { screens } from './screens/index.js';
+import { xpForLevel, levelFor, rankFor } from './xp.js';   // T09/Wave 3: the S4 ladder lives in one file
 
 export const APP_VERSION = (typeof self !== 'undefined' && self.APP_VERSION) || 'dev';
 
@@ -152,10 +153,9 @@ export function toggleTheme() {
 mq?.addEventListener?.('change', () => { if (!document.documentElement.dataset.theme) applyTheme('auto'); });
 
 /* ---------------- levels (S4) ---------------- */
-export const xpForLevel = L => 50 * L * (L - 1);
-export function levelFor(xp) { return Math.max(1, Math.floor((1 + Math.sqrt(1 + Math.max(0, xp) / 12.5)) / 2)); }
-const RANKS = [[15, 'Space'], [13, 'Plane'], [11, 'Linear Pair'], [9, 'Angle'], [7, 'Line'], [5, 'Ray'], [3, 'Segment'], [1, 'Point']];
-export function rankFor(level) { return RANKS.find(([l]) => level >= l)[1]; }
+// One implementation of the S4 ladder, in js/xp.js (T09's request, wired at Wave 3 integration). Re-exported
+// here because home.js and the header have always imported it from the shell.
+export { xpForLevel, levelFor, rankFor } from './xp.js';
 
 /* ---------------- header ---------------- */
 const hdr = { readiness: null, provisional: true, tminus: null, testDate: null, level: 1, levelPct: 0, xp: 0, combo: 0, streak: 0 };
@@ -304,6 +304,7 @@ function boot() {
     .then(async (m) => { await m.ready; if (m.missing.length) console.warn('graders failed to load:', m.missing); return m; })
     .catch((err) => { console.warn('grader registry unavailable:', err); return null; });
   window.packet = { bus, navigate, currentRoute, getState, update, setHeader, applyTheme, toggleTheme, APP_VERSION, flags, graders };
+  import('./sw-register.js').then(m => { window.packet.sw = m; return m.registerSW(); }).catch(() => {});   // T15: offline + "new version — reload" pill
 }
 
 if (typeof document !== 'undefined') {
