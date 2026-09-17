@@ -37,8 +37,8 @@ import * as PAIRS from '../site/js/grader/pairs.js';
 import { canon as notationCanon, same as notationSame } from '../site/js/grader/notation.js';
 import { classifyMeasure } from '../site/js/grader/classify.js';
 import { stripMarkup } from '../site/js/mathfmt.js';
+import { ROOT } from './_helpers.mjs';   // T17
 
-const ROOT = resolvePath(dirname(fileURLToPath(import.meta.url)), '..');
 const SOURCE = readFileSync(join(ROOT, 'content', 'SOURCE.md'), 'utf8');
 const section = (from, to) => SOURCE.slice(SOURCE.indexOf(from), to ? SOURCE.indexOf(to) : undefined);
 

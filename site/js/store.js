@@ -5,10 +5,48 @@
 // later tickets; `createStore` builds an instance around any Storage-like object; the default instance
 // is bound to window.localStorage (memory-only under Node or when storage throws).
 import { todayISO, diffDays, addDays } from './days.js';
+// The ONLY content dependency of the save layer: the id list of the unit this build teaches, so a
+// data swap resets `skills` for real without app.js having to remember to wire it (S8 #19).
+import { SKILL_IDS } from '../data/skills.js';
 
 export const SAVE_KEY = 'u1a.save';
 export const BAK_KEY = 'u1a.save.bak';
 export const SAVE_VERSION = 1;
+
+/**
+ * The unit this build of the app teaches. It is stamped on every save (`unitId`) so that swapping the
+ * `site/data/*` folder for the next unit is detectable: `migrate(raw, now, { unit })` sees the mismatch
+ * and files the finished unit under `save.archive[unitId]` instead of letting two units' card records
+ * collide. Bump this in the SAME commit that swaps the data (docs/next-unit.md).
+ */
+export const UNIT_ID = 'u1a';
+
+/**
+ * The unit a save with no `unitId` came from. Saves written before this field existed are Unit-1A
+ * saves by definition, so this literal is FROZEN FOREVER — never retarget it at UNIT_ID, or a
+ * pre-swap save opened under the next unit's build would look like it already belonged there and
+ * would be merged into it instead of archived.
+ */
+export const LEGACY_UNIT_ID = 'u1a';
+
+/**
+ * COMPOSED S8 #19. `archived` moves into `save.archive[unitId]` and is cleared from the live save;
+ * `kept` survives the swap untouched. Nothing is ever deleted — the archive entry is part of the
+ * exported JSON, so "zero data loss" is literal.
+ *
+ * The spec names five archived keys (cards, variants, frozen, runs, errors). Six more are archived
+ * here because they are unit-scoped and would otherwise be silently wrong under the next unit's data:
+ *   skills      — S8 #19 resets it unless the next unit's skills.js reuses the id; archiving first is
+ *                 what makes that reset lossless (an old mastery number is still readable/exportable)
+ *   forecastLog — Readiness history against the OLD blueprint; a sparkline mixing units lies
+ *   placement   — "placed" is a statement about the old unit's modules
+ *   jumps       — JUMP-HERE marks on old module ids
+ *   postTest    — the old unit's test score
+ *   inProgress  — a half-finished run whose item ids no longer resolve
+ */
+export const ARCHIVED_KEYS = Object.freeze(['cards', 'variants', 'frozen', 'runs', 'errors', 'skills', 'forecastLog', 'placement', 'jumps', 'postTest', 'inProgress']);
+/** Kept live across a unit swap (S8 #19: xp, streak, trophies, settings — plus the identity/ledger keys). */
+export const KEPT_KEYS = Object.freeze(['v', 'unitId', 'profileId', 'createdAt', 'settings', 'xp', 'streak', 'daily', 'counters', 'trophies', 'seedCounter', 'archive']);
 
 /** S6 caps (+ two bounds the spec leaves implicit, so the < 250 KB budget is provable). */
 export const CAPS = Object.freeze({
@@ -39,6 +77,7 @@ function newProfileId(now) {
 export function fresh(now = Date.now()) {
   return {
     v: SAVE_VERSION,
+    unitId: UNIT_ID,
     profileId: newProfileId(now),
     createdAt: now,
     settings: {
@@ -63,6 +102,7 @@ export function fresh(now = Date.now()) {
     placement: { done: false, at: null },
     jumps: {},
     postTest: { score: null },
+    archive: {},
   };
 }
 
@@ -78,11 +118,12 @@ function fillDefaults(s, now) {
   const d = fresh(now);
   const out = { ...d, ...s };
   for (const k of ['settings', 'streak', 'placement', 'postTest']) out[k] = { ...d[k], ...(isObj(s[k]) ? s[k] : {}) };
-  for (const k of ['daily', 'cards', 'variants', 'frozen', 'skills', 'counters', 'trophies', 'jumps']) if (!isObj(out[k])) out[k] = {};
+  for (const k of ['daily', 'cards', 'variants', 'frozen', 'skills', 'counters', 'trophies', 'jumps', 'archive']) if (!isObj(out[k])) out[k] = {};
   for (const k of ['errors', 'runs', 'forecastLog']) if (!Array.isArray(out[k])) out[k] = [];
   if (typeof out.xp !== 'number' || !Number.isFinite(out.xp)) out.xp = 0;
   if (!Number.isInteger(out.seedCounter) || out.seedCounter < 0) out.seedCounter = 0;
   if (typeof out.profileId !== 'string' || !out.profileId) out.profileId = d.profileId;
+  if (typeof out.unitId !== 'string' || !out.unitId) out.unitId = LEGACY_UNIT_ID;
   if (typeof out.createdAt !== 'number' || !Number.isFinite(out.createdAt)) out.createdAt = now;
   if (out.inProgress !== null && !isObj(out.inProgress)) out.inProgress = null;
   const t = out.settings.theme; if (t !== 'light' && t !== 'dark') out.settings.theme = 'auto';
@@ -91,11 +132,16 @@ function fillDefaults(s, now) {
 }
 
 /**
- * migrate(raw) → a save at SAVE_VERSION. Walks MIGRATIONS from raw.v (0 when absent) upward, then fills
- * defaults. Throws on a non-object or a broken chain; a save from a NEWER app version is kept as-is
- * (defaults filled) rather than destroyed — the caller may flag it.
+ * migrate(raw, now, opts) → a save at SAVE_VERSION. Walks MIGRATIONS from raw.v (0 when absent) upward,
+ * then fills defaults. Throws on a non-object or a broken chain; a save from a NEWER app version is kept
+ * as-is (defaults filled) rather than destroyed — the caller may flag it.
+ *
+ * The SECOND migration axis (COMPOSED S8 #19) is the unit: pass `opts.unit = { id, skills }` — the unit
+ * this build teaches and the id list from ITS `data/skills.js`. When the save was written under a
+ * different unit, the finished unit is filed under `save.archive[<old unitId>]` and the live save is
+ * reset for the new one. Omit `opts.unit` (every existing caller does) and nothing about units happens.
  */
-export function migrate(raw, now = Date.now()) {
+export function migrate(raw, now = Date.now(), { unit = null } = {}) {
   if (!isObj(raw)) throw new TypeError('save is not an object');
   let s = raw;
   let v = Number.isInteger(s.v) && s.v >= 0 ? s.v : 0;
@@ -106,7 +152,76 @@ export function migrate(raw, now = Date.now()) {
     if (s.v !== v + 1) throw new Error(`migration ${v} → ${v + 1} produced v${s.v}`);
     v = s.v;
   }
-  return fillDefaults(s, now);
+  const out = fillDefaults(s, now);
+  return unit ? archiveUnit(out, unit, now) : out;
+}
+
+/* ---------------- unit hand-off (COMPOSED S8 #19) ---------------- */
+
+/** The first unused key for `unitId` in `archive` — `u1a`, then `u1a~2`, `u1a~3`… An archive entry is never overwritten. */
+function archiveSlot(archive, unitId) {
+  if (!(unitId in archive)) return unitId;
+  for (let n = 2; ; n++) { const k = `${unitId}~${n}`; if (!(k in archive)) return k; }
+}
+
+/**
+ * archiveUnit(save, unit, now) → save. Idempotent: when `save.unitId === unit.id` it is a no-op, so it is
+ * safe to call on every load. Otherwise, in one pass:
+ *   1. every ARCHIVED_KEYS value is copied into `save.archive[<old unitId>]` (never overwritten — a second
+ *      archive of the same unit lands in `<id>~2`), together with the version and a small `stats` block;
+ *   2. the live copies are reset to a fresh unit's defaults;
+ *   3. `skills` is re-seeded from the archived record for every id the NEW unit's `skills.js` REUSES
+ *      (S8 #19: "resets `skills` unless the next unit's skills.js reuses an id"). `unit.skills` may be an
+ *      array of ids, a Set, or `{ SKILL_IDS }`-ish; omit it and every skill record is kept (the caller did
+ *      not say what the new unit teaches, so dropping mastery would be a guess);
+ *   4. KEPT_KEYS (xp, streak, trophies, settings, daily, counters, the ledger) are not touched.
+ *
+ * @param {object} save   a migrated save (post-fillDefaults)
+ * @param {{id: string, skills?: string[]|Set<string>}} unit  the unit this build now teaches
+ * @param {number} now
+ */
+export function archiveUnit(save, unit, now = Date.now()) {
+  const id = String(unit?.id ?? '');
+  if (!id) throw new TypeError('archiveUnit: unit.id is required');
+  const from = typeof save.unitId === 'string' && save.unitId ? save.unitId : LEGACY_UNIT_ID;
+  save.unitId = from;
+  if (from === id) return save;                       // same unit — nothing to hand off
+  if (!isObj(save.archive)) save.archive = {};
+
+  const entry = { unitId: from, archivedAt: now, v: save.v ?? SAVE_VERSION };
+  for (const k of ARCHIVED_KEYS) entry[k] = save[k];
+  entry.stats = {
+    cards: Object.keys(entry.cards ?? {}).length,
+    variants: Object.keys(entry.variants ?? {}).length,
+    frozen: Object.keys(entry.frozen ?? {}).length,
+    skills: Object.keys(entry.skills ?? {}).length,
+    runs: (entry.runs ?? []).length,
+    errors: (entry.errors ?? []).length,
+    xpAtArchive: save.xp ?? 0,
+  };
+  save.archive[archiveSlot(save.archive, from)] = entry;
+
+  const blank = fresh(now);
+  for (const k of ARCHIVED_KEYS) save[k] = blank[k];
+
+  // Reused skill ids keep their mastery record; everything else starts at zero for the new unit.
+  const reuse = unit.skills instanceof Set ? unit.skills : Array.isArray(unit.skills) ? new Set(unit.skills) : null;
+  const old = entry.skills;
+  if (isObj(old)) {
+    if (reuse === null) save.skills = { ...old };
+    else for (const k of Object.keys(old)) if (reuse.has(k)) save.skills[k] = old[k];
+  }
+
+  save.unitId = id;
+  return save;
+}
+
+/** Every archive entry, newest first — what Settings lists under "Past units". */
+export function archivedUnits(save) {
+  const a = isObj(save?.archive) ? save.archive : {};
+  return Object.keys(a)
+    .map(key => ({ key, ...a[key] }))
+    .sort((x, y) => (y.archivedAt ?? 0) - (x.archivedAt ?? 0));
 }
 
 /* ---------------- caps ---------------- */
@@ -211,15 +326,27 @@ function unpackCard(c) {
   if (Array.isArray(c.foilProgress)) out.foilProgress = c.foilProgress.map(f => (Array.isArray(f) && f.length === 2 ? { day: f[0], via: f[1] } : f));
   return out;
 }
+const mapCards = (m, fn) => { const out = {}; for (const id of Object.keys(m)) out[id] = fn(m[id]); return out; };
+
 /** In-memory state → the JSON-ready disk object (a shallow copy; the state is never mutated). */
 export function pack(s) {
-  const cards = {};
-  for (const id of Object.keys(s.cards)) cards[id] = packCard(s.cards[id]);
-  return { ...s, cards };
+  const out = { ...s, cards: mapCards(s.cards, packCard) };
+  if (isObj(s.archive)) {
+    out.archive = {};
+    for (const k of Object.keys(s.archive)) {
+      const e = s.archive[k];
+      out.archive[k] = isObj(e) && isObj(e.cards) ? { ...e, cards: mapCards(e.cards, packCard) } : e;
+    }
+  }
+  return out;
 }
 /** Disk object (packed or plain) → in-memory shape. Mutates and returns `s`. */
 export function unpack(s) {
   if (isObj(s.cards)) for (const id of Object.keys(s.cards)) s.cards[id] = unpackCard(s.cards[id]);
+  if (isObj(s.archive)) for (const k of Object.keys(s.archive)) {
+    const e = s.archive[k];
+    if (isObj(e) && isObj(e.cards)) for (const id of Object.keys(e.cards)) e.cards[id] = unpackCard(e.cards[id]);
+  }
   return s;
 }
 
@@ -246,13 +373,15 @@ function browserStorage() {
 }
 
 /**
- * createStore({ storage, now, debounceMs, doc }) — an isolated store instance.
+ * createStore({ storage, now, debounceMs, doc, unit }) — an isolated store instance.
  *   storage: Storage-like {getItem,setItem,removeItem}; null → in-memory (flags.memoryOnly = true)
  *   now: clock (ms); doc: Document for visibilitychange/pagehide flushes (omit under Node)
+ *   unit: { id, skills } — the unit this build teaches; a save from another unit is archived on load
+ *         (S8 #19). Defaults to this build's own UNIT_ID + SKILL_IDS; pass `null` to disable.
  * All methods are closures — safe to destructure.
  */
-export function createStore({ storage = undefined, now = Date.now, debounceMs = 250, doc = undefined } = {}) {
-  const flags = { memoryOnly: false, corruptRecovered: false, newerSave: false, lastError: null, lastSavedAt: null, loaded: false };
+export function createStore({ storage = undefined, now = Date.now, debounceMs = 250, doc = undefined, unit = { id: UNIT_ID, skills: SKILL_IDS } } = {}) {
+  const flags = { memoryOnly: false, corruptRecovered: false, newerSave: false, lastError: null, lastSavedAt: null, loaded: false, archivedUnit: null };
   let store = storage === undefined ? browserStorage() : storage;
   if (!store) { store = memoryStorage(); flags.memoryOnly = true; }
 
@@ -294,8 +423,10 @@ export function createStore({ storage = undefined, now = Date.now, debounceMs = 
         const parsed = JSON.parse(raw);
         if (!isObj(parsed)) throw new TypeError('save is not an object');
         if (Number.isInteger(parsed.v) && parsed.v > SAVE_VERSION) flags.newerSave = true;
-        const migrated = unpack(migrate(parsed, now()));
-        dirty = migrated.v !== parsed.v;
+        const wasUnit = typeof parsed.unitId === 'string' && parsed.unitId ? parsed.unitId : LEGACY_UNIT_ID;
+        const migrated = unpack(migrate(parsed, now(), { unit }));
+        if (migrated.unitId !== wasUnit) flags.archivedUnit = wasUnit;   // Settings can say "Unit 1A filed away"
+        dirty = migrated.v !== parsed.v || flags.archivedUnit !== null;
         state = migrated;
       } catch (e) {
         flags.corruptRecovered = backup(raw) ? BAK_KEY : true;
@@ -330,7 +461,12 @@ export function createStore({ storage = undefined, now = Date.now, debounceMs = 
   /** save({immediate}) — mark dirty and schedule the debounced write (or write now). */
   function save({ immediate = false } = {}) {
     if (!state) load();
-    return immediate ? flush() : (schedule(), true);
+    if (!immediate) { schedule(); return true; }
+    // T17: mark dirty FIRST. `flush()` is dirty-gated, so `save({immediate:true})` (and therefore
+    // `update(fn, {immediate:true})`) used to write nothing at all whenever the state happened to be
+    // clean — e.g. the very first change after load(). "Write now" must write.
+    dirty = true;
+    return flush();
   }
 
   /**
@@ -362,7 +498,7 @@ export function createStore({ storage = undefined, now = Date.now, debounceMs = 
     if (!looksLikeSave) throw new Error('That JSON has none of the save fields (cards, settings, xp …).');
     if (Number.isInteger(parsed.v) && parsed.v > SAVE_VERSION) throw new Error(`Save is v${parsed.v}; this app reads up to v${SAVE_VERSION}.`);
     let next;
-    try { next = unpack(migrate(parsed, now())); } catch (e) { throw new Error('Could not migrate that save: ' + e.message); }
+    try { next = unpack(migrate(parsed, now(), { unit })); } catch (e) { throw new Error('Could not migrate that save: ' + e.message); }
     applyCaps(next);
     reconcileStreak(next, todayISO(new Date(now())));
     if (state && !blocked) { try { backup(JSON.stringify(pack(state))); } catch { /* ignore */ } }
@@ -388,14 +524,29 @@ export function createStore({ storage = undefined, now = Date.now, debounceMs = 
   /** The raw .bak text, if any (Settings can offer "restore backup"). */
   function readBackup() { try { return store.getItem(BAK_KEY); } catch { return null; } }
 
+  /**
+   * Hand this save over to another unit NOW (Settings → "Start the next unit", or a data swap that the
+   * student's browser has not re-opened yet). `next` defaults to this build's unit. Returns the state.
+   */
+  function migrateUnit(next = unit ?? { id: UNIT_ID, skills: SKILL_IDS }) {
+    const s = getState();
+    const from = s.unitId;
+    archiveUnit(s, next, now());
+    if (s.unitId !== from) flags.archivedUnit = from;
+    applyCaps(s);
+    notify('unit');
+    save({ immediate: true });
+    return s;
+  }
+
   if (doc && typeof doc.addEventListener === 'function') {
     doc.addEventListener('visibilitychange', () => { if (doc.visibilityState === 'hidden') flush(); });
     if (doc.defaultView) doc.defaultView.addEventListener('pagehide', flush);
   }
 
-  return { load, getState, update, save, flush, exportJSON, importJSON, reset, subscribe, readBackup, flags, get dirty() { return dirty; }, get blocked() { return blocked; } };
+  return { load, getState, update, save, flush, exportJSON, importJSON, reset, subscribe, readBackup, migrateUnit, unit, flags, get dirty() { return dirty; }, get blocked() { return blocked; } };
 }
 
 /* ---------------- default instance (the app's save) ---------------- */
 export const store = createStore({ doc: typeof document !== 'undefined' ? document : undefined });
-export const { load, getState, update, save, flush, exportJSON, importJSON, reset, subscribe, readBackup, flags } = store;
+export const { load, getState, update, save, flush, exportJSON, importJSON, reset, subscribe, readBackup, migrateUnit, flags } = store;

@@ -126,12 +126,45 @@ function writeSkill(save, id, m, { now, placed }) {
   return next;
 }
 
+/* ---------------- how much evidence a module needs before it is placed (W5) ---------------- */
+/**
+ * INTEGRATOR DECISION, Wave 5 — `notes/OPEN-ISSUES.md` §A2, raised by T14 #3.
+ *
+ * S7 says "a clean placement item marks its module placed exactly like JUMP HERE". Taken literally that
+ * costs the student the whole packet: **M1 `Lexicon` holds 55 originals** (23 vocab + 9 notation + 14
+ * definitions + 5 facts + 4 classify) behind ONE placement cluster — "write the symbol for a ray". One
+ * clean answer there removed all 55 from the new-card pool permanently, and because they were never
+ * attempted (`lastAt == null`) they never came back as reviews either.
+ *
+ * So the rule keeps S7's sentence for a module the placement can actually sample, and asks a big module
+ * for more than the placement has to give: a module with more than `PLACE_MAX_ORIGINALS` originals needs
+ * `PLACE_LARGE_CLEAN` clean clusters. M1 has one cluster, so the placement never places it — JUMP HERE
+ * (10 items, ≥ 8, `applyJump`) stays the gate that can, which is a real sample of 55 cards' worth of work.
+ * The skill itself still gets its m = 80 and its `placedAt`: what was demonstrated is recorded either way.
+ */
+export const PLACE_MAX_ORIGINALS = 40;   // > this many originals = "too big to place off one item"
+export const PLACE_LARGE_CLEAN = 2;      // … and it then needs this many clean clusters
+
+/** Originals in a module's Original Set (0 for a generator-only module such as M3). */
+export const originalsCount = mod => moduleById[mod]?.originals?.length ?? 0;
+
+/** Clean placement clusters this module needs before the placement will mark it placed. */
+export function placeNeedsClean(mod) {
+  return originalsCount(mod) > PLACE_MAX_ORIGINALS ? PLACE_LARGE_CLEAN : 1;
+}
+
+/** True when the placement cannot ever place this module, however cleanly it is answered. */
+export function placeWithheld(mod) {
+  return PLACEMENT_CLUSTERS.filter(c => c.module === mod).length < placeNeedsClean(mod);
+}
+
 /**
  * applyPlacement(save, results, { now, items }) — the S7 writes, idempotent for one run.
  *   results: { [clusterKey]: { outcome, skills:[…], module } }
  * Writes every touched skill (m = 80/50/0, n = 5), marks a module `placed` when its cluster(s) were
- * clean (M4 needs BOTH of its items), and stamps `save.placement`.
- * Returns { placedModules: [], skills: { id: m }, clean, retry, wrong }.
+ * clean (M4 needs BOTH of its items; a module bigger than `PLACE_MAX_ORIGINALS` needs `PLACE_LARGE_CLEAN`
+ * — see above), and stamps `save.placement`.
+ * Returns { placedModules: [], withheld: [], skills: { id: m }, clean, retry, wrong }.
  */
 export function applyPlacement(save, results, { now = Date.now(), done = true, skipped = 0, total = PLACEMENT_FULL } = {}) {
   const tally = { clean: 0, retry: 0, wrong: 0 };
@@ -146,14 +179,17 @@ export function applyPlacement(save, results, { now = Date.now(), done = true, s
     cleanByModule.set(cluster.module, list);
   }
   const placedModules = [];
+  const withheld = [];
   for (const [mod, flags] of cleanByModule) {
     // "A clean placement item marks its module placed exactly like JUMP HERE (M4 needs BOTH clean)."
     const asked = PLACEMENT_CLUSTERS.filter(c => c.module === mod && results?.[c.key]).length;
     const total_ = PLACEMENT_CLUSTERS.filter(c => c.module === mod).length;
     const allClean = flags.length > 0 && flags.every(Boolean) && (total_ === 1 || asked === total_);
-    if (allClean) placedModules.push(mod);
+    if (!allClean) continue;
+    // W5 (§A2): a module too big for the placement to sample keeps its cards in the pool.
+    if (flags.length >= placeNeedsClean(mod)) placedModules.push(mod);
+    else withheld.push(mod);
   }
-  const placedSet = new Set(placedModules);
   for (const cluster of PLACEMENT_CLUSTERS) {
     const r = results?.[cluster.key];
     if (!r) continue;
@@ -172,7 +208,7 @@ export function applyPlacement(save, results, { now = Date.now(), done = true, s
     placed: placedModules.slice(),
     results: Object.fromEntries(Object.entries(results ?? {}).map(([k, v]) => [k, v.outcome])),
   };
-  return { placedModules, skills, ...tally };
+  return { placedModules, withheld, skills, ...tally };
 }
 
 /**
@@ -440,10 +476,15 @@ function placementSummary(el, save, { onBaseline, onToday }) {
   const placed = (p.placed ?? []).map(m => moduleById[m]?.name ?? m);
   const rd = readiness(save);
   const results = p.results ?? {};
+  // W5 (§A2): a clean item on a module the placement is not allowed to place must not say "placed".
+  const placedSet = new Set(p.placed ?? []);
+  const withheld = [...new Set(PLACEMENT_CLUSTERS
+    .filter(c => results[c.key] === 'clean' && !placedSet.has(c.module) && placeWithheld(c.module))
+    .map(c => c.module))];
   const rows = PLACEMENT_CLUSTERS.filter(c => results[c.key]).map(c => h('li.ob-result-row', { dataset: { outcome: results[c.key] } },
     h('span.ob-result-mark', { 'aria-hidden': 'true' }, results[c.key] === 'clean' ? '✓' : results[c.key] === 'retry' ? '·' : '✗'),
     h('span.ob-result-name', c.label),
-    h('span.muted.fs-1', results[c.key] === 'clean' ? 'placed' : results[c.key] === 'retry' ? 'second try' : 'start here')));
+    h('span.muted.fs-1', results[c.key] === 'clean' ? (placedSet.has(c.module) ? 'placed' : 'first try') : results[c.key] === 'retry' ? 'second try' : 'start here')));
 
   el.append(h('section.screen.ob-step', { 'aria-labelledby': 'ob-h4' },
     h('p.ob-eyebrow.muted.fs-1', 'Placement done'),
@@ -455,6 +496,10 @@ function placementSummary(el, save, { onBaseline, onToday }) {
       placed.length
         ? h('p.fs-2', h('b', 'Placed: '), placed.join(' · '), h('span.muted.fs-1', ' — those stop being scheduled as new. They still come back as reviews.'))
         : h('p.fs-2.muted', 'Nothing placed yet — the plan will start you at the beginning of each thread, which is exactly what it is for.'),
+      withheld.length
+        ? h('p.fs-2.muted', `${withheld.map(m => moduleById[m]?.name ?? m).join(' · ')} stayed in the plan on purpose: ${withheld.length === 1 ? 'it is' : 'they are'} too big to skip off one question (${withheld.map(m => originalsCount(m)).join(' / ')} cards). `,
+          h('b', 'JUMP HERE'), ' in the Binder is 10 questions — clear 8 and it is skipped for real.')
+        : null,
     ),
     h('div.card.ob-card.ob-baseline',
       h('h2.fs-3', 'Baseline'),

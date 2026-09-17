@@ -6,12 +6,13 @@ import assert from 'node:assert/strict';
 import {
   SAVE_KEY, BAK_KEY, SAVE_VERSION, CAPS, MIGRATIONS,
   fresh, migrate, applyCaps, pack, unpack, reconcileStreak, markStreakDay, createStore,
+  UNIT_ID, LEGACY_UNIT_ID, ARCHIVED_KEYS, KEPT_KEYS, archiveUnit, archivedUnits,
 } from '../site/js/store.js';
 import { todayISO, parseISO, diffDays, addDays, daysUntilTest, dayIndex, nextSchoolDay, weekday, testMoment } from '../site/js/days.js';
 
 const T0 = Date.UTC(2026, 8, 16, 12);   // 2026-09-16 noon UTC — a fixed clock for every store
-const SCHEMA_KEYS = ['v', 'profileId', 'createdAt', 'settings', 'xp', 'streak', 'daily', 'cards', 'variants', 'frozen', 'skills',
-  'errors', 'counters', 'trophies', 'runs', 'inProgress', 'forecastLog', 'seedCounter', 'placement', 'jumps', 'postTest'];
+const SCHEMA_KEYS = ['v', 'unitId', 'profileId', 'createdAt', 'settings', 'xp', 'streak', 'daily', 'cards', 'variants', 'frozen', 'skills',
+  'errors', 'counters', 'trophies', 'runs', 'inProgress', 'forecastLog', 'seedCounter', 'placement', 'jumps', 'postTest', 'archive'];
 
 /** In-memory Storage double. `failSet` / `failGet` make the next accesses throw (Safari private mode, quota). */
 function fakeStorage(init = {}) {
@@ -104,6 +105,235 @@ describe('migration chain', () => {
     assert.throws(() => migrate([1, 2]), TypeError);
     const step = MIGRATIONS[0]; delete MIGRATIONS[0];
     try { assert.throws(() => migrate({ xp: 1 }), /no migration from save v0/); } finally { MIGRATIONS[0] = step; }
+  });
+});
+
+/* ================================================================================================
+   UNIT HAND-OFF — COMPOSED S8 #19 / T19.
+   "`store.migrate` archives the old unit's cards, variants, frozen, runs, errors under
+    save.archive[unitId] (never deleted, exportable), keeps xp, streak, trophies, settings, and resets
+    skills unless the next unit's skills.js reuses an id."
+   Acceptance: a v1 Unit-1A save migrates against a STUB UNIT-1B DATA SET with zero data loss.
+   The stub is deliberately a literal here, not an import: the point is that store.js needs nothing
+   from the next unit but its id and its skill-id list. See docs/next-unit.md.
+   ================================================================================================ */
+describe('unit hand-off (S8 #19)', () => {
+  /** The stub Unit-1B "data set": its id, and the ids its `data/skills.js` would export.
+   *  VOC / NOTE / CLASS / FAC1 / FAC2 are REUSED (Unit 1B still teaches vocabulary, notation, angle
+   *  types and factoring); everything else is new, so the 1A mastery for those ids must reset. */
+  const U1B = Object.freeze({ id: 'u1b', skills: ['VOC', 'NOTE', 'CLASS', 'FAC1', 'FAC2', 'TRI-CONG', 'PROOF'] });
+  const NOW1 = T0 + 30 * 86400000;   // a month of Unit 1A later
+
+  /** A lived-in v1 Unit-1A save: every archived key non-empty, every kept key non-default. */
+  function unit1aSave() {
+    const s = fresh(T0);
+    s.xp = 4820;
+    s.streak = { count: 11, best: 14, lastDay: '2026-09-16', freezes: 2 };
+    s.daily = { '2026-09-15': { xp: 480, clears: 12, goalMet: true }, '2026-09-16': { xp: 512, clears: 13, goalMet: true } };
+    s.trophies = { 'sheet-gold:AP': { at: T0 }, 'first-platinum': { at: T0 + 1000 } };
+    s.counters = { cleanInARow: 9, mocksTaken: 3 };
+    s.settings = { ...s.settings, theme: 'dark', dailyGoal: 600, testDate: '2026-09-22', sound: true };
+    s.seedCounter = 77;
+    s.cards = {
+      'ang-10': { attempts: 4, cleared: true, rarity: 'gold', setupTried: true, bucket: 3, due: T0 + 4e8,
+        history: [{ at: T0, ok: false, attempt: 1, hints: 1, ms: 61000 }, { at: T0 + 500, ok: true, attempt: 2, hints: 1, ms: 44000 }],
+        foilProgress: [{ day: '2026-09-15', via: 'T-fig-alg#a1' }], work: 'let x be the angle' },
+      'wp-07': { attempts: 1, cleared: true, rarity: 'silver', bucket: 1, due: T0 + 1e8, history: [{ at: T0, ok: true, attempt: 1, hints: 0, ms: 30000 }] },
+      'fac-16': { attempts: 2, cleared: false, rarity: null, bucket: 0, due: T0 },
+    };
+    s.variants = { 'T-cs-lin': { clearsGold: 6, goldDays: ['2026-09-14', '2026-09-15'] } };
+    s.frozen = { 'T-cs-lin#a91f2c': { seed: 'a91f2c', templateVersion: 2, bucket: 1, due: T0 + 2e8, forCard: 'wp-07' } };
+    s.runs = [
+      { kind: 'page', n: 1, seed: 'page#1', startedAt: T0, submittedAt: T0 + 9e5, status: 'done', items: [{ id: 'ang-10', credit: 1, ms: 44000 }] },
+      { kind: 'mock', n: 2, seed: 'mock#2', startedAt: T0 + 1e6, submittedAt: T0 + 3.4e6, status: 'done', score: 81, pred: 88,
+        items: [{ id: 'wp-07', credit: 0.4, ms: 61000, raw: '68.5', work: 'x + (90 - x)' }] },
+    ];
+    s.errors = [
+      { item: 'wp-07', seed: null, t: T0 + 2e6, got: '68.5', tags: ['gave-complement'], cleared: false },
+      { item: 'ang-10', seed: null, t: T0 + 2.1e6, got: '1/2', tags: ['forgot-second-root'], cleared: true },
+    ];
+    s.skills = {
+      VOC: { m: 92.5, n: 14, lastAt: T0, lastDueCorrectAt: T0 },       // reused by 1B → survives
+      NOTE: { m: 88, n: 11, lastAt: T0 },                              // reused by 1B → survives
+      CLASS: { m: 70, n: 6, lastAt: T0 },                              // reused by 1B → survives
+      FAC2: { m: 61, n: 9, lastAt: T0 },                               // reused by 1B → survives
+      PAIRS: { m: 74, n: 8, lastAt: T0 },                              // 1A only → archived + reset
+      'CS-RATIO': { m: 55, n: 4, lastAt: T0 },                         // 1A only → archived + reset
+      'BISECT-Q': { m: 40, n: 2, lastAt: T0, placedAt: T0 },           // 1A only → archived + reset
+    };
+    s.forecastLog = [{ day: '2026-09-15', r: 68 }, { day: '2026-09-16', r: 73 }];
+    s.placement = { done: true, at: T0 };
+    s.jumps = { M9: true, M10: true };
+    s.postTest = { score: 88 };
+    s.inProgress = { kind: 'page', seed: 12345, idx: 3, hearts: 3, xp: 120, startedAt: T0, queue: [{ id: 'ang-10', kind: 'original' }] };
+    return s;
+  }
+
+  test('the two key sets partition the schema — nothing can fall between archived and kept', () => {
+    assert.deepEqual([...ARCHIVED_KEYS, ...KEPT_KEYS].sort(), [...SCHEMA_KEYS].sort(),
+      'every save key is either archived with the old unit or kept across the swap');
+    assert.equal(new Set([...ARCHIVED_KEYS, ...KEPT_KEYS]).size, SCHEMA_KEYS.length, 'no key in both sets');
+    assert.equal(UNIT_ID, 'u1a', 'this build teaches Unit 1A');
+    assert.equal(LEGACY_UNIT_ID, 'u1a', 'the pre-unitId default is frozen forever (docs/next-unit.md)');
+  });
+
+  test('ZERO DATA LOSS: every archived key lands in archive[u1a] byte-identical, every kept key is untouched', () => {
+    const before = unit1aSave();
+    const snapshot = structuredClone(before);
+    const after = migrate(before, NOW1, { unit: U1B });
+
+    assert.equal(after.unitId, 'u1b', 'the live save now belongs to the next unit');
+    const entry = after.archive['u1a'];
+    assert.ok(entry, 'archive is filed under the OLD unit id');
+    assert.equal(entry.unitId, 'u1a');
+    assert.equal(entry.archivedAt, NOW1);
+    assert.equal(entry.v, SAVE_VERSION);
+
+    for (const k of ARCHIVED_KEYS) assert.deepEqual(entry[k], snapshot[k], `archive[u1a].${k} === the old ${k}`);
+    for (const k of KEPT_KEYS) {
+      if (k === 'archive' || k === 'unitId') continue;
+      assert.deepEqual(after[k], snapshot[k], `${k} survives the swap untouched`);
+    }
+    assert.equal(after.xp, 4820); assert.equal(after.streak.count, 11); assert.equal(after.settings.testDate, '2026-09-22');
+    assert.deepEqual(after.trophies, snapshot.trophies); assert.deepEqual(after.daily, snapshot.daily);
+    assert.deepEqual(after.counters, snapshot.counters); assert.equal(after.seedCounter, 77);
+    assert.equal(after.profileId, snapshot.profileId); assert.equal(after.createdAt, snapshot.createdAt);
+
+    assert.deepEqual(entry.stats, { cards: 3, variants: 1, frozen: 1, skills: 7, runs: 2, errors: 2, xpAtArchive: 4820 });
+  });
+
+  test('the live save is reset for the new unit — and `skills` keeps exactly the reused ids', () => {
+    const after = migrate(unit1aSave(), NOW1, { unit: U1B });
+    const blank = fresh(NOW1);
+    for (const k of ARCHIVED_KEYS) {
+      if (k === 'skills') continue;
+      assert.deepEqual(after[k], blank[k], `${k} starts empty under the new unit`);
+    }
+    assert.deepEqual(Object.keys(after.skills).sort(), ['CLASS', 'FAC2', 'NOTE', 'VOC'],
+      'only the skill ids the next unit reuses keep their mastery');
+    assert.deepEqual(after.skills.VOC, { m: 92.5, n: 14, lastAt: T0, lastDueCorrectAt: T0 }, 'a reused record is carried over whole');
+    for (const id of ['PAIRS', 'CS-RATIO', 'BISECT-Q']) {
+      assert.equal(after.skills[id], undefined, `${id} is not in Unit 1B — reset`);
+      assert.ok(after.archive['u1a'].skills[id], `${id} is still readable in the archive`);
+    }
+    assert.equal(after.inProgress, null, 'a half-finished 1A run cannot resume under 1B');
+    assert.deepEqual(after.placement, { done: false, at: null }, 'the new unit needs its own placement');
+  });
+
+  test('omitting `skills` keeps every mastery record (the caller did not say what the new unit teaches)', () => {
+    const after = migrate(unit1aSave(), NOW1, { unit: { id: 'u1b' } });
+    assert.deepEqual(Object.keys(after.skills).sort(), Object.keys(unit1aSave().skills).sort());
+    assert.deepEqual(after.archive['u1a'].skills, unit1aSave().skills, 'archived all the same');
+  });
+
+  test('a save with no `unitId` at all is Unit 1A, not "whatever this build is"', () => {
+    const raw = { xp: 40, cards: { 'ang-10': { attempts: 1 } }, skills: { VOC: { m: 50 } } };
+    const after = migrate(raw, NOW1, { unit: U1B });
+    assert.equal(after.unitId, 'u1b');
+    assert.ok(after.archive['u1a'], 'filed under the legacy id, not skipped');
+    assert.deepEqual(after.archive['u1a'].cards, { 'ang-10': { attempts: 1 } });
+    assert.equal(after.xp, 40);
+  });
+
+  test('no unit option, or the same unit: migrate() does nothing about units (every existing caller)', () => {
+    const plain = migrate(unit1aSave(), NOW1);
+    assert.deepEqual(plain.archive, {}, 'no unit passed → no hand-off');
+    assert.equal(plain.unitId, 'u1a');
+    assert.equal(Object.keys(plain.cards).length, 3);
+
+    const same = migrate(unit1aSave(), NOW1, { unit: { id: 'u1a', skills: ['VOC'] } });
+    assert.deepEqual(same.archive, {}, 'same unit → not an archive event');
+    assert.deepEqual(Object.keys(same.skills).sort(), Object.keys(unit1aSave().skills).sort(), 'and no skill reset');
+  });
+
+  test('archiveUnit is idempotent and chains — 1A → 1B → 1C keeps all three units', () => {
+    const s = migrate(unit1aSave(), NOW1, { unit: U1B });
+    const once = structuredClone(s);
+    archiveUnit(s, U1B, NOW1 + 1);
+    assert.deepEqual(s, once, 'archiving into the unit you are already in is a no-op');
+
+    s.cards['tri-04'] = { attempts: 2, cleared: true };
+    s.skills.PROOF = { m: 66, n: 5 };
+    archiveUnit(s, { id: 'u1c', skills: ['VOC'] }, NOW1 + 2);
+    assert.deepEqual(Object.keys(s.archive).sort(), ['u1a', 'u1b']);
+    assert.deepEqual(s.archive['u1b'].cards, { 'tri-04': { attempts: 2, cleared: true } });
+    assert.deepEqual(s.archive['u1a'].cards, unit1aSave().cards, 'the first archive is never touched again');
+    assert.deepEqual(Object.keys(s.skills), ['VOC'], 'VOC is reused by 1C as well');
+    assert.equal(s.unitId, 'u1c');
+    assert.deepEqual(archivedUnits(s).map(u => u.key), ['u1b', 'u1a'], 'newest first');
+  });
+
+  test('archiving the same unit twice never overwrites — the second lands in u1a~2', () => {
+    const s = migrate(unit1aSave(), NOW1, { unit: U1B });
+    s.unitId = 'u1a';                                  // e.g. a second 1A save imported into a 1B build
+    s.cards = { 'doc-07': { attempts: 1 } };
+    archiveUnit(s, U1B, NOW1 + 5);
+    assert.deepEqual(Object.keys(s.archive).sort(), ['u1a', 'u1a~2']);
+    assert.deepEqual(s.archive['u1a'].cards, unit1aSave().cards);
+    assert.deepEqual(s.archive['u1a~2'].cards, { 'doc-07': { attempts: 1 } });
+  });
+
+  test('the archive survives pack/unpack, export and import — it is part of the exported JSON', () => {
+    const after = migrate(unit1aSave(), NOW1, { unit: U1B });
+    const text = JSON.stringify(pack(after));
+    assert.ok(text.includes('"archive"'));
+    assert.ok(Array.isArray(JSON.parse(text).archive['u1a'].cards['ang-10'].history[0]), 'archived history is packed too');
+    const back = unpack(JSON.parse(text));
+    assert.deepEqual(back.archive['u1a'].cards['ang-10'].history, unit1aSave().cards['ang-10'].history, 'and unpacks to the object form');
+    assert.deepEqual(back, after, 'full round-trip');
+
+    const st = fakeStorage();
+    const store = createStore({ storage: st, now: () => NOW1, unit: U1B });
+    store.load();
+    store.importJSON(text);
+    assert.deepEqual(store.getState().archive['u1a'].errors, unit1aSave().errors, 'imported with the archive intact');
+    assert.equal(store.getState().unitId, 'u1b');
+  });
+
+  test('applyCaps leaves the archive alone (it is history, not working state)', () => {
+    const after = migrate(unit1aSave(), NOW1, { unit: U1B });
+    const before = structuredClone(after.archive);
+    for (let i = 0; i < CAPS.errors + 20; i++) after.errors.push({ item: 'tri-01', t: NOW1 + i, got: 'x', tags: [], cleared: false });
+    applyCaps(after);
+    assert.equal(after.errors.length, CAPS.errors, 'live errors are capped');
+    assert.deepEqual(after.archive, before, 'archived errors are not');
+  });
+
+  test('a stored Unit-1A save is handed off on the next open, written back, and flagged for Settings', () => {
+    const st = fakeStorage({ [SAVE_KEY]: JSON.stringify(pack(unit1aSave())) });
+    const store = createStore({ storage: st, now: () => NOW1, unit: U1B });
+    const s = store.load();
+    assert.equal(s.unitId, 'u1b');
+    assert.equal(store.flags.archivedUnit, 'u1a', 'Settings can say which unit was filed away');
+    const onDisk = JSON.parse(st.map.get(SAVE_KEY));
+    assert.equal(onDisk.unitId, 'u1b', 'the hand-off is written immediately, not left in memory');
+    assert.deepEqual(onDisk.archive['u1a'].runs, unit1aSave().runs);
+    assert.equal(onDisk.xp, 4820);
+  });
+
+  test('store.migrateUnit() hands over on demand (Settings → "Start the next unit") and persists', () => {
+    const st = fakeStorage({ [SAVE_KEY]: JSON.stringify(pack(unit1aSave())) });
+    const store = createStore({ storage: st, now: () => NOW1, unit: null });
+    assert.equal(store.load().unitId, 'u1a', 'unit: null → the store never hands over by itself');
+    const seen = [];
+    store.subscribe((_s, why) => seen.push(why));
+    const s = store.migrateUnit(U1B);
+    assert.equal(s.unitId, 'u1b');
+    assert.equal(store.flags.archivedUnit, 'u1a');
+    assert.ok(seen.includes('unit'), 'subscribers are told');
+    assert.equal(JSON.parse(st.map.get(SAVE_KEY)).unitId, 'u1b', 'flushed');
+    assert.deepEqual(JSON.parse(st.map.get(SAVE_KEY)).archive['u1a'].variants, unit1aSave().variants);
+  });
+
+  test('this build is a no-op for its own saves: a Unit-1A save never grows an archive under Unit 1A', () => {
+    const st = fakeStorage({ [SAVE_KEY]: JSON.stringify(pack(unit1aSave())) });
+    const store = createStore({ storage: st, now: () => NOW1 });   // default unit = this build
+    const s = store.load();
+    assert.equal(s.unitId, 'u1a');
+    assert.deepEqual(s.archive, {});
+    assert.equal(store.flags.archivedUnit, null);
+    assert.equal(Object.keys(s.cards).length, 3, 'nothing was reset');
+    assert.equal(Object.keys(s.skills).length, 7, 'no skill was dropped');
   });
 });
 

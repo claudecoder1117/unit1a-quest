@@ -37,10 +37,10 @@ import { validate as validateClassify } from '../site/js/grader/classify.js';
 import { layout as termmatchLayout } from '../site/js/grader/termmatch.js';
 import { resolve as resolveFigure, validate as validateFigure } from '../site/js/figure/model.js';
 import { lint, renderModel } from '../site/js/figure/svg.js';
+import { ROOT, correctRaw, CORRECT_RAW_TYPES } from './_helpers.mjs';   // T17: shared with mock.test.mjs
 
 await I.ready;
 
-const ROOT = resolvePath(dirname(fileURLToPath(import.meta.url)), '..');
 const SOURCE = readFileSync(join(ROOT, 'content', 'SOURCE.md'), 'utf8');
 const BLUEPRINT = join(ROOT, 'site', 'data', 'blueprint.js');
 
@@ -403,43 +403,6 @@ test('coverage: every non-bonus id is Mock-eligible (≥ 1 section), every secti
 // 6. THE GOLDEN ROUND-TRIP — every stored answer of every part grades `correct`
 // =====================================================================================
 
-/** The correct raw for a part, built from its own stored answer(s) — one builder per part type. */
-function correctRaw(c, p) {
-  const requiredChips = (slot) => slot.chips.map((ch, i) => [ch, i]).filter(([ch]) => ch.role === 'required').map(([, i]) => i);
-  switch (p.type) {
-    case 'num': return Array.isArray(p.bonus) && p.bonus.length ? { value: p.answer, ...Object.fromEntries(p.bonus.map((b) => [b.key, b.answer])) } : p.answer;
-    case 'multi': return Object.fromEntries(p.fields.map((f) => [f.key, f.answer]));
-    case 'roots': return p.answer;
-    case 'reject': return { keep: p.valid ?? [], reject: p.rejected ?? [], reason: p.reason ?? p.reasonKey };
-    case 'cases': return p.rows;
-    case 'ratio': return p.answer;
-    case 'factored': return p.answer;
-    case 'equation':
-      if (p.text) return p.text;
-      if (p.canonical) return `${p.canonical} = 0`;
-      if (Array.isArray(p.system)) return p.system.map((s) => `${s} = 0`).join(', ');
-      return null;
-    case 'mc': return p.answer;
-    case 'term': return (p.answers ?? [p.answer])[0];
-    case 'asn': return p.answer;
-    case 'classify': return p.answer;
-    case 'notation': return p.sides ? { kind: p.kind, sides: p.sides } : { kind: p.kind, pts: p.pts };
-    case 'cloze': return p.blanks.map((b) => (b.answers ? b.answers[0] : b.answer));
-    case 'termmatch': return Object.fromEntries(p.pairs.map((x) => [x.term, x.def]));
-    case 'pairs': return (c.teacherPairs ?? []).map((pair) => pair.map((n) => '∠' + n));
-    case 'strip': {
-      const raw = {};
-      for (const s of p.slots) {
-        if (s.type === 'chips') raw[s.id] = requiredChips(s);
-        else if (s.type === 'multi') raw[s.id] = Object.fromEntries(s.fields.map((f) => [f.key, f.answer]));
-        else raw[s.id] = s.answer;
-      }
-      return raw;
-    }
-    default: return undefined;
-  }
-}
-
 test('golden round-trip: every part of every card grades its own stored answer `correct` through grade() — all 17 part types', () => {
   const perType = {};
   for (const c of cards) {
@@ -459,9 +422,8 @@ test('golden round-trip: every part of every card grades its own stored answer `
   }
   const total = Object.values(perType).reduce((a, b) => a + b, 0);
   assert.ok(total >= 280, `round-tripped ${total} parts: ${JSON.stringify(perType)}`);
-  for (const t of ['num', 'multi', 'roots', 'reject', 'cases', 'ratio', 'equation', 'factored', 'mc', 'term', 'asn', 'classify', 'notation', 'cloze', 'termmatch', 'pairs', 'strip']) {
-    assert.ok(perType[t] >= 1, `part type ${t} never round-tripped`);
-  }
+  for (const t of CORRECT_RAW_TYPES) assert.ok(perType[t] >= 1, `part type ${t} never round-tripped`);
+  assert.equal(CORRECT_RAW_TYPES.length, 17, 'S3 has 17 part types — a new one needs a correctRaw() builder');
 });
 
 // =====================================================================================

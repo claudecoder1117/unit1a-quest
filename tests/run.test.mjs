@@ -22,6 +22,7 @@ import { xpFor, nextCombo, isClean } from '../site/js/xp.js';
 import { mShown, isMastered } from '../site/js/mastery.js';
 import { isCleared, coverageCount, readiness, skillStates } from '../site/js/readiness.js';
 import { tileRarity } from '../site/js/rarity.js';
+import { ROOT, read, stripCommentsAndStrings as stripComments } from './_helpers.mjs';   // T17
 
 // app.js is imported dynamically and its side effect undone: importing it evaluates screens/index.js,
 // which installs the trophy engine (a module singleton) on a microtask. Left installed, this file would
@@ -30,15 +31,7 @@ const { ROUTE_PATTERNS, ALIASES } = await import('../site/js/app.js');
 await Promise.resolve();
 installation()?.uninstall();
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const read = (p) => readFileSync(path.join(ROOT, p), 'utf8');
 const NOW = Date.parse('2026-09-17T14:00:00');
-/** Drop comments and string bodies so a prose mention of a banned call never trips a scan (the same
- *  trick tests/no-random.test.mjs uses; kept local so importing it here never runs its suite twice). */
-const stripComments = (src) => String(src)
-  .replace(/\/\*[\s\S]*?\*\//g, '')
-  .replace(/(^|[^:])\/\/[^\n]*/g, '$1')
-  .replace(/'(?:\\.|[^'\\\n])*'|"(?:\\.|[^"\\\n])*"|`(?:\\.|[^`\\])*`/g, "''");
 const save0 = () => fresh(NOW);
 
 /* ================================================================= routes */

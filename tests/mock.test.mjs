@@ -24,6 +24,7 @@ import { readiness, accuracyTerm, MINI_MOCK_FACTOR } from '../site/js/readiness.
 import { isDue } from '../site/js/schedule.js';
 import { isMastered, mShown } from '../site/js/mastery.js';
 import { todayISO, addDays } from '../site/js/days.js';
+import { correctRaw } from './_helpers.mjs';   // T17: one builder, shared with coverage.test.mjs
 
 const MODS = await M.mods();
 const nonBonus = manifestIds({ bonus: false });
@@ -32,43 +33,6 @@ const LETTERS = Object.keys(MOCK_SECTIONS);
 /* ------------------------------------------------------------------ helpers */
 
 const save0 = (over = {}) => Object.assign(fresh(Date.parse('2026-09-17T09:00:00')), over);
-
-/** The correct raw for a part, from its own stored answer — one builder per part type (as coverage.test.mjs). */
-function correctRaw(card, p) {
-  const requiredChips = (slot) => slot.chips.map((ch, i) => [ch, i]).filter(([ch]) => ch.role === 'required').map(([, i]) => i);
-  switch (p.type) {
-    case 'num': return Array.isArray(p.bonus) && p.bonus.length ? { value: p.answer, ...Object.fromEntries(p.bonus.map((b) => [b.key, b.answer])) } : p.answer;
-    case 'multi': return Object.fromEntries(p.fields.map((f) => [f.key, f.answer]));
-    case 'roots': return p.answer;
-    case 'reject': return { keep: p.valid ?? [], reject: p.rejected ?? [], reason: p.reason ?? p.reasonKey };
-    case 'cases': return p.rows;
-    case 'ratio': return p.answer;
-    case 'factored': return p.answer;
-    case 'equation':
-      if (p.text) return p.text;
-      if (p.canonical) return `${p.canonical} = 0`;
-      if (Array.isArray(p.system)) return p.system.map((s) => `${s} = 0`).join(', ');
-      return null;
-    case 'mc': return p.answer;
-    case 'term': return (p.answers ?? [p.answer])[0];
-    case 'asn': return p.answer;
-    case 'classify': return p.answer;
-    case 'notation': return p.sides ? { kind: p.kind, sides: p.sides } : { kind: p.kind, pts: p.pts };
-    case 'cloze': return p.blanks.map((b) => (b.answers ? b.answers[0] : b.answer));
-    case 'termmatch': return Object.fromEntries(p.pairs.map((x) => [x.term, x.def]));
-    case 'pairs': return (card.teacherPairs ?? []).map((pair) => pair.map((n) => '∠' + n));
-    case 'strip': {
-      const raw = {};
-      for (const s of p.slots) {
-        if (s.type === 'chips') raw[s.id] = requiredChips(s);
-        else if (s.type === 'multi') raw[s.id] = Object.fromEntries(s.fields.map((f) => [f.key, f.answer]));
-        else raw[s.id] = s.answer;
-      }
-      return raw;
-    }
-    default: return undefined;
-  }
-}
 
 /** Fill an open run. `how(item, part, built) → raw | undefined` (undefined = leave blank). */
 function fill(run, how) {

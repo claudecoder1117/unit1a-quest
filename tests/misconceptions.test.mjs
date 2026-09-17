@@ -16,8 +16,8 @@ import { fileURLToPath } from 'node:url';
 import DEFAULT_EXPORT, {
   MISCONCEPTIONS, AREAS, TAGS, isKnownTag, lookup, patternLine, groupByArea,
 } from '../site/data/misconceptions.js';
+import { ROOT } from './_helpers.mjs';   // T17
 
-const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const SITE = join(ROOT, 'site');
 const CATALOGUE = join(SITE, 'data', 'misconceptions.js');
 const SCAN_DIRS = [join(SITE, 'js'), join(SITE, 'data')];

@@ -40,6 +40,10 @@ import { isCleared, weakSpots, latestMock } from './readiness.js';
 export const LIMITS = Object.freeze({
   opener: 2, rematches: 3, dues: 12, q: 12, qMax: 40, qMin: 4, weakMin: 2, weakMax: 3, tier4: 2,
   modules: 3, microEvery: 4, firstPageNonM1: 3, algebraFloor: 2, sameSkillRun: 2,
+  // W5 (notes/OPEN-ISSUES.md §A3): on a LOWERED day the plan strip promises that vocabulary and notation
+  // carry the day. `opts.microFlashOnly` (from plan.composeOpts) makes every second new slot a tier-1
+  // recall card instead of every fourth — the promise the strip prints, in the composer that keeps it.
+  microEveryLowered: 2,
   // Session budget (S1: 10–25 min): reviews + rematches + new cards are held to `pageMax`; new cards shrink
   // to make room (never below qMin — progress continues; the rest lands on the day's second Page).
   pageMax: 20,
@@ -314,10 +318,12 @@ export function composePage(save, opts = {}) {
     mainSeq.push(fromGeo ? geoMain.shift() : algMain.shift());
   }
   const microSeq = [...micro.filter(c => chosenSet.has(c.module)), ...micro.filter(c => !chosenSet.has(c.module))];
+  // W5 (§A3): a lowered day leans on the tier-1 recall cards — every second new slot, not every fourth.
+  const microEvery = opts.microFlashOnly === true ? LIMITS.microEveryLowered : LIMITS.microEvery;
   let slot = 0;
   while (counts.new < qEff && (mainSeq.length || microSeq.length)) {
     slot++;
-    const wantMicro = slot % LIMITS.microEvery === 0;
+    const wantMicro = slot % microEvery === 0;
     let c = wantMicro ? (microSeq.shift() ?? mainSeq.shift()) : (mainSeq.shift() ?? microSeq.shift());
     if (!c) break;
     if (take(cardItem(c, 'new'))) counts.new++;

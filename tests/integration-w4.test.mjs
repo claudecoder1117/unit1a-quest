@@ -16,9 +16,8 @@ import * as plan from '../site/js/plan.js';
 import * as onboard from '../site/js/screens/onboard.js';
 import * as run from '../site/js/screens/run.js';
 import { mShown } from '../site/js/mastery.js';
+import { ROOT, read as src } from './_helpers.mjs';   // T17
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const src = (p) => readFileSync(path.join(ROOT, p), 'utf8');
 const NOW = Date.parse('2026-09-17T12:00:00');
 const DAY = 86400000;
 

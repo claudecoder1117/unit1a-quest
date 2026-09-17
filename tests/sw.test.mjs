@@ -17,8 +17,8 @@ import { join, dirname, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
 import { buildList, readList, replaceBlock, SHELL_FILES, SCAN_DIRS, EXCLUDE } from '../qa/gen-precache.mjs';
+import { ROOT } from './_helpers.mjs';   // T17
 
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SITE = join(ROOT, 'site');
 const SW_PATH = join(SITE, 'sw.js');
 const SW_SRC = readFileSync(SW_PATH, 'utf8');

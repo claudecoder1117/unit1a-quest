@@ -119,6 +119,12 @@ export function qFor(save, { D = daysUntilTest(save?.settings?.testDate) } = {})
  * The visible lowering (S7: "if q > 12 the strip warns and visibly lowers the target — M1 micro-cards drop
  * to 'flash only', tier-4 cards spread to one per day — instead of silently scheduling 40").
  * → { active, q, target, microFlashOnly, tier4PerDay, headline, lines[] }
+ *
+ * W5 (notes/OPEN-ISSUES.md §A3): the app has no read-only flash mode, and a strip that promised one was
+ * printing something the composer did not do. S7's *intent* — a heavy week is carried by the ten-second
+ * recall cards — is now honoured as a share of the day: `microFlashOnly` makes `composePage` fill every
+ * second new slot from the tier-1 pool (`LIMITS.microEveryLowered`) instead of every fourth, and the strip
+ * line says exactly that. All three lines of the lowering are therefore true of the page that gets built.
  */
 export function lowering(save, opts = {}) {
   const info = opts.q !== undefined && opts.target !== undefined ? opts : qFor(save, opts);
@@ -132,7 +138,7 @@ export function lowering(save, opts = {}) {
     active: true, q: info.q, target: info.target, microFlashOnly: true, tier4PerDay: TIER4_PER_DAY_LOWERED,
     headline: `${info.q} new a day is more than a day holds — the target is ${info.target}.`,
     lines: [
-      `Vocabulary and notation drop to flash only: you read them, you do not write them out.`,
+      `The ten-second cards — vocabulary, notation, definitions — take every other new card. The long write-outs wait.`,
       `Hard diagram problems spread to ${TIER4_PER_DAY_LOWERED} a day instead of ${TIER4_PER_DAY}.`,
       `Nothing is dropped from the Binder — reviews still come back on time.`,
     ],

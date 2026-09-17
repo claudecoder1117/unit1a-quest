@@ -504,15 +504,45 @@ test('S7 placement writes: m = 80 / 50 / 0 WITH n = 5, and a clean item places i
   });
 
   await t.test('placedAt and jumps[M] only on a CLEAN item', () => {
+    // W5: the clean item here is `fac2` (M10, 18 originals). `notation` is clean too but M1 is
+    // withheld by §A2 below — the skill write is unchanged either way, which is what this case is for.
     const s = newSave();
     onboard.applyPlacement(s, {
       notation: { outcome: 'clean', skills: ['NOTE'], module: 'M1' },
-      fac2: { outcome: 'retry', skills: ['FAC2'], module: 'M10' },
+      fac2: { outcome: 'clean', skills: ['FAC2'], module: 'M10' },
+      quad: { outcome: 'retry', skills: ['QUAD-SOLVE'], module: 'M11' },
     }, { now: 1000, total: 8 });
     assert.equal(s.skills.NOTE.placedAt, 1000);
-    assert.equal(s.skills.FAC2.placedAt, null);
-    assert.deepEqual(Object.keys(s.jumps), ['M1']);
-    assert.deepEqual(s.placement.placed, ['M1']);
+    assert.equal(s.skills.FAC2.placedAt, 1000);
+    assert.equal(s.skills['QUAD-SOLVE'].placedAt, null);
+    assert.deepEqual(Object.keys(s.jumps), ['M10']);
+    assert.deepEqual(s.placement.placed, ['M10']);
+  });
+
+  // W5 integrator decision — notes/OPEN-ISSUES.md §A2 (raised by T14 #3, INTEGRATION-W5 §1.1).
+  await t.test('a module too big for the placement to sample is NOT placed off one clean item', () => {
+    const s = saveAt(7);
+    const before = plan.qFor(s, { D: 7 });
+    const out = onboard.applyPlacement(s, { notation: { outcome: 'clean', skills: ['NOTE'], module: 'M1' } }, { now: 1, total: 8 });
+
+    assert.equal(onboard.originalsCount('M1'), 55, 'M1 holds 55 originals behind one placement cluster');
+    assert.ok(onboard.originalsCount('M1') > onboard.PLACE_MAX_ORIGINALS);
+    assert.equal(onboard.placeNeedsClean('M1'), onboard.PLACE_LARGE_CLEAN);
+    assert.ok(onboard.placeWithheld('M1'), 'one cluster < two clean needed → the placement can never place M1');
+
+    assert.deepEqual(out.placedModules, [], 'nothing placed');
+    assert.deepEqual(out.withheld, ['M1'], 'M1 reported as withheld so the summary can say so');
+    assert.ok(!s.jumps.M1, 'the 55 M1 originals stay in the new-card pool');
+    assert.equal(s.skills.NOTE.m, 80, 'the skill still gets its number …');
+    assert.equal(s.skills.NOTE.placedAt, 1, '… and its placedAt — what was demonstrated is recorded');
+    assert.equal(plan.qFor(s, { D: 7 }).R, before.R, 'R does not collapse');
+
+    // M9 (54 originals, one cluster) is the other one the rule catches.
+    assert.ok(onboard.placeWithheld('M9'), 'M9 holds 54 originals behind the single ASN cluster');
+    // …and JUMP HERE is still allowed to place M1 — 10 items, ≥ 8 is a real sample.
+    const j = saveAt(7);
+    onboard.applyJump(j, 'M1', { correct: 9, total: 10, skills: ['VOC', 'NOTE', 'CLASS'], now: 5 });
+    assert.equal(j.jumps.M1, true, 'JUMP HERE still places the big module');
   });
 
   await t.test('M4 needs BOTH of its items clean (S7)', () => {
@@ -538,7 +568,7 @@ test('S7 placement writes: m = 80 / 50 / 0 WITH n = 5, and a clean item places i
   await t.test('a placed module drops out of the plan (R and q move with it)', () => {
     const before = plan.qFor(saveAt(7), { D: 7 });
     const s = saveAt(7);
-    onboard.applyPlacement(s, { notation: { outcome: 'clean', skills: ['NOTE'], module: 'M1' } }, { now: 1, total: 8 });
+    onboard.applyPlacement(s, { fac2: { outcome: 'clean', skills: ['FAC2'], module: 'M10' } }, { now: 1, total: 8 });
     const after = plan.qFor(s, { D: 7 });
     assert.ok(after.R < before.R, `${after.R} < ${before.R}`);
     assert.ok(after.q <= before.q);
@@ -546,8 +576,8 @@ test('S7 placement writes: m = 80 / 50 / 0 WITH n = 5, and a clean item places i
 
   await t.test('the placement stamp records what happened', () => {
     const s = newSave();
-    onboard.applyPlacement(s, { notation: { outcome: 'clean', skills: ['NOTE'], module: 'M1' } }, { now: 7, total: 8, skipped: 7 });
-    assert.deepEqual(s.placement, { done: true, at: 7, answered: 1, total: 8, skipped: 7, placed: ['M1'], results: { notation: 'clean' } });
+    onboard.applyPlacement(s, { fac2: { outcome: 'clean', skills: ['FAC2'], module: 'M10' } }, { now: 7, total: 8, skipped: 7 });
+    assert.deepEqual(s.placement, { done: true, at: 7, answered: 1, total: 8, skipped: 7, placed: ['M10'], results: { fac2: 'clean' } });
   });
 });
 

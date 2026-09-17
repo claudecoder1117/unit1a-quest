@@ -9,8 +9,10 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, dirname, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { cyrb53, seed32, seedTag, mulberry32, rngFrom } from '../site/js/rng.js';
+import { ROOT, listFiles, stripCommentsAndStrings } from './_helpers.mjs';   // T17: one scanner for every suite
+// Re-exported for the suites that used to import it from here (tests/run.test.mjs now takes it from _helpers).
+export { stripCommentsAndStrings };
 
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const JS_DIR = join(ROOT, 'site', 'js');
 // The policy names site/js, but everything the browser runs is held to it:
 // site/data/*.js and the root-level site/*.js (version.js, a future sw.js)
@@ -19,46 +21,7 @@ const JS_DIR = join(ROOT, 'site', 'js');
 const SITE_DIR = join(ROOT, 'site');
 const FORBIDDEN = ['Math', 'random'].join('.'); // spelled indirectly so this file never contains the literal
 
-// Strip comments and string/template literals so a comment such as
-// "no <forbidden> here" or a message string never trips the scan, while any
-// real call site does. Handles line comments, block comments and the three
-// string-literal quote styles (a ${} inside a template is not re-entered —
-// code hidden in a template string is not a call anyway).
-export function stripCommentsAndStrings(src) {
-  let out = '';
-  let i = 0;
-  const n = src.length;
-  while (i < n) {
-    const c = src[i];
-    const d = src[i + 1];
-    if (c === '/' && d === '/') { while (i < n && src[i] !== '\n') i++; continue; }
-    if (c === '/' && d === '*') { i += 2; while (i < n && !(src[i] === '*' && src[i + 1] === '/')) i++; i += 2; continue; }
-    if (c === "'" || c === '"' || c === '`') {
-      const q = c;
-      i++;
-      while (i < n && src[i] !== q) {
-        if (src[i] === '\\') i++;
-        if (q !== '`' && src[i] === '\n') break;
-        i++;
-      }
-      i++;
-      out += q + q;
-      continue;
-    }
-    out += c;
-    i++;
-  }
-  return out;
-}
-
-function walk(dir, out = []) {
-  for (const name of readdirSync(dir)) {
-    const p = join(dir, name);
-    if (statSync(p).isDirectory()) walk(p, out);
-    else if (/\.(m?js)$/.test(name)) out.push(p);
-  }
-  return out;
-}
+const walk = (dir) => listFiles(dir);
 
 describe('no global random source in anything site/ serves', () => {
   const files = walk(SITE_DIR);

@@ -14,9 +14,8 @@ import * as mastery from '../site/js/mastery.js';
 import * as schedule from '../site/js/schedule.js';
 import { xpForLevel, levelFor, rankFor } from '../site/js/xp.js';
 import { COUNTERS } from '../site/data/trophies.js';
+import { ROOT, read } from './_helpers.mjs';   // T17
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const read = (p) => readFileSync(path.join(ROOT, p), 'utf8');
 
 test('W3: mastery.js and schedule.js are the same Leitner ladder', async (t) => {
   await t.test('intervals and the mastered thresholds are identical', () => {

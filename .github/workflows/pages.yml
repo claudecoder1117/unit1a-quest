@@ -1,10 +1,22 @@
-# Deploys site/ (and only site/) to GitHub Pages. No build step: the folder is
-# uploaded as-is after `node --test tests/` passes. Pages source must be set to
-# "GitHub Actions" (Settings → Pages); `enablement: true` turns it on if not yet.
+# Deploys site/ (and only site/) to GitHub Pages. No build step: the folder is uploaded as-is, and only
+# after the gates pass — `deploy` declares `needs: [test, artifact-policy]`, so a red test on EITHER Node
+# major, or a policy violation in the artifact, blocks the deploy (S8 #17).
+# Pages source must be set to "GitHub Actions" (Settings → Pages); `enablement: true` turns it on if not yet.
+#
+# The test job is deliberately paranoid about TWO ways a gate can lie:
+#   1. "0 tests, exit 0" — `node --test <dir>` discovers test files differently across Node majors
+#      (Node 22 expands the directory; Node ≥ 25 hands the positional to the loader, which resolves
+#      tests/index.js — see the header of tests/index.js). A version where neither path collects anything
+#      would exit 0 having run nothing, and the deploy would sail through. The matrix runs the policy
+#      command on two majors and the summary line is asserted to hold a four-digit test count.
+#   2. a deploy artifact that breaks BUILD-POLICY §1 — the copyright rule is the one thing in this repo
+#      that cannot be fixed after the fact once Pages has served it, so it is checked here too.
 name: Pages
 
 on:
   push:
+    branches: [main]
+  pull_request:
     branches: [main]
   workflow_dispatch:
 
@@ -12,19 +24,71 @@ concurrency:
   group: pages
   cancel-in-progress: false
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # 22 is the floor the repo targets (COMPOSED S6); 24 catches test-runner semantics drifting
+        # before a future runner bump makes it a deploy-day surprise. Both must be green.
+        node-version: [22, 24]
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
-      - run: node --test tests/
+          node-version: ${{ matrix.node-version }}
+
+      - name: node --test tests/ (the BUILD-POLICY §3 command)
+        run: |
+          set -o pipefail
+          node --test tests/ 2>&1 | tee test-output.txt
+
+      # The summary line is `ℹ pass 1138` (spec reporter) or `# pass 1138` (TAP) depending on which
+      # reporter the runner's Node picks in a non-TTY job; the awk rule matches both.
+      - name: the suite actually ran (a gate that runs 0 tests is not a gate)
+        run: |
+          pass=$(awk 'NF==3 && $2=="pass"{p=$NF} END{print p}' test-output.txt || true)
+          fail=$(awk 'NF==3 && $2=="fail"{f=$NF} END{print f}' test-output.txt || true)
+          echo "node ${{ matrix.node-version }}: pass=${pass:-none} fail=${fail:-none}"
+          if [ -z "$pass" ]; then echo "::error::no summary line — the runner collected no test files"; exit 1; fi
+          if [ "$fail" != "0" ]; then echo "::error::$fail failing tests"; exit 1; fi
+          if [ "$pass" -lt 1000 ]; then echo "::error::only $pass tests ran; the suite is ~1140 — discovery is broken"; exit 1; fi
+
+  # BUILD-POLICY §1: nothing the school or Kuta owns may ever reach the published artifact.
+  # This is not a lint — it is the publication policy, enforced on the exact folder that gets uploaded.
+  artifact-policy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: site/ holds no scans, PDFs or page exports
+        run: |
+          bad=$(find site -type f \( \
+              -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.gif' -o \
+              -iname '*.webp' -o -iname '*.pdf' -o -iname '*.tif' -o -iname '*.tiff' -o -iname '*.bmp' \) )
+          if [ -n "$bad" ]; then echo "::error::raster/PDF assets in the deploy artifact:"; echo "$bad"; exit 1; fi
+          if [ -e site/content ]; then echo "::error::site/content/ is dropped by BUILD-POLICY §1"; exit 1; fi
+          test ! -e site/index.html || grep -q 'name="robots" content="noindex"' site/index.html \
+            || { echo '::error::index.html lost its <meta name="robots" content="noindex">'; exit 1; }
+
+      - name: nothing under source/ or designs/ is tracked
+        run: |
+          leaked=$(git ls-files | grep -E '^(source/|designs/|content/.*\.png$|qa/screenshots/)' || true)
+          if [ -n "$leaked" ]; then echo "::error::git-ignored, unpublishable paths are tracked:"; echo "$leaked"; exit 1; fi
 
   deploy:
-    needs: test
+    # THE GATE: a red test (on either Node) or a policy violation stops the deploy.
+    needs: [test, artifact-policy]
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       pages: write
       id-token: write

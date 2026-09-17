@@ -8,7 +8,7 @@
 // Nothing here is destructive without a second tap, and every write goes through store.update() so the
 // save, the header and the theme stay in step.
 import { h, applyTheme, getHeader, setHeader, bus, APP_VERSION } from '../app.js';
-import { getState, update, exportJSON, importJSON, reset, readBackup, flags } from '../store.js';
+import { getState, update, exportJSON, importJSON, reset, readBackup, flags, archivedUnits, UNIT_ID } from '../store.js';
 import { daysUntilTest, todayISO, parseISO, nextSchoolDay } from '../days.js';
 import { play, unlock, setSound, isQuiet, isSupported as soundSupported } from '../sound.js';
 import { swState, subscribe as swSubscribe, checkForUpdate, clearCaches } from '../sw-register.js';
@@ -370,6 +370,30 @@ export function mountSettings() {
         resetRow);
     }
 
+    /* ----- Past units (W5 · notes/T17.md Requests → T15) -----
+       S8 #19: when the build's data is swapped to the next unit, `store.js` files this unit's cards, runs,
+       errors and skills away on the next load instead of deleting them. Nothing to show while this build
+       is still Unit 1A, so the card renders only when there is an archive (or a hand-off just happened). */
+    function unitsCard(s) {
+      const past = archivedUnits(s);
+      const justNow = flags.archivedUnit;
+      if (!past.length && !justNow) return null;
+      const when = (ms) => (Number.isFinite(ms) ? new Date(ms).toLocaleDateString() : 'an earlier build');
+      const label = (id) => (typeof id === 'string' && /^u(\d+)([a-z])$/i.test(id)
+        ? `Unit ${id.slice(1, -1)}${id.slice(-1).toUpperCase()}`
+        : String(id || 'an earlier unit'));
+      return card('Past units',
+        justNow
+          ? h('p.set-note.ok', `${label(justNow)} is filed away — this build now teaches ${label(UNIT_ID)}. `
+            + 'Nothing was deleted: your cards, runs and mistakes from it are still in the save below.')
+          : null,
+        hint('Finished units are kept in full. They are part of your Export, so downloading your save keeps them too.'),
+        h('ul.set-units', past.map(u => h('li.set-unit',
+          h('span.set-unit-name', label(u.unitId)),
+          h('span.muted.fs-1.mono', `${when(u.archivedAt)} · ${plural(u.stats?.cards ?? 0, 'card')}`
+            + ` · ${plural(u.stats?.runs ?? 0, 'run')} · ${u.stats?.xpAtArchive ?? 0} XP`)))));
+    }
+
     /* ----- About ----- */
     function offlineLine(sw) {
       if (!sw.supported) return sw.error === 'needs http' ? 'not available on file:// — serve it over http' : 'not available in this browser';
@@ -442,7 +466,7 @@ export function mountSettings() {
         h('h1', 'Settings'),
         h('p.set-lede.muted', 'Everything here is stored in this browser only.'),
         lookCard(s), soundCard(s), goalCard(s), dateSlot, answerCard(s),
-        readinessCard(), dataCard(), aboutEl,
+        readinessCard(), unitsCard(s), dataCard(), aboutEl,
         msgEl));
     }
 
