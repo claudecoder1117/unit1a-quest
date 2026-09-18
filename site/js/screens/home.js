@@ -9,7 +9,7 @@
 //
 // Registered in screens/index.js as screens['/today'] = mountHome  →  (params, query, ctx) => (el) => cleanup.
 
-import { h, bus, navigate, setHeader, levelFor, xpForLevel, rankFor } from '../app.js';
+import { h, bus, navigate, setHeader, levelFor, xpForLevel, rankFor, softWrap } from '../app.js';
 import { getState, update } from '../store.js';
 import { todayISO, daysUntilTest, addDays, weekday } from '../days.js';
 import { readiness, logForecast, weakSpots, skillStates, startedSkills, coverageCount, sparkline, latestMock } from '../readiness.js';
@@ -171,7 +171,7 @@ function weakList(state, kind = null) {
   }
   sec.append(h('ul.weak-list', ws.map(w => h('li.weak-row',
     h('div.weak-main',
-      h('span.weak-name', w.name),
+      h('span.weak-name', ...softWrap(w.name)),   // ticket FINAL: break after '/', never inside "Never"
       h('span.skill-bar', { 'aria-hidden': 'true' }, h('span.skill-fill', { style: { transform: `scaleX(${Math.max(0.02, w.mShown / 100)})` } }))),
     h('span.weak-m.mono', { 'aria-label': `mastery ${Math.round(w.mShown)}` }, String(Math.round(w.mShown))),
     h('a.btn.btn-drill', { href: w.drill }, 'Drill 5'),
@@ -186,7 +186,7 @@ function skillRail(state) {
   for (const s of skillStates(state)) {
     const tone = s.untested ? 'untested' : s.mastered ? 'mastered' : s.weak ? 'weak' : s.started ? 'started' : 'ok';   // fix5:home r1
     list.append(h('li.skill-row', { dataset: { tone } },
-      h('span.skill-name', s.name, s.placed ? h('span.skill-tag.mono', { title: 'placed' }, ' ·placed') : null),
+      h('span.skill-name', ...softWrap(s.name), s.placed ? h('span.skill-tag.mono', { title: 'placed' }, ' ·placed') : null),
       h('span.skill-bar', { 'aria-hidden': 'true' }, h('span.skill-fill', { style: { transform: `scaleX(${s.untested ? 0 : Math.max(0.02, s.mShown / 100)})` } })),
       h('span.skill-m.mono', s.untested ? '—' : String(Math.round(s.mShown))),
     ));

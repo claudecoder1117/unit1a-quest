@@ -13,8 +13,10 @@
 // radius + 16 and are nudged outward until their text box clears every ray; nested arcs at 22 + 10k;
 // right-angle mark 10 px; ticks for congruent segments; one transparent wedge per angle
 // (<g class="fig-wedge" role="button" tabindex="0" aria-label="angle GFC" data-angle="C-G">) whose
-// hit path is a full sector for atomic angles and an annular band for composite ones, so every
-// angle — ∠AFC included — has its own ≥ 44 px region; the "Not to scale" chip whenever expressions
+// hit path is a full sector for atomic angles and an annular band for composite ones. fix:B3 — that
+// hit path is SOLVED, not drawn: hitRegion() gives every angle — ∠AFC included — a bounding box of at
+// least 44 px in BOTH directions at HIT_REF_W, the narrowest width the app draws a figure at, without
+// moving the drawing by a byte; the "Not to scale" chip whenever expressions
 // are present. Generated variants pass rotate (15° steps) / mirror / rename through resolve().
 //
 // DOM-free except element()/setWedgeState() (guarded). Imports only ./model.js.
@@ -27,8 +29,30 @@ const ARROW = 11;              // arrowhead length in viewBox units
 const DOT_INSET = 22;          // dots sit this far inside the arrow tip on figures that draw dots
 const LABEL_GAP = 16;          // point letter distance from its dot / tip
 const PT_FS = 15, EXPR_FS = 13;
-const WEDGE_MIN = 60, WEDGE_MAX = 140, BAND = 58, MIN_CHORD = 60;   // card r1: every wedge hit ≥ 44 px at 375 (the figure is ≈ 0.77 px per vb there; S9 #9)
+const WEDGE_MIN = 60, WEDGE_MAX = 140, BAND = 58, MIN_CHORD = 60;   // the DRAWN wedge: sector radius + ring pitch (unchanged since T04)
 const RAY_MARGIN = 6, ARC_MARGIN = 4, LABEL_GAP_BOX = 6;   // expression labels keep this much clear air
+
+// fix:B3 — the 44 px rule. The constants above size the DRAWING; these size the HIT path, which is
+// solved separately per wedge (see hitRegion below). Two things were wrong before:
+//   · the old rule sized a wedge by its CHORD (`MIN_CHORD / (2·sin(span/2))`), but a thumb — and the
+//     auditor — get the axis-aligned BOUNDING BOX, and a sector whose span hugs an axis has a box only
+//     `r·sin(span)` thick, not `2r·sin(span/2)`;
+//   · it was calibrated against an assumed 343 px figure (a hard-coded px width — exactly the fault
+//     notes/LAYOUT-ROOT.md names), and the app actually hosts the figure from 238 px to 650 px, so the
+//     same viewBox geometry landed anywhere from 33.8 px to 67.5 px of hit box.
+// HIT_REF_W is the narrowest the app EVER DRAWS a figure, measured in every host, both engines and all
+// 16 audit widths by `node qa/fix-b3-wedges.mjs`. Note DRAWN, not the element box: `.card-figure .fig`
+// carries a max-height and an <svg> letterboxes its viewBox, so at 320×568 a 238 × 150 element paints
+// the 400 × 260 viewBox at 230.8 px wide, centred — the scale is min(w, h·400/260), never w alone.
+// getBoundingClientRect() on an SVG shape ignores stroke in both engines, so the region has to be big
+// in the path data itself — a transparent pad would grow the target and leave the auditor blind to it.
+const HIT_MIN_PX = 44;         // COMPOSED S5: "wedge hit areas ≥ 44 px"
+const HIT_PAD_PX = 2;          // headroom: the auditor fails under 43.5 and the engines disagree by ≈ 0.5 px
+const HIT_REF_W = 230;         // px — the narrowest figure the app draws (qa/fix-b3-wedges.mjs re-checks it)
+const HIT_MIN = ((HIT_MIN_PX + HIT_PAD_PX) * VIEW.w) / HIT_REF_W;   // 80 viewBox units
+const HIT_RING = 24;           // a composite ring pushed off an enlarged atomic keeps this much depth
+const HIT_SPILL = 24;          // how far past the viewBox an atomic wedge may reach when the box is too tight
+const HIT_STEP = 4, HIT_TRIES = 48;   // how a ring grows when its box is still short
 const CHIP_TEXT = 'Not to scale';
 const RUN_ON = 34;             // fix5:gen — an arrowed poly chain runs this far past its end point to the arrowhead
 
@@ -92,6 +116,87 @@ function arcPath(c, r, start, span) {
   return `M${f1(x0)},${f1(y0)} A${r},${r} 0 ${span > 180 ? 1 : 0} 0 ${f1(x1)},${f1(y1)}`;
 }
 function pt(c, r, deg) { const [ux, uy] = dirOf(deg); return [c[0] + r * ux, c[1] + r * uy]; }
+
+// ---- wedge hit geometry (fix:B3) ----------------------------------------------------------------
+// A wedge's hit region is a union of annular sectors sharing one outer radius; its bounding box is the
+// union of theirs. Boxes are exact: the extremes of an arc are its two ends plus whichever axis
+// directions it sweeps through, and a sector (r0 = 0) also owns the vertex.
+
+/** Bounding box of the annular sector (c, r0..r1) over [start, start+span]. r0 = 0 → a full sector. */
+function ringBox(c, r0, r1, start, span) {
+  const xs = [], ys = [];
+  const push = (r, deg) => { const [x, y] = pt(c, r, deg); xs.push(x); ys.push(y); };
+  for (const r of [r0, r1]) { push(r, start); push(r, start + span); }
+  for (const k of [0, 90, 180, 270]) if (norm(k - start) < span) push(r1, k);
+  if (r0 === 0) { xs.push(c[0]); ys.push(c[1]); }
+  return { x0: Math.min(...xs), y0: Math.min(...ys), x1: Math.max(...xs), y1: Math.max(...ys) };
+}
+const boxUnion = (a, b) => (a ? { x0: Math.min(a.x0, b.x0), y0: Math.min(a.y0, b.y0), x1: Math.max(a.x1, b.x1), y1: Math.max(a.y1, b.y1) } : b);
+const boxFits = (b) => b && b.x1 - b.x0 >= HIT_MIN - 1e-6 && b.y1 - b.y0 >= HIT_MIN - 1e-6;
+const partsBox = (c, parts) => parts.reduce((b, p) => boxUnion(b, ringBox(c, p.r0, p.r1, p.start, p.span)), null);
+
+/**
+ * The largest radius at which sector(c, r, start, span) still lies inside the viewBox grown by
+ * HIT_SPILL — so an atomic wedge grows into the figure's OWN box and can never reach out across the
+ * card the way the drawn rings do (a level-1 band on F1 already stands 41 units above the viewBox).
+ * The HIT_SPILL of slack is the lesser evil for the handful of generated fans whose vertex sits close
+ * to an edge: a target 1 px under the floor is a defect, 14 px of invisible overhang is not.
+ */
+function sectorRoom(c, start, span) {
+  const u = ringBox([0, 0], 0, 1, start, span);
+  const lim = [];
+  if (u.x1 > 0) lim.push((VIEW.w + HIT_SPILL - c[0]) / u.x1);
+  if (u.x0 < 0) lim.push((-HIT_SPILL - c[0]) / u.x0);
+  if (u.y1 > 0) lim.push((VIEW.h + HIT_SPILL - c[1]) / u.y1);
+  if (u.y0 < 0) lim.push((-HIT_SPILL - c[1]) / u.y0);
+  return lim.length ? Math.max(0, Math.min(...lim)) : Infinity;
+}
+
+/**
+ * The hit region for one angle: `{ parts, outer, box, d }`.
+ *
+ * Level 0 (atomic) is a sector whose radius is the smallest that clears HIT_MIN in BOTH directions —
+ * capped by the room the viewBox has for it, and never smaller than the drawn wedge (the highlight
+ * must never spill past its own target).
+ *
+ * A composite is the ring outside everything more specific than it. Because atomic radii now differ
+ * per wedge, that inner boundary is a STAIRCASE — one sub-band per angular run — instead of one
+ * circle, which is what keeps the rings disjoint without pushing every ring out to the widest of them.
+ * The ring's outer radius starts at the drawn one and grows only while its box is short.
+ */
+function hitRegion(c, a, rFill, solved) {
+  if (a.level === 0) {
+    const room = sectorRoom(c, a.start, a.span);
+    const u = ringBox([0, 0], 0, 1, a.start, a.span);
+    const need = HIT_MIN / Math.min(u.x1 - u.x0, u.y1 - u.y0);
+    const r = Math.max(rFill, Math.min(need, room));
+    const parts = [{ r0: 0, r1: r, start: a.start, span: a.span }];
+    return { parts, outer: r, box: partsBox(c, parts), d: sectorPath(c, r, a.start, a.span) };
+  }
+  const lower = solved.filter(s => s.level < a.level);
+  const cuts = new Set([0, a.span]);
+  for (const s of lower) for (const t of [s.start, s.start + s.span]) {
+    const d = norm(t - a.start);
+    if (d > 1e-6 && d < a.span - 1e-6) cuts.add(d);
+  }
+  const ks = [...cuts].sort((x, y) => x - y);
+  const innerAt = (mid) => lower.reduce((r, s) => (norm(mid - s.start) <= s.span + 1e-6 ? Math.max(r, s.outer) : r), 0);
+  const inners = [];
+  for (let i = 0; i + 1 < ks.length; i++) inners.push(innerAt(a.start + (ks[i] + ks[i + 1]) / 2));
+  const build = (outer) => {
+    const parts = [];
+    for (let i = 0; i + 1 < ks.length; i++) {
+      if (inners[i] + 1e-6 >= outer) continue;                       // swallowed by a more specific wedge
+      parts.push({ r0: inners[i], r1: outer, start: a.start + ks[i], span: ks[i + 1] - ks[i] });
+    }
+    return parts;
+  };
+  let outer = Math.max(rFill, Math.max(0, ...inners) + HIT_RING);
+  let parts = build(outer);
+  for (let i = 0; i < HIT_TRIES && !boxFits(partsBox(c, parts)); i++) { outer += HIT_STEP; parts = build(outer); }
+  const d = parts.map(p => bandPath(c, p.r0, p.r1, p.start, p.span)).join(' ');
+  return { parts, outer, box: partsBox(c, parts), d };
+}
 
 /** Largest angular gap between consecutive rays → the direction with the most room (vertex label). */
 function freestDirection(degs) {
@@ -265,22 +370,28 @@ function layoutFan(model, opts) {
     placedBoxes.push(box);
   }
 
-  // wedges: atomic → sector [0, R1]; level k → band [R1 + (k−1)·BAND, R1 + k·BAND]
+  // wedges. DRAWN (unchanged): atomic → sector [0, R1]; level k → sector out to R1 + k·BAND.
+  // HIT (fix:B3): solved per wedge by hitRegion() so every one clears 44 px at HIT_REF_W, in ascending
+  // level order so a composite ring knows the boundary of everything more specific beneath it.
   const wedgesOn = opts.wedges ?? !model.poly;
   const wedges = [];
   if (wedgesOn) {
     const atomic = all.filter(a => a.atomic);
     const R1 = Math.max(WEDGE_MIN, ...atomic.map(a => Math.min(WEDGE_MAX, MIN_CHORD / (2 * Math.sin(R(a.span / 2))))));
-    for (const a of all) {
+    const solved = [];
+    for (const a of [...all].sort((p, q) => p.level - q.level)) {
       const r0 = a.level === 0 ? 0 : R1 + (a.level - 1) * BAND;
       const r1 = a.level === 0 ? R1 : R1 + a.level * BAND;
+      const hit = hitRegion(c, a, r1, solved);
+      solved.push({ level: a.level, start: a.start, span: a.span, outer: hit.outer });
       wedges.push({
         angle: a, r0, r1, center: c,
-        hit: a.level === 0 ? sectorPath(c, r1, a.start, a.span) : bandPath(c, r0, r1, a.start, a.span),
+        hit: hit.d, hitParts: hit.parts, hitOuter: hit.outer, hitBox: hit.box,
         fill: sectorPath(c, r1, a.start, a.span),
         ariaLabel: a.label ? a.label : `angle ${a.name}`,
       });
     }
+    wedges.sort((p, q) => all.indexOf(p.angle) - all.indexOf(q.angle));   // emit in model order (tab order)
   }
 
   const chip = model.notToScale ? chipLayout() : null;
@@ -548,25 +659,23 @@ export function clearWedgeStates(root, states = WEDGE_STATES) {
 // ------------------------------------------------------------------------------------------------
 // layout lint (DOM-free): what the dev page checks in the browser, computable in node --test
 
-/** Bounding box of a sector (centre, arc endpoints, and every axis extreme inside the arc). */
-function sectorBox(c, r, start, span) {
-  const xs = [c[0]], ys = [c[1]];
-  const push = (deg) => { const [x, y] = pt(c, r, deg); xs.push(x); ys.push(y); };
-  push(start); push(start + span);
-  for (const k of [0, 90, 180, 270]) if (norm(k - start) < span) push(k);
-  return { x0: Math.min(...xs), y0: Math.min(...ys), x1: Math.max(...xs), y1: Math.max(...ys) };
-}
-
 /**
  * Layout problems for a resolved model, as human-readable strings ([] when clean): text boxes
  * outside the viewBox inset, a label box crossed by a stroke, two text boxes (or a text box and the
- * chip) overlapping, a wedge whose bounding box is under `minPx` (default 44) CSS px when the SVG
- * is `widthPx` (default 375 − 2·16 gutter = 343) wide. Opts also reach layout() (wedges on/off).
+ * chip) overlapping, a wedge whose HIT box is under `minPx` (default 44) CSS px when the SVG is
+ * `widthPx` wide. Opts also reach layout() (wedges on/off).
+ *
+ * fix:B3 — `widthPx` now defaults to HIT_REF_W (238: the narrowest the app ever renders a figure,
+ * measured by qa/fix-b3-wedges.mjs), not to a 375 px phone's content width; and BOTH sides of the box
+ * have to clear the floor. The old rule passed anything whose longest side reached 44 px and whose
+ * area reached 44², which is exactly how a 93 × 41 wedge shipped: a 93 × 41 box is not a 44 px target
+ * in the direction your thumb is short. It also measures the hit path the renderer really emits
+ * (`w.hitBox`) rather than re-deriving a sector from the drawn radius.
  */
 export function lint(model, opts = {}) {
   const L = layout(model, opts);
-  const scale = (opts.widthPx ?? 343) / VIEW.w;
-  const minPx = opts.minPx ?? 44;
+  const scale = (opts.widthPx ?? HIT_REF_W) / VIEW.w;
+  const minPx = opts.minPx ?? HIT_MIN_PX;
   const issues = [];
   const texts = [
     ...L.pointLabels.map(p => ({ text: p.n, box: p.box, kind: 'letter' })),
@@ -589,11 +698,10 @@ export function lint(model, opts = {}) {
     for (const e of L.exprLabels) if (e.angle.key === a.angle.key && a.center && boxToPoint(e.box, a.center) < a.r - 0.5) issues.push(`label on its arc: "${e.text}"`);
   }
   for (const w of L.wedges) {
-    const c = w.center ?? L.center;
-    if (!c) continue;
-    const b = sectorBox(c, w.r1, w.angle.start, w.angle.span);
+    const b = w.hitBox ?? (w.center ? ringBox(w.center, w.r0, w.r1, w.angle.start, w.angle.span) : null);
+    if (!b) continue;
     const wpx = (b.x1 - b.x0) * scale, hpx = (b.y1 - b.y0) * scale;
-    if (Math.max(wpx, hpx) < minPx || wpx * hpx < minPx * minPx) issues.push(`small wedge: ${w.angle.name} ${wpx.toFixed(0)}×${hpx.toFixed(0)} px`);
+    if (wpx < minPx || hpx < minPx) issues.push(`small wedge: ${w.angle.name} ${wpx.toFixed(0)}×${hpx.toFixed(0)} px`);
   }
   return issues;
 }

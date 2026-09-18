@@ -126,6 +126,33 @@ export function h(tag, attrs = {}, ...children) {
   return el;
 }
 
+/**
+ * softWrap('Always/Sometimes/Never: Angles') → ['Always/', <wbr>, 'Sometimes/', <wbr>, 'Never: Angles']
+ *
+ * A break opportunity after each '/', for names that are one long unbreakable token. Two of the
+ * nineteen skill names are "Always/Sometimes/Never: …", a 23-character run with no space in it: CSS
+ * has no way to break after a slash, so a 170 px column (Home's Skills rail) had to fall back to
+ * `overflow-wrap: anywhere` and cut the word in half — "Always/Sometimes/Neve" / "r: Points, Lines,
+ * Planes", at every desktop width, in both engines (ticket FINAL; notes/LAYOUT-PERFECT.md). Giving the
+ * slash a real break opportunity means the last-resort break is never reached.
+ *
+ * <wbr> and not a zero-width space on purpose: it adds NO character, so textContent, aria names,
+ * copy-paste and every test that compares a skill name are byte-identical. Returns an array, so call
+ * it spread: h('span.skill-name', ...softWrap(name)).
+ */
+export function softWrap(text) {
+  const s = String(text ?? '');
+  if (!s.includes('/')) return [s];
+  const out = [];
+  // Keep the slash on the end of the preceding chunk (a line may end on '/'), then offer the break.
+  for (const part of s.split(/(?<=\/)/)) {
+    out.push(part);
+    if (part.endsWith('/')) out.push(document.createElement('wbr'));
+  }
+  if (typeof out[out.length - 1] !== 'string') out.pop();   // a trailing slash needs no break after it
+  return out;
+}
+
 /* ---------------- theme ---------------- */
 const mq = typeof matchMedia === 'function' ? matchMedia('(prefers-color-scheme: dark)') : null;
 export function effectiveTheme() {

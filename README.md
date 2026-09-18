@@ -35,6 +35,35 @@ Screenshots (dev-only, Playwright under `qa/`, never served):
 node qa/shot.mjs "#/today" out.png --w 375 [--dark] [--click "#theme-toggle"] [--state save.json]
 ```
 
+## Layout audit — run this before you push
+
+`node --test` cannot see a layout defect. The one bug that made a student call the app garbage — the
+placement question rendering **one letter per line** in Safari at 1900×1200, because every responsive rule
+was keyed to the viewport while a card is hosted at widths that have nothing to do with the viewport — was
+green on 1293 tests. So there is a second gate:
+
+```sh
+npm run audit          # 95 screen states x 17 viewports x light/dark x chromium+webkit; exits 1 on a BLOCKER or MAJOR
+```
+
+**Run it before every push, and read what it prints.** It self-tests its own detectors first and refuses to
+sweep on broken ones, writes `qa/audit/report.json` plus a PNG for every state with a finding, and fails the
+command if a blocker or major survives. The full matrix takes tens of minutes; while fixing one screen use
+
+```sh
+npm run audit:fast                                   # chromium + light + desktop widths only
+node qa/layout-audit.mjs --only placement-item-1 --vp 1900x1200     # the student's own window
+npm run audit:selftest                               # detectors only, ~2 s
+```
+
+Detectors, waivers (`qa/audit-allow.json` — every entry needs a reason, and waived hits are still counted
+and printed), and the `--inject` mutation test that proves the net catches real regressions: `notes/AUDIT.md`.
+The layout conventions the app must follow so the bug cannot come back — **components query their own width
+with `@container`, never the viewport, and every text track has a `ch` floor** — are in `notes/LAYOUT-ROOT.md`;
+`tests/layout-root.test.mjs` lints for them and `tests/layout-audit.test.mjs` keeps the auditor honest. Both
+run in `node --test`, so CI catches a rotted net; the full matrix is deliberately **not** in CI (too slow) —
+it is yours to run.
+
 ## Deploy — GitHub Pages via Actions
 
 `.github/workflows/pages.yml` runs the tests, then uploads **`site/` and only `site/`** as the Pages

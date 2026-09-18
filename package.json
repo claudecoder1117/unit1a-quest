@@ -3,6 +3,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test tests/"
+    "test": "node --test tests/",
+    "audit": "node qa/layout-audit.mjs",
+    "audit:selftest": "node qa/layout-audit.mjs --selftest",
+    "audit:fast": "node qa/layout-audit.mjs --engine chromium --theme light --vp desktop --no-extra"
   }
 }

@@ -177,7 +177,7 @@ body:has(.sw-pill:not([hidden])) .set-msg { top: calc(var(--header-h) + 64px); }
 .plan-pill[data-kind="fixed"] .pill-day { color: var(--accent-ink); }
 
 /* today: goal meter · streak protractor · level ring */
-.home-today { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.home-today { display: grid; grid-template-columns: repeat(3, minmax(min(100%, 6ch), 1fr)); gap: 12px; }   /* LAYOUT-ROOT floor */
 .stat { display: grid; gap: 2px; align-content: start; justify-items: start; min-width: 0; }
 .stat-num { font-size: var(--fs-3); font-weight: 650; line-height: 1.2; white-space: nowrap; }
 .stat-label { font-size: var(--fs-1); line-height: 1.2; }
@@ -199,7 +199,7 @@ body:has(.sw-pill:not([hidden])) .set-msg { top: calc(var(--header-h) + 64px); }
 .stat-level .lv-fill[data-empty="true"] { opacity: 0; }
 .stat-level .lv-num { position: relative; font-weight: 700; font-size: var(--fs-2); }
 @media (max-width: 480px) {
-  .home-today { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .home-today { grid-template-columns: repeat(2, minmax(min(100%, 8ch), 1fr)); }   /* LAYOUT-ROOT floor */
   .stat-goal { grid-column: 1 / -1; }
 }
 
@@ -435,7 +435,7 @@ body:has(.sw-pill:not([hidden])) .set-msg { top: calc(var(--header-h) + 64px); }
 .st-spark-dot, .st-spark-head { fill: var(--accent); }
 
 .st-skills { display: grid; grid-template-columns: minmax(0, 1fr); gap: 5px; margin: 0; padding: 0; list-style: none; }
-.st-skills li { display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "name val" "bar bar" "meta drill"; align-items: center; gap: 2px 8px; font-size: var(--fs-1); padding-bottom: 5px; border-bottom: 1px solid var(--line); }
+.st-skills li { display: grid; grid-template-columns: minmax(min(100%, 12ch), 1fr) auto; grid-template-areas: "name val" "bar bar" "meta drill"; align-items: center; gap: 2px 8px; font-size: var(--fs-1); padding-bottom: 5px; border-bottom: 1px solid var(--line); }
 .st-skill-name { grid-area: name; font-size: var(--fs-2); color: var(--text); }
 .st-skills .st-bar-track { grid-area: bar; }
 .st-skills .st-bar-val { grid-area: val; min-width: 40px; }
@@ -503,9 +503,17 @@ body:has(.sw-pill:not([hidden])) .set-msg { top: calc(var(--header-h) + 64px); }
   .st-bar-fill { transition-duration: 0s; }
 }
 
-@media (min-width: 720px) {
+/* LAYOUT-ROOT: the Stats rows read the STATS BLOCK's width (container `stats` = .screen.stats), and
+   both name tracks carry a floor so a narrower host drops to the stacked layout instead of squeezing
+   the skill name to nothing.
+   THRESHOLD 720 → 640 (`fix:stats r2`): `.screen` caps this container at `--col` = 680 px, so a 720 px
+   threshold could never match and this whole block was dead. 640 px is the arithmetic of the wide row
+   (190 name + 108 bar + 46 val + 200 meta + 64 drill + 4×8 gap); polish.css §5c carries the same number
+   and the derivation. `tests/fix-stats.test.mjs` now fails any @container threshold a capped container
+   can never reach. */
+@container stats (min-width: 640px) {
   .st-bars li { grid-template-columns: minmax(96px, 140px) minmax(0, 1fr) 56px; font-size: var(--fs-2); }
-  .st-skills li { grid-template-columns: minmax(0, 190px) minmax(0, 1fr) 46px minmax(0, 150px) auto; grid-template-areas: "name bar val meta drill"; }
+  .st-skills li { grid-template-columns: minmax(12ch, 190px) minmax(0, 1fr) 46px minmax(0, 150px) auto; grid-template-areas: "name bar val meta drill"; }
 }
 /* === /T11 === */
 
@@ -515,10 +523,14 @@ body:has(.sw-pill:not([hidden])) .set-msg { top: calc(var(--header-h) + 64px); }
    tap targets 44 px, no horizontal scroll), S5 "Art direction" (paper is a theme token with an 8 px grid
    and the teacher's numbering in the margin), S5 "Components" (Card, Paper card, HP pips, Rarity tile,
    Hint ladder). Motion lives in motion.css. */
+/* LAYOUT-ROOT: the DEFAULT is the narrow-host order — head · stage · parts · foot · result ·
+   solution · side — so the answer boxes follow the paper directly and Scratch + the hint ladder come
+   last (S9 #3). The rail order is switched on by the @container rule below, never by a viewport
+   @media: the card is hosted at widths unrelated to the viewport (see notes/LAYOUT-ROOT.md). */
 .card-screen {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  grid-template-areas: "head" "stage" "side" "parts" "foot" "result" "solution" "sandbox";
+  grid-template-areas: "head" "stage" "parts" "foot" "result" "solution" "side" "sandbox";
   gap: 16px;
   max-width: none;
   padding-bottom: 8px;
@@ -532,14 +544,20 @@ body:has(.sw-pill:not([hidden])) .set-msg { top: calc(var(--header-h) + 64px); }
 .card-screen > .card-solution { grid-area: solution; }
 .card-screen > .card-sandbox { grid-area: sandbox; }
 .card-foot:empty { display: none; }
-@media (min-width: 1024px) {
+/* The 320 px rail (S5 "≥ 1024 px: right rail 320 px") appears when THE CARD'S OWN HOST is wide
+   enough for it: 960 px = 616 px of paper + 24 gap + 320 rail. At #/card and #/run a 1024 px
+   viewport gives the host 992 px, so the spec's 1024 px viewport breakpoint is preserved exactly —
+   but a card hosted in a 680 px column (onboarding's placement, the step-2 sandbox) now correctly
+   stays one column instead of laying out 1024 px of tracks inside 680 and collapsing the paper's
+   text track to 0 px. The content track carries a floor for the same reason (never `minmax(0, …)`). */
+@container cardhost (min-width: 960px) {
   .card-screen {
-    grid-template-columns: minmax(0, var(--col)) var(--rail);
+    grid-template-columns: minmax(min(100%, 30ch), var(--col)) var(--rail);
     grid-template-areas: "head side" "stage side" "parts side" "foot side" "result side" "solution side" "sandbox side";
     column-gap: 24px;
     align-items: start;
   }
-  .card-screen > .card-side { position: sticky; top: calc(var(--header-h) + 16px); }
+  .card-screen > .card-side { position: sticky; top: calc(var(--stack-top) + 16px); }   /* LAYOUT-ROOT */
 }
 
 /* ---- head: back, sheet/number, tier, skills, rarity so far, HP pips ---- */
@@ -580,7 +598,9 @@ body:has(.sw-pill:not([hidden])) .set-msg { top: calc(var(--header-h) + 64px); }
   max-height: 320px;                     /* ≤ 480: the figure never exceeds 320 px tall (S5) */
 }
 .card-figure .fig { width: 100%; height: 100%; max-height: 320px; }
-@media (min-width: 640px) { .card-figure { max-width: 460px; } }
+/* LAYOUT-ROOT: keyed to the PAPER's own width (the `paper` container is .card-stage), not the
+   viewport — the figure must not be sized for a 1900 px screen when it sits in a 336 px paper. */
+@container paper (min-width: 600px) { .card-figure { max-width: 460px; } }
 .card-figure[hidden] { display: none; }
 
 /* ---- Scratch + hint ladder (below the stem on a phone, the right rail ≥ 1024) ---- */
@@ -869,11 +889,11 @@ body:has(.sw-pill:not([hidden])) .set-msg { top: calc(var(--header-h) + 64px); }
 .sum-plan p { margin: 0; }
 .sum-plan .chip { margin-left: 8px; }
 
-@media (min-width: 560px) {
+/* LAYOUT-ROOT: the Summary reads the RUN SCREEN's own width (container `run`), and the skill-name
+   track has a floor (14ch) so the bar shrinks before the name does. */
+@container run (min-width: 560px) {
   .sum-stats { grid-template-columns: auto minmax(0, 1fr); gap: 24px; }
-}
-@media (min-width: 560px) {
-  .sum-bar { grid-template-columns: minmax(0, 1fr) 180px 34px 36px; grid-template-areas: "name track n delta"; }
+  .sum-bar { grid-template-columns: minmax(14ch, 1fr) minmax(0, 180px) 34px 36px; grid-template-areas: "name track n delta"; }
   .sum-bar-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 }
 /* === /T16 === */
@@ -1161,9 +1181,14 @@ body:has(.sw-pill:not([hidden])) .set-msg { top: calc(var(--header-h) + 64px); }
   .mock-map[data-open="true"] { transform: translateY(0); }
   .mock-map-handle { display: block; width: 40px; height: 4px; border-radius: 2px; background: var(--line); margin: 0 auto 10px; }
 }
+/* LAYOUT-ROOT: this one stays @media on purpose — .mock-main hosts the question map, which is
+   `position: fixed` below 1024 px, and an inline-size container would become its containing block
+   and glue the sheet to the column instead of the viewport. The Mock is only ever the top-level
+   child of #view, so #view's width IS a viewport-derived width here and @media is the honest rule.
+   The floor on the text track is the part that was missing (notes/LAYOUT-ROOT.md §exceptions). */
 @media (min-width: 1024px) {
-  .mock-main { grid-template-columns: minmax(0, var(--col)) var(--rail); gap: 24px; align-items: start; }
-  .mock-main > .rail { position: sticky; top: calc(var(--header-h) + 72px); }
+  .mock-main { grid-template-columns: minmax(min(100%, 30ch), var(--col)) var(--rail); gap: 24px; align-items: start; }
+  .mock-main > .rail { position: sticky; top: calc(var(--stack-top) + 16px); }   /* LAYOUT-ROOT: was header + 72 */
   .mock-mapbtn { display: none; }
   .mock-sheet-backdrop { display: none; }
 }
@@ -1202,7 +1227,7 @@ body:has(.sw-pill:not([hidden])) .set-msg { top: calc(var(--header-h) + 64px); }
 .report-readiness { margin: 0; }
 .report-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .report-actions .btn { min-height: var(--tap); flex: 1 1 100%; font-weight: 650; }
-@media (min-width: 520px) { .report-actions .btn { flex: 1 1 160px; } }
+@container report (min-width: 520px) { .report-actions .btn { flex: 1 1 160px; } }   /* LAYOUT-ROOT */
 .report-clean { margin: 0; flex: 1 1 100%; color: var(--ok); font-weight: 650; }
 .report-h { font-size: var(--fs-2); color: var(--muted); font-weight: 650; margin: 0; text-align: left; }
 .report-empty { display: grid; gap: 8px; }
@@ -1261,8 +1286,8 @@ body:has(.sw-pill:not([hidden])) .set-msg { top: calc(var(--header-h) + 64px); }
 .report-step-m { display: block; font-family: var(--font-mono); color: var(--accent-ink); }
 .report-src { margin: 0; }
 .report-src-a { color: var(--accent-ink); }
-@media (min-width: 720px) {
-  .report-split { grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: 16px; }
+@container report (min-width: 720px) {   /* LAYOUT-ROOT: the report's own width, with floors on both text tracks */
+  .report-split { grid-template-columns: minmax(18ch, 1fr) minmax(18ch, 1.2fr); gap: 16px; }
 }
 
 .report-inline { display: grid; gap: 12px; }
@@ -1436,7 +1461,7 @@ body:has(.sw-pill:not([hidden])) .set-msg { top: calc(var(--header-h) + 64px); }
 .sh-personal .sh-sec-head { border-bottom-color: var(--accent); }
 .sh-foot { margin: 0; }
 @media (min-width: 760px) {
-  .sh-fixed { grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 24px; align-items: start; }
+  .sh-fixed { grid-template-columns: repeat(2, minmax(min(100%, 20ch), 1fr)); column-gap: 24px; align-items: start; }   /* LAYOUT-ROOT floor */
 }
 
 /* ---- print: one page, no chrome (S7 "printable via @media print") ---- */

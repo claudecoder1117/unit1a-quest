@@ -32,6 +32,25 @@
   --almost: #B8650A;
   --violet: #6B4FD8;      /* combo >= 10 (S4) */
 
+  /* FILL vs INK (S5). The semantic tokens above are FILL colours: bars, rings, strokes, borders,
+     tints — they only owe 3:1. NONE of them is text-grade on a light surface: measured on
+     --surface2 #EEF2F9 (the worst light ground an app surface actually uses) they are
+     gold 3.82, ok 3.89, bad 4.22, warn 4.03, plat 3.61, silver 3.12, bronze 4.10 — all under the
+     4.5:1 S5 asks of text. So every one of them has an -ink partner, and THE INK IS THE ONLY ONE
+     THAT MAY BE A `color:`. Each -ink below is >= 4.9:1 on every light ground in the app
+     (--surface, --bg, --paper, --surface2 and the 12–14 % gold/platinum rarity tints).
+     In dark mode the fills already measure 4.2–12:1 on the dark grounds, so -ink aliases the fill —
+     except --bronze-ink, the one dark fill that misses (#B87333 = 4.20 on --surface2). */
+  --gold-ink: #8A5C00;
+  --ok-ink: #12744A;
+  --bad-ink: #C4203D;
+  --warn-ink: #9A5208;
+  --almost-ink: #9A5208;
+  --plat-ink: #23678A;
+  --silver-ink: #5E6978;
+  --bronze-ink: #8A4F1C;
+  --violet-ink: #5B3FC4;
+
   /* figures: strokes re-theme via currentColor; arcs/expression labels >= 4.5:1 on --paper */
   --fig-line: currentColor;
   --fig-angle: #8A5C00;
@@ -53,6 +72,11 @@
 
   /* layout (8 px grid) */
   --header-h: 56px;
+  /* LAYOUT-ROOT: the bottom edge of every sticky band above the content. The app header owns 56 px;
+     a screen that adds its OWN sticky band (a run head, the Boss head, the Mock bar) raises this in
+     polish.css, and anything that sticks INSIDE the content (the card's rail, Home's skills rail)
+     parks below it instead of under it. Measured heads: notes/LAYOUT-ROOT.md. */
+  --stack-top: 56px;
   --col: 680px;
   --rail: 320px;
   --gutter: 16px;
@@ -95,6 +119,16 @@
     --bronze: #B87333;
     --silver: #C0C7CE;
     --plat: #9AD7F5;
+    /* ink = fill in dark mode; only bronze needs lifting (see the light block) */
+    --gold-ink: #FFC542;
+    --ok-ink: #3DD68C;
+    --bad-ink: #FF5C7A;
+    --warn-ink: #FFB454;
+    --almost-ink: #FFB454;
+    --plat-ink: #9AD7F5;
+    --silver-ink: #C0C7CE;
+    --bronze-ink: #CE8C4A;
+    --violet-ink: #B39DFF;
     --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px rgba(0, 0, 0, .35);
   }
 }
@@ -123,6 +157,16 @@
   --bronze: #B87333;
   --silver: #C0C7CE;
   --plat: #9AD7F5;
+  /* ink = fill in dark mode; only bronze needs lifting (see the light block) */
+  --gold-ink: #FFC542;
+  --ok-ink: #3DD68C;
+  --bad-ink: #FF5C7A;
+  --warn-ink: #FFB454;
+  --almost-ink: #FFB454;
+  --plat-ink: #9AD7F5;
+  --silver-ink: #C0C7CE;
+  --bronze-ink: #CE8C4A;
+  --violet-ink: #B39DFF;
   --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px rgba(0, 0, 0, .35);
 }
 /* === /T01 === */

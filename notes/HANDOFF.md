@@ -1,52 +1,64 @@
-# HANDOFF — 2026-09-17 ~14:15 (fix5 pass integrated, half day)
+# HANDOFF — 2026-09-18 ~05:40 (layout pass closed out, build 2026-09-17e)
 
 ## State
-- Live: https://claudecoder1117.github.io/unit1a-quest/ (Pages via Actions deploys `site/` on every push to main; CI runs `node --test` first).
-- Local commit "Fix the five S9 rough edges…" on main. **NOT pushed.** Push when ready, and the site deploys v2026-09-17d.
-- `node --test` → 1293 tests, 1289 pass, 0 fail, 4 skipped. Precache list is current (116 files) and `tests/sw.test.mjs` passes.
-- `notes/S9-SCORECARD.md` "What a student will notice first": all five marked FIXED, each with an evidence path.
+- Live: https://claudecoder1117.github.io/unit1a-quest/ (Pages via Actions deploys `site/` on every push to main).
+- Local commit "Container-driven layout: fix collapsed question text at desktop width, add a full-matrix layout auditor"
+  on main. **NOT pushed.** Push when ready and the site deploys **v2026-09-17e**.
+- `node --test` → **1350 tests, 1346 pass, 0 fail, 4 skipped** (108 s).
+- `npm run audit` (the new full layout matrix) → **0 findings, 0 waived**; 95 states × 17 viewports × light/dark ×
+  chromium+webkit, plus a text-zoom and an animations pass ≈ **7 220 measured screens**, 1331 s. Re-run with the
+  allow-list emptied: also 0.
+- Precache list current (116 files), `node qa/gen-precache.mjs --check` clean.
 
-## What the fix5 pass did (lane notes: notes/FIX5-home.md, FIX5-gen.md, FIX5-run.md)
-1. Readiness dip (home lane, 3 rounds, plus integrator). Clean first-try answers never lower provisional R or M%, and "just started"
-   skills are grey, never weak. Skill records gain `misses` / `helped`. Provisional M counts missed or hinted skills, plus any
-   other skill only where it raises M, with a 30-weight-point floor.
-2. Placement item 1 figure (gen lane). T-notation v2 draws a mini figure. The figure engine gained optional `poly` fields; none of
-   the shipped figures change.
-3. Page fold on 375×667 (run lane). One-row run head, compact card chrome on short phones, and a `revealAnswer` lift.
-4. Summary family tiles (run lane). Two-column family tile, the ladder line, and a legend.
-5. Home Mock shown twice, and lore module names (home lane).
+## What this run of tickets did — read `notes/LAYOUT-PERFECT.md` first
+The student opened the live site in Safari at 1900×1200 and the PLACEMENT question rendered **one letter per line**,
+with the run header, chips and Scratch heading piled on each other.
 
-## Integrator fixes (critic home r3 failures, fixed at merge)
-- BLOCKER: a wrong optional setup followed by a GOLD clear dropped R 57 → 50 and listed FIG-ALG as weak. Now
-  `readiness.saveEvidence` skips errors[] rows with `part === 'setup'`. The critic's second suggestion was to apply
-  saveEvidence only to legacy records. That was NOT done: Home's `decayAll`/`freshSkill` stamps `misses` on every record the
-  first time the app opens, so the change would silently drop evidence from older saves.
-- Double decay (pre-existing, found while fixing the idle critique). `schedule.decaySkills` (`decay` ledger) and
-  `mastery.decaySkill` (`decayDays`) each charged the same idle days (80 → 74 on Home → 68 on the next answer). Both now read
-  and write both fields, and `onboard.writeSkill` resets `decayDays`.
-- Idle decay was charged inside a clean answer. `app.js chargeOwedDecay()` now runs schedule housekeeping at boot, and once per
-  calendar day on route, before the screen mounts.
-- M6 module renamed "Diagram Algebra" (it was "Figure Algebra") to match the skill name.
-- saveEvidence also reads the packed history form, so raw-localStorage QA reads match getState.
-- polish.css `fix5:integrate r1`: on short portrait phones only notation-builder cards keep the 150 px figure cap
-  (ang-10's labels were ≈ 7.5 px).
-- card.js `revealAnswer` now measures below any sticky head, not only the app bar. Before, placement item 1's chip row was cut
-  in half under the Placement head.
-- `qa/s9-walk.mjs walk` crashed at Mock item 1 (armCard waited for `.card-parts`). It now also accepts `.mock-parts`, and the
-  full walk runs clean: 0 console errors, 0 overflow.
-- Tests: `tests/fix5-integrate.test.mjs` (8). The (a) property in `tests/fix5-home.test.mjs` now adds optional-setup error noise.
+1. **LAYOUT-ROOT** — the root cause and the fix. Every responsive rule was keyed to the **viewport**, but the card
+   engine is mounted in seven hosts whose widths have nothing to do with the viewport (`#/card`, a run, onboarding's
+   placement, a boss, the night mini-mock, the step-2 sandbox, the report retry). At 1900 px the placement's
+   680 px host was laying out `minmax(0, 680px) + 320px` = 1024 px of tracks, the paper got 336 px, and the stem
+   track resolved to **0 px**. The app had **no container queries at all**; Wave 5 had patched exactly one host,
+   which is why `#/run/page` looked fine. Now: `.card-host` and six more query containers, every text track has a
+   `ch` floor (`minmax(0, …)` and bare `1fr` are banned on a column that holds words), and one `--stack-top` token
+   owns the sticky stack. Conventions + the checklist for the next responsive rule: `notes/LAYOUT-ROOT.md`.
+2. **AUDIT-HARNESS / AUDIT-STATES / TRIAGE** — the safety net, because `node --test` cannot see a layout defect.
+   `qa/layout-audit.mjs` + `qa/audit-states.mjs`: 11 detectors, 95 states, both engines. The first sweep returned
+   6 703 findings, **~85 % of them the auditor's own two bugs** (ink measured through a clip; every deliberate
+   line-clamp read as an accident). Fixed, it left **16 real defects**. `notes/AUDIT.md` is the detector reference.
+3. **Six B-lanes** (`notes/FIX-B1…B6`, `FIX-home`, `FIX-mock`, `FIX-stats-r2`, `FIX-boss-miss-dock`, `FIX-qa`) —
+   cleared all 16, header blockers first.
+4. **FINAL** (this note's ticket) — re-ran both gates, re-measured the student's case by hand, read one full
+   desktop session, found and fixed the **last mid-word break**, and wired the audit up as a guard.
 
-## Spec deviations for COMPOSED S10 changelog (not yet written into COMPOSED.md)
-- S4 provisional M: M = max over S ⊇ {missed or hinted skills} of Σ_S w·m_shown/100 ÷ max(Σ_S w, 30). S7 Weak spots needs a miss or
-  hint. S6 `skills[id]` gains `misses`, `helped`, and a shared decay ledger (`decayDays` and `decay`). Placement/JUMP writes use
-  m = max(earned m, 80).
+## The FINAL ticket's own change
+`Always/Sometimes/Never: …` (2 of the 19 skill names) is a 23-character run with no space in it. Home's Skills rail
+gives the name a definite 170 px column, and **CSS cannot break after a slash**, so `overflow-wrap: anywhere`'s
+last-resort break landed mid-word: **"Always/Sometimes/Neve" / "r: Points, Lines, Planes"**, every desktop width,
+both engines. No detector can see a bad *break* (the box is the size it should be), so the measurement was added
+(`qa/final-names.mjs`, character-by-character line reconstruction) and the fix is a real break opportunity:
+`softWrap()` in `app.js` puts a **`<wbr>`** after each `/`. `<wbr>` adds no character, so `textContent`, ARIA names
+and copy-paste are byte-identical. Call sites: `home.js` (`.skill-name`, `.weak-name`), `stats.js`
+(`.st-skill-name`), `report.js` (`.report-sk-n`). The CSS `overflow-wrap: anywhere` stays underneath as the floor.
 
-## Still open
-- Page item 1 (notation, shipped figure) carries hidden `fig-wedge-hit` rects that are 34 px tall under the 150 px cap. They are
-  not tap targets on a notation card, but the probe flags them.
-- An answer that crosses local midnight inside one open screen can still charge that day's decay in the answer's save. Boot and
-  route housekeeping cover every other path.
-- A legacy miss on a Variant of a generator-only skill has no card id, so saveEvidence cannot see it (FIX5-home r3 known limit).
-- The first Mock's switch from provisional to locked can lower the number (S4 allows this). The Mock report should say
-  "Readiness now uses the full formula".
-- Also open from before: cold-boot budgets (3G paint 2.8 s vs 2.5), Lighthouse not run, sound never heard.
+## The guard (do this before you push)
+```sh
+node --test tests/     # fast, and it cannot see layout
+npm run audit          # ~22 min, both engines — READ what it prints
+```
+`npm run audit:fast` / `npm run audit:selftest` are the loop-sized versions. README has the section; CI runs the
+auditor's **self-test** with a real browser and blocks the deploy if the detectors have rotted (the full matrix is
+deliberately not in CI). Waivers live in `qa/audit-allow.json`, every entry needs a reason, and both current
+entries are **dormant** — proven by re-running the matrix with the file emptied.
+
+## Still open (nothing layout, nothing a student meets as breakage)
+- `qa/r2-home-pins.mjs cold` misses its own budgets (3G paint 2.8 s vs 2.5; returning-visit CTA 1.08 s vs 1 s) — T10 §r2.
+- Lighthouse mobile ≥ 95/95 never run. Sound never heard (quiet hours).
+- `widgets.css`'s two viewport-keyed rules are neutralised by `@container answers`, not yet folded in — LAYOUT-ROOT §6.
+- `.mock-dialog` / `.mock-map` must move to `<body>` before the Mock can be a query container — LAYOUT-ROOT §6.
+- An answer that crosses local midnight inside one open screen can still charge that day's decay in the answer's save.
+- A legacy miss on a Variant of a generator-only skill has no card id, so `saveEvidence` cannot see it (FIX5-home r3).
+- The first Mock's switch from provisional to locked Readiness can lower the number (S4 allows it); the report should
+  say "Readiness now uses the full formula".
+- Judgement calls deliberately left as they are (desktop column alignment, the Summary's table gap, the Binder's
+  scrolling tab strip, `.card-dock-hint`) are each written up with their reason in `notes/LAYOUT-PERFECT.md` §5.

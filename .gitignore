@@ -14,3 +14,8 @@ qa/node_modules/
 
 # fixer / integrator scratch shots (QA PNGs) — never part of the artifact
 scratchpad/
+
+# layout-audit output (AUDIT-HARNESS). The self-test PAGES stay committed — they are the calibration
+# target — but the report and its evidence PNGs are regenerated on every run.
+qa/audit/png/
+qa/audit/*.json

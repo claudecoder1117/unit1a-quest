@@ -90,6 +90,32 @@ student meets in the first ten minutes.
    `s9/p-08-home.png` the CTA is RUN NEXT, so the link stays). Module names contain no lore
    (`qa/screenshots/s9/p-07-place-summary.png`), and M6 is now "Diagram Algebra" to match the skill name.
 
+## Sixth rough edge, found by the student on the live site — fixed in v2026-09-17e
+
+6. **"the question is going vertical and is hard to read."** Safari, ~1900×1200, `#/onboard?step=3`,
+   PLACEMENT item 1: the question printed **one letter per line**, with the run header, the card chips and the
+   Scratch heading piled on each other. It is the one defect this scorecard's method could not have caught —
+   the S9 walk ran at 375×667 and re-shot at 1280×800, and the bug needed a card hosted at **680 px inside a
+   ≥ 1024 px viewport**, which only onboarding's placement does.
+   **FIXED (LAYOUT-ROOT, then TRIAGE + six B-lanes, closed out by FINAL).** Root cause: every responsive rule
+   was keyed to the viewport while the card engine is mounted in seven hosts of unrelated width, and every text
+   track had a 0 px floor; the app had **no container queries at all**. Now the card reads its own host
+   (`.card-host` + six more containers) and no column that holds words may collapse. The placement's stem
+   measures **314 px = 30.6 ch on 3 lines**, identical at 1280×800, 1900×1200 and 2560×1440 in webkit
+   (`qa/screenshots/final/place-item1-*.png`, read by eye). Full write-ups: `notes/LAYOUT-ROOT.md` (cause +
+   conventions), `notes/AUDIT.md` (the new auditor), `notes/LAYOUT-PERFECT.md` (the final gate).
+
+**New gate, because this scorecard's method missed #6.** `npm run audit` measures **95 screen states × 17
+viewports × light/dark × chromium + webkit**, plus a text-zoom and an animations pass — ≈ **7 220 screens** —
+and fails on a blocker or major. Final run: **0 findings, 0 waived**, and 0 again with the allow-list emptied.
+Its 11 detectors are calibrated against nine deliberately planted defects (`qa/audit/selftest.html`) and a
+clean control that must stay silent; CI runs that self-test with a real browser and blocks the deploy if it
+rots. `node --test`: **1350 tests, 1346 pass, 0 fail, 4 skipped**.
+
+Two S9 caveats above are also now closed by measurement rather than argument: **#9's wedge height** (the 42 px
+wedges) was fixed by lane B3 to the 44 px rule, and **the tap-target waiver on the header T−N chip** that
+`notes/AUDIT-TRIAGE.md` left open is dormant — the chip passes on its own (`notes/LAYOUT-PERFECT.md` §5).
+
 ## Not scored / left to the next pass
 
 * `node qa/r2-home-pins.mjs cold` still fails its own budgets (3G paint 2.8 s vs 2.5; returning-visit CTA

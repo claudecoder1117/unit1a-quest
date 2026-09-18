@@ -60,6 +60,50 @@ jobs:
           if [ "$fail" != "0" ]; then echo "::error::$fail failing tests"; exit 1; fi
           if [ "$pass" -lt 1000 ]; then echo "::error::only $pass tests ran; the suite is ~1140 — discovery is broken"; exit 1; fi
 
+  # The layout net's own calibration (ticket FINAL, see notes/AUDIT.md + notes/LAYOUT-PERFECT.md).
+  #
+  # `node --test` shipped the bug that made a student call the app garbage: 1293 green tests while the
+  # placement question rendered one letter per line in Safari. The gate against that class of defect is
+  # `npm run audit` — 95 states x 17 viewports x 2 themes x 2 engines. That is tens of minutes, so it is
+  # DELIBERATELY NOT IN CI; it is a pre-push command a human runs and reads (README "Layout audit").
+  #
+  # What IS in CI is the auditor's self-test: eight deliberately broken elements on
+  # qa/audit/selftest.html that every detector must still catch, plus a clean control page that must stay
+  # silent. It takes seconds. `tests/layout-audit.test.mjs` runs it inside `node --test` too, but it
+  # SKIPS when no browser binary is present — which is every fresh CI runner, so without this job the
+  # guard is green-by-skip and detector rot ships unnoticed. That is exactly how the original bug got out.
+  audit-selftest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # qa/ is the dev-only Playwright island (its own package.json; qa/node_modules is git-ignored).
+      # chromium alone: webkit is what the STUDENT uses and the full matrix always sweeps it, but the
+      # self-test only has to prove the detectors are calibrated, and both engines agree on the plants.
+      - name: install the qa Playwright island (chromium only)
+        working-directory: qa
+        run: |
+          npm ci --no-audit --no-fund || npm install --no-audit --no-fund
+          npx playwright install --with-deps chromium
+
+      - name: the detectors still catch their own planted defects
+        run: npm run audit:selftest
+
+      # A skip here is not a pass: the browser is installed above, so the in-suite test must have RUN.
+      - name: and the in-suite guard actually ran (a skipped guard is not a guard)
+        run: |
+          set -o pipefail
+          node --test tests/layout-audit.test.mjs 2>&1 | tee selftest-output.txt
+          if grep -qE '^(ℹ|#) skipped 1' selftest-output.txt; then
+            echo "::error::tests/layout-audit.test.mjs skipped itself despite an installed chromium"; exit 1
+          fi
+          grep -qE '^(ℹ|#) pass 1' selftest-output.txt \
+            || { echo "::error::the layout-audit self-test did not report a pass"; exit 1; }
+
   # BUILD-POLICY §1: nothing the school or Kuta owns may ever reach the published artifact.
   # This is not a lint — it is the publication policy, enforced on the exact folder that gets uploaded.
   artifact-policy:
@@ -84,8 +128,12 @@ jobs:
           if [ -n "$leaked" ]; then echo "::error::git-ignored, unpublishable paths are tracked:"; echo "$leaked"; exit 1; fi
 
   deploy:
-    # THE GATE: a red test (on either Node) or a policy violation stops the deploy.
-    needs: [test, artifact-policy]
+    # THE GATE: a red test (on either Node), a blind layout auditor, or a policy violation stops the deploy.
+    # audit-selftest is in here on purpose even though it guards a dev tool rather than the artifact: a net
+    # whose failure blocks nothing is a decoration, and a blind net is how the one-letter-per-line bug
+    # reached the student. If it ever goes red on an install flake, re-run the job; if it goes red on a
+    # DETECTOR, do not route around it — `npm run audit` cannot be trusted until it is fixed.
+    needs: [test, audit-selftest, artifact-policy]
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 10

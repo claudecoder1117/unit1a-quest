@@ -225,9 +225,22 @@ test('fix5:gen — registry: T-notation is templateVersion 2 (frozen v1 Variants
 });
 
 test('fix5:gen — engine additions are additive: shipped figures render byte-identically', () => {
-  // hashes of renderModel(resolve(fig)) taken from the pre-fix5 engine (git HEAD 2a6473d)
-  const PINNED = { F1: 3716098328355016, F2: 3189115956126985, D5: 6272278498943874, D7: 129767291472064, AH: 1607330075836753 };
-  for (const [k, f] of Object.entries(figures)) assert.equal(cyrb53(renderModel(resolve(f, {}))), PINNED[k], `${k} render changed`);
+  // hashes of renderModel(resolve(fig)) taken from the pre-fix5 engine (git HEAD 2a6473d).
+  // fix:B3 re-pinned PINNED on purpose: the wedge HIT path `d` is now solved per wedge (svg.js
+  // hitRegion) so every angle clears 44 px at the narrowest width the app hosts a figure at. That is
+  // the ONLY byte that moved — DRAWN below hashes the same render with every `.fig-wedge-hit` d
+  // attribute deleted, and restoring the old chord-rule hit paths reproduces the old PINNED hashes
+  // exactly (F1 3716098328355016, D5 6272278498943874, D7 129767291472064, AH 1607330075836753), so
+  // DRAWN is unchanged across the two engines and still guards the drawing byte for byte.
+  const PINNED = { F1: 2514740568436452, F2: 3189115956126985, D5: 8062558523076200, D7: 6895890701291192, AH: 5637006910134116 };
+  const DRAWN = { F1: 5344008596219835, F2: 3189115956126985, D5: 5198328228572873, D7: 2445588097790338, AH: 1464030235533859 };
+  // \s before d= on purpose: aria-pressed="false" ends in d="…" and a lazy match would eat that instead
+  const strip = (svg) => svg.replace(/(<path class="fig-wedge-hit"[^>]*?)\sd="[^"]*"/g, '$1');
+  for (const [k, f] of Object.entries(figures)) {
+    const svg = renderModel(resolve(f, {}));
+    assert.equal(cyrb53(strip(svg)), DRAWN[k], `${k} DRAWING changed (not just the wedge hit path)`);
+    assert.equal(cyrb53(svg), PINNED[k], `${k} render changed`);
+  }
 });
 
 test('fix5:gen — poly optional fields: validate catches bad values; arrows draw rays and lines', () => {

@@ -10,7 +10,7 @@
 // Run records are read through the accessors in js/trophies.js (`kindOf`, `sheetOfRun`, `accuracyOf`,
 // `wonRun`, …) so this screen and the trophy predicates can never disagree about what a run says.
 
-import { h, setHeader } from '../app.js';
+import { h, setHeader, softWrap } from '../app.js';
 import { getState, subscribe } from '../store.js';
 import { todayISO, addDays } from '../days.js';
 import { readiness, skillStates } from '../readiness.js';
@@ -303,7 +303,7 @@ export function mountStats() {
       screen.append(section('st-skills', 'Skills',
         h('p.fs-1.muted', 'Shown mastery is held back until five attempts, so two lucky clears never read green. Grey means untested.'),
         h('ul.st-skills', sr.map(s => h('li', { dataset: { untested: String(s.untested), mastered: String(s.mastered), weak: String(s.weak) } },
-          h('span.st-skill-name', s.name),
+          h('span.st-skill-name', ...softWrap(s.name)),   // ticket FINAL: break after '/', never inside "Never"
           h('span.st-bar-track', h('span.st-bar-fill', { style: { width: `${s.mShown}%` } })),
           h('span.st-bar-val.mono', s.untested ? '—' : n0(s.mShown)),
           h('span.st-skill-meta.muted.fs-1', s.untested ? 'untested' : `n=${s.n}${s.mastered ? ' · mastered' : ''}${s.placed ? ' · placed' : ''} · w${s.w}`),

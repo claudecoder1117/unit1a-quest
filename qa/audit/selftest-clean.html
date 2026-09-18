@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>layout-audit self-test — CLEAN CONTROL</title>
+<style>
+  /* The control page. qa/layout-audit.mjs --selftest must report ZERO findings here at 320x568.
+     A detector that fires on this page is producing false positives and must be tightened
+     (never by making it blind: tighten the rule, keep the planted defect in selftest.html caught). */
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 12px; background: #ffffff; color: #111418;
+         font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  h1 { font-size: 20px; margin: 0 0 10px; }
+  p { margin: 0 0 12px; }
+  .grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; margin-bottom: 12px; }
+  .cell { background: #eef1f6; color: #111418; padding: 10px; border-radius: 8px; }
+  button, a.btn { display: inline-flex; align-items: center; justify-content: center;
+                  min-width: 120px; min-height: 48px; padding: 10px 16px; border-radius: 10px;
+                  border: 1px solid #111418; background: #ffffff; color: #111418;
+                  font: inherit; text-decoration: none; }
+  .row { display: flex; flex-wrap: wrap; gap: 10px; }
+  /* NEGATIVE CONTROL for the tap-target detector's pseudo-element handling (ticket fix:qa r2).
+     A 32px pill whose 44px hit area really is there: the ::before extension is painted, because
+     nothing in its containing-block chain clips it. The detector must stay silent here — the planted
+     twin on selftest.html is the same pill with `overflow: hidden`, where the extension is clipped
+     away. Together they pin both directions, so neither "trust the CSS" nor "ignore pseudo-elements"
+     can pass the self-test. */
+  .pill { position: relative; display: inline-flex; align-items: center; height: 32px;
+          min-height: 0; min-width: 0;          /* the point of the control is that the BOX is 32px */
+          padding: 0 14px; border-radius: 16px; border: 1px solid #111418;
+          background: #ffffff; color: #111418; font: inherit; }
+  .pill::before { content: ""; position: absolute; inset: -6px; }   /* 32 + 6 + 6 = 44 */
+  /* NEGATIVE CONTROL for the padding-edge clip box (ticket fix:boss-miss-dock): the FIXED form of the
+     Boss dock's miss strip. Same one-row strip, same `overflow: hidden`, same 44px border box — but the
+     strip spends nothing on block padding or hairlines, so its CONTENT box is the whole 44px, and the
+     link is a real 44px box instead of a hatch that depends on a clip. The planted twin
+     (#plant-hairline-hit) is this strip with a 1px border-block and a 19px link inside it, where the
+     hit area is 42. Together they pin both directions: a detector that credits the border box misses
+     the plant, and one that assumes every clipper steals 44px fires here. */
+  #ctl-hairline-strip { width: 150px; min-height: 44px; padding: 0 10px; overflow: hidden;
+                        border: 1px solid #111418; border-left-width: 3px; border-block-width: 0;
+                        display: flex; align-items: center; background: #ffffff; }
+  #ctl-hairline { height: 44px; min-height: 44px; min-width: 44px; padding: 0 4px; border: 0;
+                  border-radius: 0; background: none; color: #111418; font: inherit; }
+</style>
+</head>
+<body>
+  <h1>Clean control page</h1>
+  <p>This page is laid out the way the app is supposed to be: nothing collapses, nothing
+     overlaps, nothing overflows the document, and every control is comfortably tappable.</p>
+  <div class="grid">
+    <div class="cell">Left column holds readable text at a sane width.</div>
+    <div class="cell">Right column holds readable text at a sane width.</div>
+  </div>
+  <div class="row">
+    <button type="button">Check answer</button>
+    <a class="btn" href="#stay">Back to page</a>
+    <button id="ctl-pill" class="pill" type="button">Angles</button>
+  </div>
+  <!-- Empty for the same reason as the planted twin: the thing under test is the HIT AREA. -->
+  <div id="ctl-hairline-strip">
+    <button id="ctl-hairline" type="button" aria-label="Drill 5"></button>
+  </div>
+</body>
+</html>

@@ -12,7 +12,7 @@
 // The report is a pure read of the run record plus the card / generator the item came from — grading
 // already happened at submit (mock.js `submitRun`), so nothing here writes a score.
 
-import { navigate } from '../app.js';
+import { navigate, softWrap } from '../app.js';
 import { getState, flush } from '../store.js';
 import { h } from '../widgets/base.js';
 import { mathfmt } from '../mathfmt.js';
@@ -62,7 +62,10 @@ export function bandOf(score) {
 export function sourceLine(item) {
   if (item.source === 'card' && item.cardId) {
     const card = getCard(item.cardId);
-    const no = numbering(item.cardId);
+    // The teacher's numbering carries its own punctuation — "18." on the ASN sheet, "10)" on the
+    // angle sheets — which is right on the card's own chip and wrong inside a sentence: it printed
+    // "This was ASN 18. from the packet." (fix:B5, seen while reading the report screenshots).
+    const no = numbering(item.cardId).replace(/[.)]+$/, '');
     const sheet = card?.sheet ? `${card.sheet}${no ? ` ${no}` : ''}` : item.cardId;
     return { text: `This was ${sheet} from the packet.`, href: `#/card/${item.cardId}`, label: 'Open the card' };
   }
@@ -180,7 +183,7 @@ export function createReportView(host, opts = {}) {
     const tb = h('tbody');
     for (const r of rows) {
       tb.append(h('tr', { dataset: { s: r.pct >= 100 ? 'ok' : r.pct >= 50 ? 'part' : 'bad' } },
-        h('th', { scope: 'row' }, h('span.report-sk-n', r.name), h('span.report-sk-i.muted.fs-1', `${r.items} item${r.items === 1 ? '' : 's'}`)),
+        h('th', { scope: 'row' }, h('span.report-sk-n', ...softWrap(r.name)), h('span.report-sk-i.muted.fs-1', `${r.items} item${r.items === 1 ? '' : 's'}`)),
         h('td.mono.report-col-p', `${r.points} / ${r.max}`),
         h('td.report-pct', h('span.report-pct-in', h('span.report-bar', { style: `--p:${r.pct}%` }), h('span.mono', `${r.pct}%`)))));
     }
@@ -277,8 +280,14 @@ export function createReportView(host, opts = {}) {
 
     const src = sourceLine({ ...item, forCard: built.raw.forCard ?? (built.raw.forCards || [])[0] ?? null });
     if (src.text) {
-      box.append(h('p.report-src.muted.fs-1', src.text, src.href ? ' ' : null,
-        src.href ? h('a.report-src-a', { href: src.href }, src.label) : null));
+      // "Open the card" / "Play it again" is a navigation ACTION, not prose: as a bare inline <a> it
+      // measured 86 x 16 — a third of a 44 px tap target on the one screen you read on a phone with
+      // a thumb (fix:B5 #15). It is an outlined `.btn` chip now (44 px from --tap), on a row that
+      // wraps it under the sentence when the report column is narrow.
+      const line = h('p.report-src.muted.fs-1', src.text);
+      box.append(src.href
+        ? h('div.report-srcrow', line, h('a.btn.report-src-a', { href: src.href }, src.label))
+        : line);
     }
   }
 

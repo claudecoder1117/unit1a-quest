@@ -80,11 +80,21 @@ h3, .fs-3 { font-size: var(--fs-3); line-height: 1.35; font-weight: 650; }
 @media (min-width: 1024px) {
   .hdr-inner, #view, #dock .dock-inner, #banner .banner-inner { max-width: calc(var(--col) + 24px + var(--rail)); }
 }
-.hdr-inner { height: 100%; display: flex; align-items: center; gap: 8px; }
+/* fix:B1 — the header lays itself out from its OWN width, not the window's (notes/LAYOUT-ROOT.md §
+   "@container or @media?"). It is 2×--gutter narrower than the viewport on every phone and --col+24+--rail
+   capped on a wide one, and every rule below is about whether this row's own boxes still fit. A container
+   cannot query itself, so the gap between the two clusters lives on .hdr-right's margin (queryable) rather
+   than on .hdr-inner's own `gap` (not). Nothing position:fixed lives in the header, so the layout
+   containment `container-type` turns on is safe here (tests/layout-root.test.mjs pins that). */
+.hdr-inner {
+  height: 100%; display: flex; align-items: center; gap: 0;
+  container-type: inline-size;
+  container-name: hdr;
+}
 .hdr-left, .hdr-right { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .hdr-left { flex: 1 1 auto; }
 .hdr-home { display: inline-flex; align-items: center; color: inherit; text-decoration: none; border-radius: 50%; }
-.hdr-right { flex: 0 0 auto; justify-content: flex-end; }
+.hdr-right { flex: 0 0 auto; justify-content: flex-end; margin-inline-start: 8px; }
 
 /* readiness ring slot (compact, 36 px; the 88 px hero ring lives on Home) */
 .ring { position: relative; display: grid; place-items: center; flex: 0 0 auto; }
@@ -116,10 +126,34 @@ h3, .fs-3 { font-size: var(--fs-3); line-height: 1.35; font-weight: 650; }
 .chip[data-tone="accent"] { border-color: var(--accent); color: var(--accent-ink); }
 .chip[data-tone="bad"] { border-color: var(--bad); color: var(--bad); }
 .hdr-xp { font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: var(--fs-2); white-space: nowrap; }
-@media (max-width: 420px) {
-  .hdr-right { gap: 6px; }
+
+/* fix:B1 — the header's narrow-width behaviour, keyed to the header's own inline size.
+   The row is ONE item made of words (the T−N / "set test date" chip) plus six fixed-size pictograms and
+   a 44 px button. When it stops fitting the words must win, because they are the only thing here that
+   cannot be understood at a glance — so the read-outs shed, worst-value-first, and each one that goes
+   still says what it said:
+     ≤ 400  the combo multiplier goes (the pip's colour + the element's aria-label carry the tier)
+     ≤ 372  the streak count goes     (the protractor arc + its aria-label carry the days)
+     ≤ 342  the XP number goes VISUALLY only — screen-reader-only, so it is still announced, and the
+            level ring beside it still shows the same progress. Home's hero and #/stats print it in full.
+   The thresholds are the measured demand of the WIDEST state of the row plus ~7 px of headroom
+   ("after the test" + "12480 XP" + a two-digit streak); the arithmetic is in notes/FIX-B1.md. The chip
+   itself may still shrink to its 44 px tap floor as a last resort (polish.css fix:B1) — it ellipsizes
+   there rather than overflowing the shell, and the auditor still sees a < 60 px text box if it ever does. */
+@container hdr (max-width: 399.98px) {
+  .hdr-left, .hdr-right { gap: 6px; }
+  .hdr-right { margin-inline-start: 6px; }
   .hdr-xp { font-size: var(--fs-1); }
   .combo .combo-n { display: none; }        /* the pip's colour + aria-label carry the combo on phones */
+}
+@container hdr (max-width: 371.98px) {
+  .hdr-left, .hdr-right { gap: 4px; }
+  .hdr-right { margin-inline-start: 4px; }
+  .streak .streak-n { display: none; }      /* the arc's angle + aria-label carry the streak */
+}
+@container hdr (max-width: 341.98px) {
+  /* not display:none — the number stays in the accessibility tree, it just stops taking room */
+  .hdr-xp { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 }
 
 /* combo pip: dot, amber >= 5, violet >= 10 (S4) */
@@ -156,9 +190,13 @@ h3, .fs-3 { font-size: var(--fs-3); line-height: 1.35; font-weight: 650; }
 .screen { max-width: var(--col); }
 .with-rail { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
 .with-rail > .col { min-width: 0; max-width: var(--col); }
+/* LAYOUT-ROOT: `.with-rail` IS the screen root (Home, the Mock) — it is always the top-level child of
+   #view, whose width is viewport-derived, and a container cannot query itself, so this stays @media.
+   What was missing is the floor: `minmax(0, …)` let the content column collapse to nothing if the
+   shell ever narrowed. Anything that can be re-hosted uses @container instead (notes/LAYOUT-ROOT.md). */
 @media (min-width: 1024px) {
-  .with-rail { grid-template-columns: minmax(0, var(--col)) var(--rail); gap: 24px; align-items: start; }
-  .with-rail > .rail { position: sticky; top: calc(var(--header-h) + 16px); }
+  .with-rail { grid-template-columns: minmax(min(100%, 30ch), var(--col)) var(--rail); gap: 24px; align-items: start; }
+  .with-rail > .rail { position: sticky; top: calc(var(--stack-top) + 16px); }   /* LAYOUT-ROOT */
 }
 
 /* navigation: 24 px slide + fade 200 ms (transform/opacity only) */

@@ -392,17 +392,14 @@
 .nb-rep-count[data-counted="true"] { color: var(--ok-ink); }
 .bnd-hist-mark[data-ok="true"] { color: var(--ok-ink); }
 /* Stats: at phone width the error card's date + Rematch drop under the text instead of squeezing it into a
-   155 px column; ≥ 720 the skill meta ("n=5 · mastered · placed · w3") sizes to its content and never wraps. */
-@media (max-width: 719px) {
-  .st-errors li { flex-wrap: wrap; }
-  .st-err-main { flex: 1 1 100%; }
-  .st-err-side { flex: 1 1 100%; justify-content: space-between; }
-}
-@media (min-width: 720px) {
-  .st-skills li { grid-template-columns: minmax(0, 190px) minmax(0, 1fr) 46px 200px 64px; }   /* fixed meta + drill columns: every bar starts and ends on the same x */
-  .st-skill-meta { white-space: nowrap; }
-  .st-skill-drill { justify-self: end; }
-}
+   155 px column; wide, the skill meta ("n=5 · mastered · placed · w3") sizes to its content and never wraps.
+   FOLDED IN by `fix:stats r2` (this block's two `@media (min|max-width: 719/720px)` stats rules are gone):
+   every one of them now lives in §5c's `@container stats` branches, which LAYOUT-ROOT.md §6 asked this
+   block's owner to do at the next touch. Nothing was lost — §5c already declared the same `.st-errors`,
+   `.st-skill-meta` and `.st-skill-drill` rules in both directions, and its `.st-skills li` template keeps
+   the identical fixed 46 / 200 / 64 columns (so every bar still starts and ends on the same x) plus a 12ch
+   floor on the name that the @media copy lacked. The viewport rules were also actively wrong in the
+   672-719 px window, where the Stats column is 640-679 px: wide skill rows with stacked error cards. */
 /* === /binder r2 === */
 
 /* === card r2 === Card screen + widgets fix round 2 (findings: pairs verdict under the figure, compact
@@ -561,13 +558,9 @@
   .card-screen .w-nt-preview { min-height: 60px; margin-bottom: 8px; padding-block: 6px; }
 }
 
-/* ≥ 1024 (found while checking this lane for regressions, pre-existing since W4): base.css `.screen { max-width:
-   var(--col) }` capped the run screen at 680 px, so the card inside it laid out its 680 + 320 rail in 680 —
-   the paper got 336 px, its two-column stem track 0 px, and the stem printed one letter per line
-   (qa/screenshots/s9/v-laptop-light-page.png). A run that hosts a card gets the card route's width. */
-@media (min-width: 1024px) {
-  .run-screen:has(> .run-stage > .card-screen) { max-width: none; }
-}
+/* The one-host `max-width: none` hack that used to live here (`.run-screen:has(> .run-stage >
+   .card-screen)`, W4) is RETIRED — it fixed #/run/page and left every other host broken. See the
+   general rule in the LAYOUT-ROOT block at the end of this file. */
 
 /* Summary family tiles: a family tile takes two grid columns (130 px) so its third line — where it stands on
    the ladder, "1/6 ◆ → Silver at 2" (r2 wording) — fits; the name never breaks inside "(a > 1)" and no caption line can start
@@ -634,3 +627,1045 @@
   .card-screen:not(:has(.card-part[data-type="pairs"])):not(:has(.card-part[data-type="notation"])) .card-figure .fig { max-height: 190px; }
 }
 /* === /fix5:integrate r1 === */
+
+
+/* === LAYOUT-ROOT === the root cause behind "the question is going vertical".
+   ---------------------------------------------------------------------------------------------
+   WHY. Every responsive rule in this app was keyed to the VIEWPORT (@media), but the card engine
+   is mounted at widths that have nothing to do with the viewport: #/card fills #view (992 px at a
+   1024 px viewport), a run fills .run-stage, onboarding's placement fills .ob-run-stage INSIDE a
+   680 px `.screen`, a Boss fills .boss-stage, the night mini-mock and the step-2 sandbox fill
+   theirs. At 1900x1200 the placement therefore laid out `minmax(0,680) 320` inside 336 px: the
+   paper's stem track resolved to 0 px and the question printed ONE LETTER PER LINE. Wave 5 patched
+   exactly one host (`.run-screen:has(> .run-stage > .card-screen)`), which is why #/run/page looked
+   fine and the placement did not. `grep -rn "container-type" site/css` returned nothing at all.
+
+   THE RULE from here on:
+     * a component that can be hosted at a width unrelated to the viewport queries its OWN width —
+       @container, against the nearest named container below;
+     * @media is only for decisions that really are about the device: the shell's own max-width,
+       safe-area, viewport HEIGHT, orientation, pointer, reduced motion, colour scheme, print;
+     * no text track is ever `minmax(0, …)` or a bare `1fr`. Every one carries a ch floor, and the
+       two-column form is only switched on above a threshold that leaves room for that floor — so a
+       track can never resolve to 0 px again, and the figure drops BELOW the stem rather than
+       squeezing it.
+   Containers, thresholds, exceptions and the review checklist: notes/LAYOUT-ROOT.md.
+   --------------------------------------------------------------------------------------------- */
+
+/* ---- 1. the query containers -------------------------------------------------------------- */
+/* A container cannot query itself, so the container is always the WRAPPER of the thing that
+   reshapes. `.card-host` exists for exactly that reason (card.js creates one per mount).
+   `container-type: inline-size` also applies LAYOUT containment, which makes the element the
+   containing block for `position: fixed` descendants — so nothing here wraps a fixed overlay
+   (.levelup, .w-dock-own and .bnd-pop are appended to <body>; .mock-dialog / .mock-map are why
+   .mock-screen and .mock-main are NOT containers — notes/LAYOUT-ROOT.md §exceptions). */
+.card-host { container-type: inline-size; container-name: cardhost; width: 100%; min-width: 0; }
+.card-stage { container-type: inline-size; container-name: paper; }
+.card-parts, .mock-parts { container-type: inline-size; container-name: answers; }
+.run-screen { container-type: inline-size; container-name: run; }
+.screen.stats { container-type: inline-size; container-name: stats; }
+.report-screen { container-type: inline-size; container-name: report; }
+.screen.binder { container-type: inline-size; container-name: binder; }
+
+/* ---- 2. every host gets a correct width --------------------------------------------------- */
+/* base.css caps `.screen` at the 680 px prose column. The card engine is not prose: a screen that
+   hosts it anywhere inside (ANY depth — .run-stage, .ob-run-stage, .boss-stage, .nb-mini's stage)
+   gets the shell's full width, exactly like the #/card route. This is the general rule that
+   replaces the retired one-host `:has(> .run-stage > .card-screen)` hack.
+   `.ob-step` is the one deliberate exception: the step-2 sandbox is a demo INSIDE prose, so it
+   keeps the 680 px column — and the card now lays itself out for 680 px instead of pretending it
+   has 1024. */
+.screen:has(.card-screen):not(.ob-step) { max-width: none; }
+
+/* ---- 3. the card's own internals, keyed to the card's host width -------------------------- */
+/* Scratch: a collapsible 44 px toggle when the card has no rail, the plain label + open textarea
+   when it does. These also neutralise `@media (min-width: 1024px)` above, which hid the toggle on a
+   wide VIEWPORT even when the card was hosted narrow (same selectors, later in the file). */
+@container cardhost (max-width: 959.98px) {
+  .card-scratch-label { display: none; }
+  .card-scratch-toggle { display: flex; }
+  .card-scratch-wrap[data-open="false"] .card-scratch { display: none; }
+  .card-scratch-wrap[data-open="true"] .card-scratch-caret { transform: rotate(180deg); }
+}
+@container cardhost (min-width: 960px) {
+  .card-scratch-label { display: block; }
+  .card-scratch-toggle { display: none; }
+  .card-scratch-wrap[data-open="false"] .card-scratch { display: block; }
+}
+/* Landscape phone (S5 "two columns: figure left, input right") is a real DEVICE decision — viewport
+   height and orientation — but it may only split the card when the HOST is wide enough for two
+   columns. Narrower than that and the card keeps its one-column order. */
+@media (max-height: 480px) and (orientation: landscape) {
+  @container cardhost (max-width: 519.98px) {
+    .card-screen {
+      grid-template-columns: minmax(0, 1fr);
+      grid-template-areas: "head" "stage" "parts" "foot" "result" "solution" "side" "sandbox";
+    }
+    .card-side { flex-direction: column; }
+  }
+}
+
+/* ---- 4. the paper: the figure drops BELOW the stem, it never squeezes it ------------------ */
+/* Container `paper` is .card-stage, so the threshold is the paper's OWN width. 600 px = an 18 ch
+   floor for the stem + 20 gap + a 280 px figure + 64 px of paper padding, with room to spare; a
+   pairs card (the figure IS the answer) keeps its 340 px figure and needs 640 px before it splits,
+   and below that the figure stays full width so every wedge keeps its 44 px. Below the threshold
+   the paper is ONE column with the figure under the stem — which is the whole point: the QUESTION
+   never loses width to the picture.
+   The split is done with named AREAS, not with per-child grid-column: the old (auto-placed) version
+   dropped the figure into the row AFTER the note, so a card with a note printed the stem in the left
+   half, the note across the bottom and the figure in the right half two rows down, with a quarter of
+   the paper blank. "fig" now spans the stem and note rows. */
+.card-paper:has(> .card-figure:not([hidden])) > .card-instruction { grid-area: instr; }
+.card-paper:has(> .card-figure:not([hidden])) > .card-stem { grid-area: stem; }
+.card-paper:has(> .card-figure:not([hidden])) > .card-note { grid-area: note; }
+.card-paper:has(> .card-figure:not([hidden])) > .card-figure { grid-area: fig; }
+.card-paper:has(> .card-figure:not([hidden])) > .w-pairs-figmsg { grid-area: msg; }
+/* `data-no="long"` only: in the default mode .card-no is absolutely positioned in the 44 px margin,
+   and a definite grid position would re-base its left/top onto the grid area instead of the paper. */
+.card-paper[data-no="long"]:has(> .card-figure:not([hidden])) > .card-no { grid-area: no; }
+
+@container paper (min-width: 600px) {
+  .card-figure, .card-figure .fig { max-height: 300px; }
+  .card-screen:not(:has(.card-part[data-type="pairs"])) .card-paper:has(> .card-figure:not([hidden])) {
+    display: grid;
+    grid-template-columns: minmax(18ch, 1fr) minmax(0, 280px);
+    grid-template-areas: "no no" "instr instr" "stem fig" "note fig" "pad fig" "msg msg";
+    grid-template-rows: auto auto min-content min-content auto auto;
+    column-gap: 20px; align-items: start;
+  }
+  .card-screen:not(:has(.card-part[data-type="pairs"])) .card-paper:has(> .card-figure:not([hidden])) > .card-figure { margin-top: 0; }
+  .card-screen:not(:has(.card-part[data-type="pairs"])) .card-paper:has(> .card-figure:not([hidden])) > .card-note { margin-top: 10px; }
+}
+@container paper (min-width: 640px) {
+  .card-screen:has(.card-part[data-type="pairs"]) .card-paper:has(> .card-figure:not([hidden])) {
+    display: grid;
+    grid-template-columns: minmax(18ch, 1fr) minmax(0, 340px);
+    grid-template-areas: "no no" "instr instr" "stem fig" "note fig" "pad fig" "msg msg";
+    grid-template-rows: auto auto min-content min-content auto auto;
+    column-gap: 20px; align-items: start;
+  }
+  .card-screen:has(.card-part[data-type="pairs"]) .card-paper:has(> .card-figure:not([hidden])) > .card-figure { margin-top: 0; }
+  .card-screen:has(.card-part[data-type="pairs"]) .card-paper:has(> .card-figure:not([hidden])) > .card-note { margin-top: 10px; }
+}
+/* The legacy `@media (min-width: 1024px)` paper rule above fires on viewport width alone, so it can
+   still make a grid out of a paper that is narrower than its own floor. Switched off there, in both
+   flavours, so the areas above can never be referenced by an undefined template. (No host is that
+   narrow today; this is the guard that stops the class of bug coming back with the next one.) */
+@media (min-width: 1024px) {
+  @container paper (max-width: 599.98px) {
+    .card-paper:has(> .card-figure:not([hidden])) { display: block; grid-template-columns: none; }
+    .card-paper:has(> .card-figure:not([hidden])) > .card-figure { margin-top: 16px; }
+  }
+  @container paper (max-width: 639.98px) {
+    .card-screen:has(.card-part[data-type="pairs"]) .card-paper:has(> .card-figure:not([hidden])) { display: block; grid-template-columns: none; }
+    .card-screen:has(.card-part[data-type="pairs"]) .card-paper:has(> .card-figure:not([hidden])) > .card-figure { margin-top: 16px; }
+  }
+}
+
+/* ---- 5. the answer widgets, keyed to the ANSWER COLUMN's width ---------------------------- */
+/* Container `answers` is .card-parts (and .mock-parts). The answer column is NOT the host width:
+   with the rail on it is host − 344 px. These two were the same bug one level down — at a 1900 px
+   viewport a pairs list took a 210–260 px column out of a 336 px answer box, and the numeric
+   fields went two-up in 336 px. */
+@container answers (max-width: 519.98px) {
+  .w-fields, .w-fields[data-cols="2"] { grid-template-columns: minmax(0, 1fr); }
+}
+@container answers (min-width: 520px) {
+  .w-fields, .w-fields[data-cols="2"] { grid-template-columns: repeat(2, minmax(min(100%, 10ch), 1fr)); }
+}
+@container answers (max-width: 639.98px) {
+  .w-pairs.has-fig .w-pairs-cols { display: block; grid-template-columns: none; }
+}
+@container answers (min-width: 640px) {
+  .w-pairs.has-fig .w-pairs-cols {
+    display: grid; grid-template-columns: minmax(18ch, 1fr) minmax(210px, 260px);
+    align-items: start; gap: 16px;
+  }
+}
+/* the narrow-COLUMN widget rules (they were @media 380 / 420 on the viewport) */
+@container answers (max-width: 419.98px) {
+  .w-rej-row { flex-wrap: nowrap; }
+  .w-rej-x { flex: 0 0 auto; min-width: 72px; }
+}
+@container answers (max-width: 379.98px) {
+  .w-cls-row { grid-template-columns: minmax(0, 1fr); }
+  .w-nt-deco { grid-template-columns: repeat(auto-fit, minmax(64px, 1fr)); }
+  .w-strip-verdicts { flex-direction: column; }
+}
+
+/* ---- 5b. two sticky bands must never park on top of each other ---------------------------- */
+/* THE DEFECT THE STUDENT SAW as "the run header and the Scratch heading overlapping": the card's
+   rail is `position: sticky; top: header + 16` = 72 px, but a run screen adds its OWN sticky band
+   under the app header — the placement head parks at 56–102 px, the Boss head at 56–109 px — so the
+   Scratch heading sat behind it for the whole scroll, permanently hidden (not merely scrolled past).
+   Every sticky offset now derives from ONE token, `--stack-top` (theme.css) = the bottom edge of the
+   sticky chrome above the content, and each screen that adds a band raises it. Measured heads at
+   375/1280/1900: .ob-run-head compact 44–46, .ob-run-head full 106–108, .boss-head 53, .mock-bar ~50;
+   the constants below carry ~6 px of headroom and qa/layout-root.mjs asserts, scrolled, that no two
+   sticky elements ever share pixels — so a head that grows fails the build instead of hiding text. */
+.ob-run:has(> .ob-run-head) { --stack-top: calc(var(--header-h) + 52px); }
+.ob-run:has(> .ob-run-head:not([data-compact="true"])) { --stack-top: calc(var(--header-h) + 116px); }
+.boss-screen:has(> .boss-head) { --stack-top: calc(var(--header-h) + 60px); }
+.mock-screen { --stack-top: calc(var(--header-h) + 56px); }
+/* the run head is static at rail width (fix5:run r1 makes it sticky-free), so a run adds no band */
+
+/* ---- 5c. Stats: the blocks read the stats screen's width, in BOTH directions ---------------- */
+/* The `binder r2` block above used to re-declare .st-skills li inside `@media (min-width: 720px)`,
+   which would otherwise win over the @container rule in screens.css purely by being later in the
+   cascade. Those @media rules are now deleted (see the note there); these branches are the only
+   place the Stats rows change shape.
+   THRESHOLD, corrected by `fix:stats r2` (was 720 px — a rule that could never match, because
+   `.screen` caps this container at `--col` = 680 px, so the wide Stats layout was dead CSS and every
+   desktop showed the phone rows). 640 px is what the wide row actually needs:
+       190 name + 8 + 108 bar + 8 + 46 val + 8 + 200 meta + 8 + 64 drill = 640
+   i.e. the narrowest Stats column where all four fixed tracks keep their size AND the bar is still
+   ≥ 100 px wide. The container measures 680 px from a 712 px viewport up (and 640 px from 672 px),
+   so the wide rows land on tablet-and-up exactly as the old viewport rule intended. */
+@container stats (min-width: 640px) {
+  .st-bars li { grid-template-columns: minmax(96px, 140px) minmax(0, 1fr) 56px; font-size: var(--fs-2); }
+  .st-skills li { grid-template-columns: minmax(12ch, 190px) minmax(0, 1fr) 46px 200px 64px; grid-template-areas: "name bar val meta drill"; }
+  .st-skill-meta { white-space: nowrap; }
+  .st-skill-drill { justify-self: end; }
+}
+@container stats (max-width: 639.98px) {
+  .st-bars li { grid-template-columns: minmax(64px, 88px) minmax(min(100%, 8ch), 1fr) 44px; font-size: var(--fs-1); }
+  .st-skills li { grid-template-columns: minmax(min(100%, 12ch), 1fr) auto; grid-template-areas: "name val" "bar bar" "meta drill"; }
+  .st-skill-meta { white-space: normal; }
+  .st-errors li { flex-wrap: wrap; }
+  .st-err-main { flex: 1 1 100%; }
+  .st-err-side { flex: 1 1 100%; justify-content: space-between; }
+}
+
+/* ---- 6. no text track may collapse ------------------------------------------------------- */
+/* Each of these gave its text column a 0 px minimum. `min(100%, N ch)` can never be wider than the
+   grid itself, so a floor can never cause overflow either. (The floors that belong to a
+   CONDITIONAL template — .sum-bar, .st-skills li, .with-rail, .mock-main, .report-split — are in
+   base.css / screens.css beside the template itself, because an unconditional rule this late in
+   the cascade would override the conditional one.) */
+.weak-row { grid-template-columns: minmax(min(100%, 12ch), 1fr) 32px auto; }
+.skill-row { grid-template-columns: minmax(min(100%, 10ch), 1fr) 72px 28px; }
+.mock-sec { grid-template-columns: 24px minmax(min(100%, 12ch), 1fr) auto; }
+.ob-result-row { grid-template-columns: 20px minmax(min(100%, 12ch), 1fr) auto; }
+.report-answers { grid-template-columns: minmax(0, max-content) minmax(min(100%, 12ch), 1fr); }
+.blitz-answers[data-type="asn"] { grid-template-columns: repeat(3, minmax(min(100%, 5ch), 1fr)); }
+.blitz-answers[data-type="num"], .blitz-answers[data-type="term"] { grid-template-columns: minmax(min(100%, 10ch), 1fr) auto; }
+.card-paper, .mock-paper, .card-part, .card-part-body { min-width: 0; }
+/* === /LAYOUT-ROOT === */
+
+/* === fix:B5 — Mock rules and the report r1 === */
+/* Two defects from the layout audit, both the same shape as the student's original report one level
+   down: a grid track with no floor, and a control that is only text-sized. Conventions:
+   notes/LAYOUT-ROOT.md §"Every text track has a floor" and the 44 px tap rule (--tap). */
+
+/* ---- 1. the Mock rules section table: no track may be sized by today's content --------------- */
+/* `.mock-sec` was `24px minmax(min(100%,12ch),1fr) auto`. The third track holds the item COUNT, and
+   `auto` means "whatever the digits happen to need": with every section at one digit it resolved to
+   7.78 px, under the audit's 8 px zero-track floor, on all 19 viewports in both engines and both
+   themes (mock-rules + run-baseline). A two-digit section — 10 Vocab items in a longer packet — would
+   have had to steal the width back from the section NAME at the moment it is most crowded. Both
+   fixed-ish tracks now have a real minimum expressed in `ch`, so they also grow with text zoom
+   instead of clipping: the letter column keeps its 24 px look but can never be narrower than the
+   letter, and the count column holds two digits before it takes a pixel from the name. `text-align:
+   end` keeps the digits flush with the row's right edge exactly where they paint today, and
+   tabular-nums lines 4 up with 11. */
+.mock-sec { grid-template-columns: max(24px, 2ch) minmax(min(100%, 12ch), 1fr) minmax(2ch, auto); }
+.mock-sec-c { text-align: end; font-variant-numeric: tabular-nums; }
+
+/* ---- 2. the report's source line: an action, sized like an action --------------------------- */
+/* "This was WP 11 from the packet. Open the card" — the link is how you get from a missed question
+   back to the card, and it measured 86.3 x 16 (webkit 15.3) in every expanded report item. It is an
+   outlined `.btn` chip now (min-height: var(--tap) from base.css, so one token owns the number),
+   sitting on a wrapping row beside its sentence rather than inside it. Outlined and not ghost on
+   purpose: a ghost chip paints only its label, so its 12 px of padding reads as a 12 px indent when
+   the row wraps to the phone layout; a bordered box aligns on its own edge, where the sentence
+   starts. `flex-basis: min(100%, 22ch)` gives the sentence a floor and lets it take the whole row at
+   phone width, dropping the chip to its own line — the same "below the threshold it is one column,
+   the TEXT is never squeezed" rule the grids follow. */
+.report-srcrow { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 12px; }
+.report-srcrow > .report-src { flex: 1 1 min(100%, 22ch); min-width: 0; margin: 0; }
+.report-srcrow > .report-src-a { flex: 0 0 auto; min-height: var(--tap); padding-inline: 12px; font-size: var(--fs-1); }
+/* === /fix:B5 === */
+
+/* === fix:B2 — Ink tokens: every contrast defect r1 === */
+/* THE DEFECT CLASS. The audit reported six MAJOR contrast misses (.rarity on three screens,
+   .w-step-t on rootcase, .sum-rd-delta on the Page Summary, .sh-stamp on the printed sheet). None of
+   them is a layout bug and none is per-viewport: every one is the SAME mistake — a FILL token used
+   as a `color:`. S5 splits the palette in two (theme.css "FILL vs INK"): --gold/--ok/--bad/--warn/
+   --almost/--plat/--silver/--bronze/--accent paint bars, rings, strokes, borders and tints and only
+   owe 3:1; text owes 4.5:1 and must use the -ink partner. Measured on --surface2 (#EEF2F9), the
+   worst light ground the app actually paints, every fill token misses: gold 3.82, ok 3.89, bad 4.22,
+   warn 4.03, plat 3.61, silver 3.12, bronze 4.10, accent 3.33.
+
+   Waves 1–5 fixed the misses one selector at a time (--warn-ink/--gold-ink for .weak-m/.rd-band,
+   --ok-ink for .w-msg, --plat-ink/--silver-ink for .tile-chip/.rarity[silver]) — which is why the
+   auditor kept finding a seventh, an eighth, a ninth. Most of the remaining ones the auditor CANNOT
+   see: its contrast probe skips text under 2 characters and never reads ::before/::after, so the
+   ✓ / ✗ / ← marks on every widget were invisible to it while being exactly the same defect. So this
+   block finishes the conversion for the WHOLE app in one pass, grouped by ink, rather than fixing
+   the six that happened to be measurable. theme.css now carries the complete -ink family
+   (--bad-ink, --almost-ink, --bronze-ink, --violet-ink were missing) so nothing has to invent a hex.
+
+   Nothing here changes a fill: borders, backgrounds, bar fills, tints and strokes keep the fill
+   token, so the rarity metals still read gold / silver / bronze / platinum. Only `color:` moves. */
+
+/* ---- gold ------------------------------------------------------------------------------- */
+.gold,
+.rarity[data-r="gold"],
+.bnd-cover[data-cover="platinum"],
+.tile[data-rarity="gold"] .tile-state,
+.st-trophies li[data-earned="true"] .st-tro-mark,
+.levelup-l,
+.boss-best,
+.boss-pb,
+.pill-boss { color: var(--gold-ink); }
+
+/* ---- the other three metals ------------------------------------------------------------- */
+.rarity[data-r="platinum"],
+.tile[data-rarity="platinum"] .tile-state { color: var(--plat-ink); }
+.tile[data-rarity="silver"] .tile-state { color: var(--silver-ink); }
+.rarity[data-r="bronze"],
+.tile[data-rarity="bronze"] .tile-state { color: var(--bronze-ink); }
+
+/* ---- ok (green) ------------------------------------------------------------------------- */
+.ok,
+.bnd-cover[data-cover="full"],
+.card-tick,
+.card-part[data-state="ok"] .card-part-h::after,
+.boss-delta[data-tone="good"],
+.boss-check-feedback[data-tone="good"],
+.boss-result[data-won="true"] .boss-h2,
+.boss-table tr[data-ok="true"] .boss-cell-mark,
+.report-screen[data-band="locked"] .report-n,
+.report-screen[data-band="ready"] .report-n,
+.report-clean,
+.report-item[data-s="ok"] .report-item-c,
+.report-a-v[data-s="ok"],
+.ob-result-row[data-outcome="clean"] .ob-result-mark,
+.nb-rep-item[data-ok="true"] .nb-rep-mark,
+.w-step[data-state="done"],
+.w-pairs-angle.is-used,
+.w-pairs.is-complete .w-pairs-count,
+.w-preview[data-state="match"],
+.w-preview[data-state="match"] .w-preview-mark,
+.w-eq-split[data-state="ok"],
+.w-sum-mark,
+.w-strip-msg[data-state="ok"],
+.w-tab[data-state="ok"]::after,
+.wd-opt[data-state="ok"] .wd-opt-mark::after,
+.wd-opt[data-state="ans"] .wd-opt-mark::after,
+.wd-chip[data-state="ok"]::after,
+.wd-chip[data-state="ans"]::after,
+.w-asn-btn[data-state="ok"] .w-asn-mark::after,
+.w-asn-btn[data-state="ans"] .w-asn-mark::after,
+.w-cls-btn[data-state="ok"] .w-cls-name::after,
+.w-tm-term[data-state="ok"]::after,
+.w-tm-def[data-state="ok"]::before,
+.w-cz-slot[data-state="ok"]::after,
+.w-strip-slot[data-state="ok"] .w-strip-mark::after,
+.w-strip-verdict[data-state="ok"] .wd-opt-mark::after,
+.w-strip-verdict[data-state="ans"] .wd-opt-mark::after { color: var(--ok-ink); }
+
+/* ---- bad (red) -------------------------------------------------------------------------- */
+.bad,
+[data-state="bad"] > .blitz-mark,
+.bnd-hist-mark[data-ok="false"],
+.st-pat-count,
+.st-err-got,
+.card-miss,
+.blitz-clock[data-low="true"],
+.blitz-flash[data-tone="bad"],
+.sum-bar-delta[data-tone="bad"],
+.sum-rd-delta[data-tone="bad"],
+.boss-delta[data-tone="bad"],
+.boss-check-feedback[data-tone="bad"],
+.boss-result[data-won="false"] .boss-h2,
+.boss-table tr[data-ok="false"] .boss-cell-mark,
+.mock-clock[data-t="pulse"],
+.mock-clock[data-t="out"],
+.mock-err,
+.report-screen[data-band="not"] .report-n,
+.report-item[data-s="bad"] .report-item-c,
+.report-a-v[data-s="bad"],
+.ob-result-row[data-outcome="wrong"] .ob-result-mark,
+.nb-clock[data-low="true"],
+.nb-rep-item[data-ok="false"] .nb-rep-mark,
+.w-eq-split[data-state="bad"],
+.w-field[data-state="bad"] .w-mark,
+.w-field[data-state="bad"] .w-fmsg,
+.w-msg[data-state="bad"],
+.w-strip-msg[data-state="bad"],
+.w-tab[data-state="bad"]::after,
+.wd-opt[data-state="bad"] .wd-opt-mark::after,
+.wd-chip[data-state="bad"]::after,
+.w-asn-btn[data-state="bad"] .w-asn-mark::after,
+.w-cls-btn[data-state="bad"] .w-cls-name::after,
+.w-tm-term[data-state="bad"]::after,
+.w-cz-slot[data-state="bad"]::after,
+.w-strip-slot[data-state="revealed"] .w-strip-mark::after,
+.w-strip-verdict[data-state="bad"] .wd-opt-mark::after { color: var(--bad-ink); }
+
+/* ---- warn / almost (amber) -------------------------------------------------------------- */
+.warn,
+.combo[data-tier="2"],
+.set-tminus[data-tone="warn"],
+.run-progress-retry,
+.blitz-flash[data-tone="warn"],
+.sum-fail,
+.boss-flag,
+.boss-flag.is-inline,
+.mock-warn,
+.mock-clock[data-t="amber"],
+.report-screen[data-band="getting"] .report-n,
+.report-flag,
+.report-item[data-s="part"] .report-item-c,
+.report-a-v[data-s="part"],
+.ob-result-row[data-outcome="retry"] .ob-result-mark,
+.w-pairs-hint[data-state="almost"],
+.w-eq-hint[data-kind="err"],
+.w-eq-hint[data-kind="note"],
+.w-field[data-state="almost"] .w-mark,
+.w-tab[data-state="almost"]::after,
+.w-ratio.is-nudge .w-msg[data-state="ok"] { color: var(--warn-ink); }
+
+/* ---- accent ----------------------------------------------------------------------------- */
+/* ::marker paints the list bullet as TEXT, so it owes 4.5:1 like the item it numbers (--accent is
+   3.33:1 on --surface2). The rule list's own text already uses --muted; only the marker was a fill. */
+.mock-rulelist li::marker { color: var(--accent-ink); }
+
+/* ---- print is a paper medium, so it gets the paper palette ------------------------------- */
+/* ROOT CAUSE of the .sh-stamp finding: screens.css's @media print forces `html, body { background:
+   #fff; color: #000 }` and then hard-codes #000/#333 on three .sh-* selectors — but every OTHER
+   element on the page keeps whatever palette the THEME set. Print a sheet with the app in dark mode
+   and the dark tokens (--muted #8A96B0 = 2.97:1, --line, --accent-alpha, --surface) land on white
+   paper. Patching .sh-stamp alone would leave the next printable screen broken the same way, so the
+   fix is at the palette: under `print`, the root variables become an ink-on-paper set regardless of
+   theme. Selector list covers all three theme rules in theme.css (`:root`,
+   `:root:not([data-theme="light"])` under prefers-color-scheme, `:root[data-theme="dark"]`);
+   polish.css is the last sheet, so equal specificity wins. */
+@media print {
+  :root,
+  :root:not([data-theme="light"]),
+  :root[data-theme="dark"] {
+    color-scheme: light;
+    --bg: #FFFFFF;
+    --surface: #FFFFFF;
+    --surface2: #FFFFFF;
+    --paper: #FFFFFF;
+    --paper-grid: rgba(0, 0, 0, .10);
+    --line: #6B6B6B;            /* 4.6:1 on white — a rule a printer will actually put ink on */
+    --text: #000000;
+    --muted: #4A4A4A;           /* 8.9:1 on white; was the dark theme's #8A96B0 at 2.97:1 */
+    --accent: #046A87;
+    --accent-ink: #046A87;
+    --accent-alpha: transparent;
+    --gold: #8A5C00;   --gold-ink: #8A5C00;
+    --ok: #12744A;     --ok-ink: #12744A;
+    --bad: #C4203D;    --bad-ink: #C4203D;
+    --warn: #9A5208;   --warn-ink: #9A5208;
+    --almost: #9A5208; --almost-ink: #9A5208;
+    --violet: #5B3FC4; --violet-ink: #5B3FC4;
+    --plat: #23678A;   --plat-ink: #23678A;
+    --silver: #5E6978; --silver-ink: #5E6978;
+    --bronze: #8A4F1C; --bronze-ink: #8A4F1C;
+    --fig-angle: #8A5C00;
+    --shadow: none;
+  }
+}
+
+/* ---- the second contrast root cause: opacity de-emphasis ---------------------------------- */
+/* Found while sweeping, NOT in the audit report — and that is the point. The contrast detector reads
+   an element's computed `color`; `opacity` on an ANCESTOR composites after that, so the auditor is
+   structurally blind to it. Measured composites (a real ratio, computed by hand — see notes/FIX-B2):
+
+     .st-errors li[data-cleared="true"]  opacity .62 → --muted 2.60:1, --bad-ink 3.05:1 (light)
+     .boss-check-opt[data-state="bad"]   opacity .70 → --muted 3.02:1 light / 3.58:1 dark
+     .wd-opt / .w-cls-btn[state=bad]     opacity .72 → --muted 3.14:1
+     .card-part[data-state="skipped"]    opacity .80 → --muted 3.69:1
+     .w-equation[data-skipped] fields    opacity .50 → --text  3.42:1
+
+   Every one of those is content the student still has to READ: the answer they got wrong, the part
+   they skipped, the error they have since cleared. The rule this block sets:
+
+     OPACITY MAY DIM A CONTAINER'S CHROME, NEVER ITS PROSE. "Receded" is a colour decision, and the
+     palette already grades it — --muted is 5.86:1 in light and 5.97:1 in dark.
+
+   --muted needs alpha >= .90 (light) / >= .84 (dark) to survive compositing, so .9 is the floor for
+   the state dims that keep a second cue (a --bad border, a dashed edge, a line-through). The one
+   that has NO second cue, the cleared-error row, drops opacity entirely and recedes with a
+   --surface2 ground and --muted ink instead. Disabled controls are untouched: WCAG 1.4.3 exempts
+   them and they are not read for content. */
+.st-errors li[data-cleared="true"] { opacity: 1; background: var(--surface2); }
+.st-errors li[data-cleared="true"] .st-err-got { color: var(--muted); }
+.boss-check-opt[data-state="bad"],
+.wd-opt[data-state="bad"],
+.wd-chip[data-state="bad"],
+.w-cls-btn[data-state="bad"],
+.card-part[data-state="skipped"],
+.w-pairs.is-locked .w-pairs-field,
+.w-equation[data-skipped="true"] .w-eq-fields,
+.blitz-answers[data-locked="true"] { opacity: .9; }
+.blitz-answers[data-locked="true"] > :not([data-state]) { opacity: .9; }
+/* === /fix:B2 === */
+
+/* === fix:B1 — App shell header (the two blockers) r1 === */
+/* Both blockers were ONE element in the app shell, on every screen: the header's T−N / "set test date"
+   chip (a#hdr-tminus).
+   Finding 1 (collapsed-text, 9 states, 320 + 360, both engines) and finding 2 (overlap with #hdr-xp,
+   320) have the same cause, and it is this file's own `home r2` block (L256):
+       .hdr a.chip { position: relative; overflow: visible; text-overflow: clip; }
+   That turned OFF base.css's guard on `.chip` — `overflow: hidden; text-overflow: ellipsis`, commented
+   "truncates before it can overlap" — so that a negative-inset ::before (inset: -12px -4px) could grow
+   the 24 px pill into a 44 px hit box without being clipped away. The hit box was bought by making the
+   chip a box nothing is clipped to, and the chip's TEXT walked straight out with it: at a 320 px
+   viewport the header row squeezes the pill to 21.5 px while "after the test" needs 96.5, so ~80 px of
+   ink printed across the level ring and "1840 XP" (measured: chip box 68→89.5, chip ink 77→157.5,
+   .hdr-right starts at 97.5).
+   ROOT FIX — the hit target stops being an escape and becomes the box. The <a> is itself var(--tap)
+   tall and at least var(--tap) wide, i.e. a real, clippable 44×44 target, and the 24 px pill S5 asks
+   for is PAINTED INSIDE it by ::before. base.css's clip guard therefore goes back on and no ink can
+   leave the chip again, at any width, in any state. The room the words need is freed by the header's
+   narrow-width tiers (base.css, @container hdr) — this rule is what makes overflowing impossible
+   rather than merely unlikely. */
+.hdr a.chip {
+  position: relative;
+  height: var(--tap);
+  line-height: calc(var(--tap) - 2px);       /* the text is centred by the line box: `.chip` is a block
+                                                container here, which is what text-overflow needs */
+  min-width: var(--tap);                     /* the other half of the 44×44 target (and the shrink floor) */
+  padding-inline: 8px;
+  text-align: center;
+  border-width: 0;                           /* the ring moves to ::before; the border COLOUR stays on the
+                                                <a>, so `.chip[data-tone="warn"|"accent"|"bad"]` still reaches it */
+  background: transparent;                   /* ditto the fill */
+  overflow: hidden;                          /* base.css's guard, restored — this is the actual fix */
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 0 1 auto;                            /* may shrink, never past min-width: it ellipsizes inside the
+                                                shell instead of pushing the shell into horizontal scroll,
+                                                and a < 60 px text box is still something the auditor sees */
+}
+.hdr a.chip::before {
+  content: '';
+  position: absolute;
+  inset-block: 10px; inset-inline: 0;        /* 44 − 2×10 = the 24 px pill; entirely INSIDE the <a>, so the
+                                                restored overflow:hidden has nothing to clip */
+  z-index: -1;                               /* behind the label, above .hdr's own background */
+  border: 1px solid;
+  border-color: inherit;                     /* = the <a>'s computed border-colour, tone rules included */
+  border-radius: 999px;
+  background: var(--surface);
+}
+/* the focus ring hugs the visible pill rather than the invisible 44 px hit box */
+.hdr a.chip:focus-visible { border-radius: 999px; outline-offset: -8px; }
+/* === /fix:B1 === */
+
+/* === fix:B4 — Run chrome: drill title and the mint r1 ===
+   Two findings on the run screen's own chrome, both root-caused rather than patched per viewport.
+
+   ── 1. The run title is a NAME. It wraps; it is never ellipsised. ───────────────────────────
+   Finding #4 (BLOCKER, 320–414 px, chromium AND webkit, both themes): "Drill 5 · Word Pr…" —
+   `.run-title` scrollWidth 241 > clientWidth 142. fix5:run r1 built the one-slim-row phone head by
+   giving the h1 `flex: 1 1 0` + `min-width: 0` + `white-space: nowrap; overflow: hidden;
+   text-overflow: ellipsis`, i.e. a TEXT TRACK WITH A ZERO FLOOR whose width is only "whatever the
+   44 px Quit button and the '0 of 5 done' counter leave over" — the same defect LAYOUT-ROOT found in
+   the card's grid, one level down in flex. Any run whose title carries a skill/module/sheet name
+   ("Drill 5 · …", "JUMP HERE · …", "BLITZ · …", "Upgrade · …") is longer than that leftover.
+
+   The cure is not a wider breakpoint: a heading is not a data cell, so the ellipsis goes away at
+   EVERY width and the h1 wraps inside the width it is given. Measured (chromium+webkit): the head's
+   row height is set by the 44 px Quit button, so a two-line title costs ZERO extra height — head
+   86.1 px at 320 and 68.5 px at 360–834, identical to before the fix, with the title fully readable.
+   `min-width: min(100%, 12ch)` is the floor the convention asks for (notes/LAYOUT-ROOT.md §3 "Every
+   text track has a floor"): `min(100%, …)` can never be wider than the head, so it cannot cause
+   overflow, and at every real width today the leftover (142 px at 320) is already above it — it bites
+   only if a future run's right-hand chrome grows, and then the counter wraps instead of the name.
+   No @container threshold is needed because the rule is true at every host width; the BLITZ head
+   already did exactly this (`data-kind="blitz"` above), so this only generalises it to every run. */
+.run-head .run-title {
+  white-space: normal; overflow: visible; text-overflow: clip;
+  overflow-wrap: break-word; min-width: min(100%, 12ch);
+}
+
+/* ── 2. The foil sheen must not inflate the tile's scrollable overflow. ──────────────────────
+   Finding #10 (MAJOR, 1900x1200 in the animations-enabled pass, both engines and themes):
+   `.sum-tile` scrollWidth 128 > clientWidth 58. Triage guessed "a tile mid-flip"; measuring says
+   otherwise, and it is worse than a transient. `.tile-sheen` is `position: absolute; inset: 0`
+   inside `.tile { overflow: hidden }` and sweeps with `translateX(-120% → 120%)` (screens.css
+   @keyframes t11-sheen). A transformed absolutely-positioned child contributes SCROLLABLE overflow,
+   so the sweep turns every tile into a 128 px-wide scroll container — and motion.css gives the mint
+   `animation-fill-mode: both`, which PARKS the sheen at +69.6 px, so it never goes away: measured
+   scrollWidth 128 at t+1.3 s and still 128 at t+2.6 s, on all six minted tiles. Six needless scroll
+   boxes whose scrollLeft can carry the tile's own number out of view.
+
+   Root cause: the sweeping transform is on the element that fills the tile. Fix: keep that element
+   still and put the transform on a pseudo-element INSIDE it, with the sheen itself as the clipper.
+   `overflow: clip` (not hidden) is deliberate — it clips without creating a scroll container, so the
+   sheen contributes nothing, while `.tile` keeps its own `overflow: hidden` and the auditor can still
+   see genuinely clipped tile TEXT. Every animation longhand is `inherit`, so the existing timing
+   flows through untouched and nothing here has to be kept in sync: screens.css's 700 ms/--ease/1,
+   motion.css's 820 ms + `both` for the mint, run.js's inline per-tile `animation-delay`
+   (420 + k×90 ms), and BOTH reduced-motion overrides (screens.css `animation-duration: 0s`,
+   motion.css `animation: none; opacity: 0`) are inherited rather than restated.
+   Verified identical to the pixel: at the same moment of the same sweep the pseudo-element carries
+   transform 21.6029 px where the element carried 21.6035 px, and the rendered frames match; tile
+   scrollWidth 128 → 58 in chromium and webkit. On an engine without `overflow: clip` the visual is
+   unchanged anyway — `.tile`'s own `overflow: hidden` still clips the sweep. */
+.tile-sheen { overflow: clip; background: none; animation-name: none; }
+.tile-sheen::before {
+  content: ""; position: absolute; inset: 0;
+  /* the one gradient in the app, moved off the clipping box onto the box that moves (screens.css §T11) */
+  background: linear-gradient(118deg, transparent 34%, var(--t11-sheen) 47%, transparent 60%);
+  animation-name: t11-sheen;
+  animation-duration: inherit; animation-timing-function: inherit;
+  animation-delay: inherit; animation-iteration-count: inherit; animation-fill-mode: inherit;
+}
+/* === /fix:B4 === */
+
+/* === fix:B6 — Card side rail and two widgets (cosmetics) r1 ===
+   Two audit findings, and one twin the auditor could not see. Root causes, not per-viewport patches;
+   no @media in this block — every rule below is about a component's OWN box, per notes/LAYOUT-ROOT.md.
+
+   9  (MAJOR squeeze, `.card-side .hint-ladder .card-hint-btn span.muted`, 2 states x 19 vps x 2
+      themes x 2 engines): the button's label is two things — the count ("Hint 3 of 3") and what the
+      hint is ("one step from the end"). The count was a BARE TEXT NODE inside an inline-flex button,
+      i.e. an anonymous flex item, which no rule can reach: it could not be told not to break and had
+      no basis of its own, while the qualifier (a real span) kept a full line. `align-self: flex-start`
+      then sized the button shrink-to-fit, so the ladder's spare width went unused and the first thing
+      to lose room was the COUNT — "Hint 3 of / 3" — the half a student actually reads. Same family as
+      the LAYOUT-ROOT rule "every text track has a floor", one level down: in a flex row the floor is
+      a flex-basis, and below it the item takes its own line instead of being squeezed.
+
+   16 (overlap, `.w-mc .wd-opt .wd-opt-t`, 844x390, webkit, both themes) — reported "unconfirmed: seen
+      on the resize sweep only". It is not a graze and not cosmetic: measured on the auditor's own
+      resize path (prepare at 1280x800, resize down), the option buttons keep the row heights they had
+      at the wide size — box 46.6 px tall holding 69.3 px of text, spilling 36 px THROUGH the next
+      option, which paints over it. `.wd-opts` is a one-column grid of <button>s, and WebKit does not
+      re-run intrinsic row sizing for that grid when its inline size changes (the card's landscape
+      rule takes the answer column to 45 % in one step). A one-column list of buttons has no reason to
+      be a grid; as a flex column both engines re-flow it. `qa/fixb6-sweep.mjs` measures the path.
+      The twin: `.w-tm-defs` (termmatch's definition list) is the same construction and has the same
+      defect — 8.5 px spill on the same path — which the net never saw because its `card-termmatch`
+      state happens to draw the mc part of voc-09, not the termmatch part (the card is `pick:'one'`).
+      Reproduce it with `node qa/fixb6-sweep.mjs --engine webkit --hist 2`. */
+
+/* ---- 1. the hint ladder's button: the count never breaks, the qualifier has a floor ---------- */
+/* The button fills the ladder instead of shrink-to-fit (`align-self: flex-start` in screens.css), so
+   the label uses the width the ladder already has, and the tap target is the full row. */
+.card-hint-btn { align-self: stretch; justify-content: flex-start; text-align: left; flex-wrap: wrap; column-gap: 8px; row-gap: 2px; }
+.card-hint-btn > .card-hint-n { flex: 0 0 auto; white-space: nowrap; }
+/* 18ch is the LAYOUT-ROOT floor. `min(100%, …)` can never be wider than the button, so the floor can
+   never cause overflow; when the row cannot hold it, the qualifier wraps to its own full-width line. */
+.card-hint-btn > .card-hint-q { flex: 1 1 18ch; min-width: min(100%, 18ch); }
+
+/* ---- 2. a one-column list of <button>s is a flex column, never a grid ------------------------ */
+/* Same `gap: 8px`, same full-width items, same painting — but the heights are re-taken on resize.
+   `.wd-opts` is mc.js's and strip.js's option list, `.w-tm-defs` is termmatch's. */
+.wd-opts, .w-tm-defs { display: flex; flex-direction: column; }
+
+/* ---- 3. the two answer text tracks get a floor ---------------------------------------------- */
+/* `.wd-opt-t` was `flex: 1 1 auto; min-width: 0` and `.w-tm-def` was `24px minmax(0, 1fr)` — a 0 px
+   minimum on a column that holds words is exactly what collapsed the question stem. Below the floor
+   the text takes its own line under the number; it is never squeezed. */
+/* The basis is the floor, NOT `auto`: flex decides where to break a line from each item's hypothetical
+   size, so `flex: 1 1 auto` (basis = the text's max-content width) would send every option's text to
+   its own line under the number the moment the sentence is longer than the row. With a 12ch basis the
+   text shares the row and grows into it, and only drops below the number when 12ch will not fit. */
+.wd-opt { flex-wrap: wrap; }
+.wd-opt > .wd-opt-t { flex: 1 1 12ch; min-width: min(100%, 12ch); }
+.w-tm-def { grid-template-columns: 24px minmax(min(100%, 12ch), 1fr); }
+/* === /fix:B6 === */
+
+/* === fix:mock r2 === */
+/* One finding: V4-report-split-dead (major, chromium + webkit, EVERY viewport >= 720 px).
+   Notes: notes/FIX-mock.md. Conventions: notes/LAYOUT-ROOT.md §"@container or @media?" and
+   §"Thresholds, and why each number".
+
+   THE DEFECT. On the one screen a student reads after a Mock, `.report-split` — "Your scratch"
+   BESIDE "Worked solution" (S7: the comparison IS the teaching) — was a single 618 px column at
+   every desktop width, where HEAD laid out `273.625px 328.375px`. His answer and the right answer
+   were stacked instead of side by side on his 1900 px window.
+
+   THE CAUSE is not the 680 px reading column and not a missing container: it is a container query
+   whose THRESHOLD was carried over from the viewport rule it replaced without being re-derived for
+   the new box. LAYOUT-ROOT moved the rule off `@media (min-width: 720px)` and onto
+   `@container report (min-width: 720px)` (screens.css:1284), keeping the number — but `report` is
+   `.report-screen`, which base.css caps at the 680 px prose column (`.screen { max-width:
+   var(--col) }`). 680 < 720, so the rule is DEAD: it cannot match at any viewport, in any engine,
+   at any zoom. A dead threshold is the mirror image of the original bug — there a component laid
+   out for a width it did not have, here it refuses a layout it has the width for — and it is the
+   same root mistake both times: the rule is keyed to a box that is not the box that reshapes.
+
+   Two things fix it for good, and neither is a per-viewport patch:
+
+   1. THE QUERY CONTAINER IS THE PARENT OF THE THING THAT RESHAPES. `.report-screen` is four levels
+      and 62 px of chrome above `.report-split` (card padding 16+16, item border 1+3, body padding
+      12+12+2), so any threshold written against it is really "the split's width plus whatever the
+      chrome costs today" — the arithmetic silently rots the next time the report gains a border.
+      `.report-item-b` is the split's direct parent and its content box IS the split's width (618 =
+      618, measured), so `reportrow` is the honest box. It hosts no `position: fixed` or `absolute`
+      descendant, so `container-type`'s layout containment captures nothing (LAYOUT-ROOT
+      §checklist #4). It is also the right box for every future rule inside an expanded item.
+   2. THE THRESHOLD IS IN `ch`, DERIVED FROM THE CONTENT. 18ch floor + 18ch floor + the 16 px gap
+      (1.56ch) + the solution list's 20 px marker gutter (1.95ch) = 39.5ch of real need; 44ch is
+      that with ~11 % headroom, so the narrower column is >= 19ch the moment it first splits. In
+      `ch` and not px because the need scales with the text: at 200 % text zoom a px threshold
+      would say "there is room" while two 18ch floors no longer fit, and the tracks would spill.
+      Both floors keep the `min(100%, …)` guard for the same reason — a floor that can never be
+      wider than the grid can never cause overflow (the bare `minmax(18ch, 1fr)` in screens.css
+      only holds at the default font size).
+
+   Below 44ch the split is ONE column and the text is never squeezed: the worked solution drops
+   under the scratch, which is what a phone gets today and what it should keep getting.
+   Measurements before/after, both engines, in notes/FIX-mock.md; `node qa/fixmock-r2.mjs` asserts
+   them (the layout net cannot see this class — one readable column is not a 0 px track, not an
+   overlap and not an overflow, which is why the finding came from the HEAD comparison). */
+.report-item-b { container-type: inline-size; container-name: reportrow; }
+@container reportrow (min-width: 44ch) {
+  .report-split { grid-template-columns: minmax(min(100%, 18ch), 1fr) minmax(min(100%, 18ch), 1.2fr); gap: 16px; }
+}
+/* Both directions, so this block has the last word over the dead screens.css rule instead of
+   racing it: if a later lane ever widens `.report-screen` past 720 px, the legacy
+   `@container report (min-width: 720px)` wakes up with UNGUARDED 18ch floors, and under text zoom
+   it would fire while the split can no longer hold them. Under the threshold the split is one
+   column, full stop. (Request to the screens.css owner in notes/FIX-mock.md §Requests: fold
+   screens.css:1284 into `@container reportrow` and delete this pair.) */
+@container reportrow (max-width: 43.99ch) {
+  .report-split { grid-template-columns: minmax(min(100%, 18ch), 1fr); gap: 12px; }
+}
+/* === /fix:mock r2 === */
+
+/* === fix:stats r2 === Stats screen (#/stats), visual QA round 2: the section chips' tap target and
+   the dead wide-layout threshold. Two findings, both root-caused.
+
+   V1 — `.st-jump .chip` (Progress / Skills / Bests / Trophies / Patterns / Errors) measured a 32 px
+   tall REAL tap target, 12 px under the S5 44 px rule, at every viewport in both engines. r1 had tried
+   to buy the missing pixels with an escape hatch — `.st-jump .chip::before { position: absolute;
+   inset: -6px }` (L201) — but base.css:115 `.chip { overflow: hidden }` (there so a chip "truncates
+   before it can overlap") clips that pseudo away. Hit-tested with elementFromPoint stepping out from
+   the chip's own edges, the hatch bought ONE pixel: 33 px, not 44. It is the same defect the B1 lane
+   root-caused for the header chip this wave ("the r1 ::before hit box was clipped by base.css
+   `.chip { overflow:hidden }`"), and it did not carry over to this screen.
+   ROOT FIX, the shape B1 used: the hit target stops being an escape and becomes the box. The <a> is
+   itself var(--tap) tall, and the 32 px pill is PAINTED INSIDE it by ::before, so base.css's clip
+   guard stays on and there is nothing to clip. Measured after: 44 px hit box, chromium and webkit,
+   375 → 2560, both themes (`node qa/fix-stats-r2.mjs`).
+
+   Same defect, same fix, one row down: `.st-skill-drill` ("Drill 5") set `min-height: 36px` and grew
+   `::before { inset: -4px 0 }` for the rest — measured 43 px, and it only ever measured 44 in theory.
+   base.css's `.btn` already says `min-height: var(--tap)`; the override is dropped and the hatch with
+   it, so one token owns the number.
+
+   V2 (the threshold) is fixed where it was declared — screens.css:509 and §5c above, 720 → 640 px —
+   not here, because a third copy of the template is how this rot started. `tests/fix-stats.test.mjs`
+   pins both: no `@container <name> (min-width: N)` may ask for more width than its container can ever
+   have, and no `.chip` pseudo may go back to negative insets. */
+
+/* the chips: the 44 px box IS the target; the 32 px pill lives inside it ------------------------ */
+.st-jump { gap: 0 12px; margin-top: 4px; }   /* the box carries 6 px of its own above and below each
+                                                pill, so a 0 row-gap / 4 px margin keeps the SAME
+                                                12 px pill-to-pill rhythm the r1 chips had */
+.st-jump .chip {
+  position: relative;
+  height: var(--tap);
+  line-height: calc(var(--tap) - 2px);       /* centres the label in the box and keeps `.chip` a block
+                                                container, which is what text-overflow needs */
+  min-width: var(--tap);                     /* the other half of the 44×44 target */
+  padding-inline: 12px;
+  text-align: center;
+  border-width: 0;                           /* the ring moves to ::before; the border COLOUR stays on
+                                                the <a>, so the `.chip[data-tone]` rules still reach it */
+  background: transparent;                   /* ditto the fill */
+  overflow: hidden;                          /* base.css's guard, untouched: no ink can leave a chip */
+  text-overflow: ellipsis;
+}
+.st-jump .chip::before {
+  content: "";
+  position: absolute;
+  inset-block: 6px; inset-inline: 0;         /* 44 − 2×6 = the 32 px pill, entirely INSIDE the <a> */
+  z-index: -1;                               /* behind the label, above the screen's own background */
+  border: 1px solid;
+  border-color: inherit;
+  border-radius: 999px;
+  background: var(--surface);
+}
+.st-jump .chip:hover::before { background: var(--surface2); }
+.st-jump .chip:active::before { transform: translateY(1px); }
+/* the focus ring hugs the visible pill, not the invisible 44 px box */
+.st-jump .chip:focus-visible { border-radius: 999px; outline-offset: -4px; }
+
+/* "Drill 5": base.css's `.btn { min-height: var(--tap) }` does the job; the hatch is retired -------- */
+.st-skill-drill { min-height: var(--tap); }
+.st-skill-drill::before { content: none; }
+/* === /fix:stats r2 === */
+
+/* === fix:home r3 === Home's "Weak spots" rows (#/today, every save that has a weak skill).
+   One finding: `.weak-name` printing straight through `.weak-m` — "Always/Sometimes/Ne50".
+   Notes: notes/FIX-home.md. Conventions: notes/LAYOUT-ROOT.md §"Every text track has a floor",
+   §"@container or @media?" and §"Thresholds, and why each number".
+
+   THE DEFECT. The skill name paints over the miss number and, at 320 px, over "Drill 5" as well.
+   Measured on home-midweek / home-mock-cta / home-post-test, chromium AND webkit, light AND dark:
+   320x568 → 742 px² over the number (101 % of it) + 461 px² over the button; 375x667 → 34 px²;
+   at 125 % text zoom (html{font-size:20px}) → 928 px² at both widths and 1480 px² over the button
+   at 320. So it is NOT only a text-zoom defect: it fires at the default size too, on the narrowest
+   phone the app supports.
+
+   THE CAUSE, both halves of it, and neither is per-viewport:
+
+   (a) A CELL FLOOR IS NOT A CONTENT FLOOR. §6 above gave `.weak-row` the LAYOUT-ROOT idiom
+       (`minmax(min(100%, 12ch), 1fr) 32px auto`), which stops the track collapsing — but a track
+       floor says nothing about what the text inside does when the track is SMALLER than the word.
+       `.weak-main` is itself a grid whose implicit column is `auto`, i.e. min-content sized, and
+       `.weak-name`'s `overflow-wrap: break-word` does NOT participate in intrinsic sizing (only
+       `anywhere` does). So min-content stayed the width of the longest unbreakable run —
+       "Always/Sometimes/Never:", a measured 20.4ch / 199 px at fs 16, 19.4ch / 286 px at fs 24 —
+       `.weak-main`'s own box stayed 199 px wide inside a 134 px cell (min-width: 0 stopped it
+       pushing the TRACK wider, which is exactly what turned an overflow into an overlap), and the
+       ink landed on the number. This is the same class as the original report one level down: a
+       floor on the box, nothing on the words.
+
+   (b) THE ROW HAD NO STACKED FORM AT ANY WIDTH. `.st-skills li` drops to
+       `"name val" / "bar bar" / "meta drill"` under its container; `.weak-row` was three columns
+       from 320 px to 2560 px. Once the 12ch floor can no longer hold the name there is nowhere for
+       it to go — LAYOUT-ROOT's rule is "below the threshold the grid is ONE column, the text is
+       never squeezed", and this row never had a below.
+
+   THE FIX.
+
+   1. The container is `.home-weak`, the card that owns the list: it is the direct parent of
+      `.weak-list`, so its content box IS the row's width (646 px measured at every viewport ≥ 768,
+      254 at 320, 309 at 375 — the row can never be read off the viewport, which is the whole
+      convention). It hosts no `position: fixed`/`absolute` descendant, so `container-type`'s layout
+      containment captures nothing (LAYOUT-ROOT §checklist #4).
+
+   2. `overflow-wrap: anywhere` on `.weak-name`, replacing `break-word`. Same rendering — a break is
+      only ever taken where the line would otherwise overflow — but `anywhere` DOES reduce
+      min-content, so the name can never again be wider than the cell it is in. It is the right tool
+      here and `text-overflow`/`line-clamp` is not: the whole point of the row is to say WHICH skill
+      is weak, so the name may wrap but must never be hidden. The ch floors below are what keep
+      "can break anywhere" from becoming the one-letter-per-line bug.
+
+   3. THE DEFAULT IS THE STACKED FORM, and the one-row form is what a container query switches ON.
+      That direction is deliberate: if a browser ever fails to match the query the student gets the
+      always-readable layout, never the one that overlaps (LAYOUT-ROOT: "a card that never matches a
+      container query still puts the answer boxes under the paper").
+
+   4. The threshold is `calc(22ch + 124px)` — derived, mixed units, because half of this row does not
+      scale with the text: 124 px is 12 px gap + the number's 32 px + 12 px gap + the 68 px "Drill 5"
+      button, and the button is 68 px at every zoom because `--fs-2` is an absolute 15 px. 22ch is
+      the name's own measured min-content (20.4ch) plus ~8 % headroom, so at the moment the row first
+      goes to one line the name track is 22ch and the longest name still fits WITHOUT a mid-word
+      break. In `ch` and not px for the same reason as `reportrow` above: at 150 % text the need
+      grows and a px threshold would keep promising room that is no longer there. Verified live in
+      both engines (calc() in a container condition works in chromium and webkit).
+      Never dead (LAYOUT-ROOT / tests/fix-stats.test.mjs §dead thresholds): the container tops out at
+      646 px and the threshold is 339 px at fs 16, 448 at fs 24, 555 at fs 32.
+      Where it switches, fs 16: 320 → 254 px stacked, 375 → 309 stacked, 430 → 364 one row,
+      768+ → 646 one row. At fs 20 the 430 phone stacks too.
+
+   5. `.weak-m`'s track was a bare `32px`, sized for today's two digits at today's font. It is
+      `minmax(max(32px, 2.5ch), auto)` now — identical at fs 16 (32 px), 36.8 px at fs 24 — so the
+      number cannot clip or spill leftwards over the name the moment the text grows. Same shape as
+      the `.mock-sec` count column in the fix:B5 block above.
+
+   6. `.weak-main` becomes `display: contents`, in BOTH forms. The name, the bar, the number and the
+      button are then all grid items of `.weak-row`, so one set of `grid-template-areas` describes
+      both layouts and the name can span the row's full width when it stacks — without touching
+      home.js's DOM. `.weak-main` is a bare presentational div with no role, so it is safe to remove
+      its box (it is not a list item, a table part or an ARIA container).
+
+   Measured after (both engines, both themes, fs 16/20/24, 320 → 1900): 0 overlapping cells, 0 tracks
+   under 8 px, 0 horizontal overflow, "Drill 5" 44 px tall everywhere. `node qa/fix-home-r3.mjs`
+   asserts it; `tests/fix-home-r3.test.mjs` pins the conventions statically. The audit matrix cannot
+   see this class today — its text-zoom pass runs at 1900x1200 only — see notes/FIX-home.md §Requests. */
+
+.home-weak { container-type: inline-size; container-name: weakcard; }
+
+/* the words, not just the box (cause a) */
+.weak-name { overflow-wrap: anywhere; }
+
+/* one DOM → one set of areas: the wrapper stops being a box in both forms (fix 6) */
+.weak-row > .weak-main { display: contents; }
+.weak-row > .weak-main > .weak-name { grid-area: name; }
+.weak-row > .weak-main > .skill-bar { grid-area: bar; align-self: center; }
+.weak-row > .weak-m { grid-area: num; text-align: end; }
+.weak-row > .btn-drill { grid-area: drill; }
+
+/* DEFAULT: stacked — the NAME SPANS THE WHOLE ROW, because it is the thing that was being painted
+   over and it is the only cell whose content the student has to read. The bar, the number and the
+   button share the second line.
+
+   Two forms were built and measured before this one; the arithmetic is why they lost, and it is the
+   same arithmetic both times — A GRID COLUMN COSTS ITS WIDTH IN EVERY ROW, so any column the 68 px
+   button sits in is 68 px wide on the NAME's row too:
+     · "name num" / "bar bar" / "drill drill" — a full-width Drill 5 per row. 1060 px of card at
+       375x667: five identical full-bleed buttons, the tallest thing on Home, no longer a list.
+     · "name num" / "bar drill" — two rows, but column 2 resolves to max(32, 68) = 68 px, so the
+       name track is container − 68 − 12 = 229 px at 375 and 174 px at 320. 174 < the name's 199 px
+       min-content, i.e. "Always/Sometimes/Never:" breaks MID-WORD on the narrowest phone at the
+       DEFAULT text size. Measured, not reasoned: the screenshot showed it.
+   Spanning the name fixes that for good: the name's line is the full container, 254 px at 320 and
+   309 px at 375. Against the longest of the 19 skill names ("Always/Sometimes/Never: Points, Lines,
+   Planes" family — min-content 199 px at fs 16, 241 at fs 20, 286 at fs 24; max-content 255 at
+   fs 16): one line at 375/fs 16, a clean break at the space everywhere down to 320/fs 20, and only
+   at 320 px with 150 % text does it break inside a word — which is the trade LAYOUT-ROOT asks for
+   (wrap, never overlap, never hide). Row 2 keeps the wide form's reading order — bar, number,
+   action — so the number and "Drill 5" still line up on the card's right edge; the bar is
+   container − 32 − 68 − 24 = 130 px at 320, 185 px at 375. Two rows: ~70 px per skill.
+
+   Column 1 takes `minmax(0, 1fr)` and NOT a ch floor, deliberately: in THIS form the only thing in
+   column 1 is `.skill-bar`, a 6 px bar, and the name spans all three columns, so there is no text
+   for a floor to protect (LAYOUT-ROOT: "`minmax(0, 1fr)` survives only on tracks that hold a BAR or
+   a figure, never words"). A floor here is not merely useless, it overflows — see part 3. */
+.weak-row {
+  grid-template-columns: minmax(0, 1fr) minmax(max(32px, 2.5ch), auto) auto;
+  grid-template-areas:
+    "name name name"
+    "bar  num  drill";
+  gap: 6px 12px;
+  align-items: start;
+}
+.weak-row > .weak-m { align-self: center; }
+.weak-row > .btn-drill { justify-self: end; }   /* flush right, one --tap tall (base.css .btn) */
+
+/* ONE ROW: only once the name's own min-content fits beside the chrome that cannot shrink (fix 4) */
+@container weakcard (min-width: calc(22ch + 124px)) {
+  .weak-row {
+    grid-template-columns: minmax(min(100%, 12ch), 1fr) minmax(max(32px, 2.5ch), auto) auto;
+    grid-template-areas:
+      "name num drill"
+      "bar  num drill";
+    gap: 4px 12px;
+    align-items: center;
+  }
+  .weak-row > .weak-m { align-self: center; }
+  .weak-row > .btn-drill { justify-self: end; }
+}
+/* === /fix:home r3 === */
+
+/* === fix:boss miss strip in the dock (boss r3 === */
+/* THE COLLAPSED MISS ROW BOUGHT A 44 px TAP TARGET WITH A HATCH PAINTED NOWHERE — the third instance of
+   the pattern fix:B1 (the header T-minus chip) and fix:stats r2 (the six Stats section chips) each
+   root-caused separately, and the last place in the app where a hit area depended on a clip.
+   "mock r2" collapses the dock's miss strip to one row while the on-screen keyboard is open
+   (`:root[data-kb="open"]`) or the viewport is that short (`@media (max-height: 520px)`), so the answer
+   box keeps its room, and it did that with `#dock .boss-miss { max-height: 44px; overflow: hidden }` —
+   then tried to give the ~19 px "Drill 5" / "Skip the setup" link its 44 px back with
+   `.btn::before { inset: -14px -8px }`. An element's overflow clips its own absolutely positioned
+   pseudo, so the 14 px above and below was painted nowhere and hit-tested nowhere. Hit-tested with
+   elementFromPoint stepping out from the link's own edges, in chromium AND webkit:
+     375x667 + data-kb="open"  →  52.3 x 41.8 (chromium) / 53.3 x 41.8 (webkit)
+     844x390 landscape phone   →  52.3 x 25.8            / 53.3 x 26.8     — and 1280x500, same rule
+   At 844x390 the strip itself is only 28.8 px tall (one line of text + 8 padding + 2 border), so NO
+   pseudo could ever have reached 44: the fix is not a bigger hatch, it is THE STRIP'S OWN HEIGHT.
+   Same fix as B1 and stats r2, one step further: the hit target stops being an escape from the box and
+   becomes the box. The link is a real `var(--tap)` box, the flex row is therefore --tap tall, and the
+   strip spends its padding and hairlines on nothing so the collapsed row still measures EXACTLY
+   var(--tap) = 44 px — not a pixel more of the dock than "mock r2" already took (43.8 px), with the
+   3 px accent edge and the tinted background that name it as a miss untouched.
+   There is nothing left to clip, so the clip goes: a strip with no max-height grows with its own text
+   instead (text zoom, a longer skill name), which is what should have happened all along.
+   Both copies are spelled out because the collapse is (keyboard open) OR (short viewport) and CSS
+   cannot put a media query and a selector in one condition; the declarations are identical on purpose. */
+:root[data-kb="open"] #dock .boss-miss {
+  max-height: none; overflow: visible; padding-block: 0; border-block-width: 0;
+}
+:root[data-kb="open"] #dock .boss-miss .btn {
+  min-height: var(--tap); min-width: var(--tap); padding: 0 4px;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+:root[data-kb="open"] #dock .boss-miss .btn::before { content: none; }
+@media (max-height: 520px) {
+  #dock .boss-miss {
+    max-height: none; overflow: visible; padding-block: 0; border-block-width: 0;
+  }
+  #dock .boss-miss .btn {
+    min-height: var(--tap); min-width: var(--tap); padding: 0 4px;
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  #dock .boss-miss .btn::before { content: none; }
+}
+/* === /fix:boss miss strip in the dock (boss r3 === */
+
+/* === fix:home r3 === (part 2, appended after another lane's block — polish.css is append-only)
+   THE SAME MISTAKE ONE CARD DOWN, found by looking for it rather than by being told: Home's Skills
+   rail (`.skill-name`, the 19-skill list under/beside the weak spots) HIDES the end of a skill name.
+
+   screens.css:221 is `display: -webkit-box; -webkit-line-clamp: 2; overflow: hidden`, with the
+   comment "two lines, never an ellipsis that hides which ASN skill this is" — and it does exactly
+   that. Measured on home-midweek, chromium AND webkit, light AND dark, at 15 px (`--fs-2`) and at
+   125 %/150 % text (the row's font-size is an absolute token, so the numbers do not move):
+
+     viewport   .skill-name box   needs   shown   hidden
+       320       138 x 36          73 px   36 px   1 of 3 lines  ("…Lines, Planes")
+       375       193 x 37          55 px   37 px   1 of 3 lines
+      1440/1900  170 x 37          55 px   37 px   1 of 3 lines
+       834       (rail full width) —       —       nothing hidden
+
+   "Always/Sometimes/Never: Points, Lines, Planes" is one of NINETEEN skill names and one of the two
+   the student is told to drill; the clamp cuts it in every layout but the tablet one. It is the same
+   root cause as the finding above — a text cell that cannot hold its content — resolved the other
+   way: this one HIDES ink instead of printing it over a neighbour. LAYOUT-ROOT's rule covers both:
+   the text wraps, it is never squeezed and it is never hidden.
+
+   ROOT FIX, not a bigger clamp: a line clamp is a promise about height that the CONTENT can always
+   break, so the clamp goes. The name wraps to as many lines as it needs — three, for one skill of
+   nineteen, 37 px → 55 px, i.e. 18 px of extra rail — and `overflow: hidden` stops being
+   load-bearing. `min-width: 0` and the row's `minmax(min(100%, 10ch), 1fr)` floor stay as they are.
+
+   `overflow-wrap: anywhere` rides along as defence in depth, and the honest note is that today it
+   changes NOTHING here: measured at 1440 with the clamp already gone, `break-word` and `anywhere`
+   both give a 170 x 55 box on three lines (the negative control `--inject
+   '.skill-name{overflow-wrap:break-word !important}'` passes). It cannot: `.skill-row`'s width is
+   definite, so column 1 is 170 px whatever the name's min-content says, and `break-word` breaks the
+   long token to fit a track it did not get to size. The distinction only bites where a track IS
+   sized from min-content — which is exactly what part 1 measured on `.weak-name`, and the reason
+   both names now carry the same declaration instead of two different ones a future lane has to
+   reason about separately.
+
+   After: 0 clipped names and 0 overlapping cells at 320 / 375 / 834 / 1440 / 1900, chromium and
+   webkit, both themes, at 100 / 125 / 150 % text (`node qa/fix-home-r3.mjs`). */
+.skill-name {
+  display: block;                /* was -webkit-box, only so the clamp could apply */
+  -webkit-line-clamp: none;
+  overflow: visible;             /* nothing to clip any more — the name always fits its own height */
+  overflow-wrap: anywhere;       /* and can never be wider than its cell (see part 1, cause a) */
+}
+/* === /fix:home r3 === */
+
+/* === fix:home r3 === (part 3 — what the 200 %-text control caught in MY OWN part 1)
+   THE LIMIT OF THE `min(100%, Nch)` IDIOM, worth writing down because part 1 walked straight into
+   it. LAYOUT-ROOT says a floor "can never cause overflow" because `min(100%, …)` can never be wider
+   than the grid. True — for ONE floored track. It says nothing about the SUM: `100%` clamps each
+   floor against the whole grid, not against the grid minus its other tracks. Part 1's first stacked
+   template was
+      minmax(min(100%, 8ch), 1fr)   minmax(max(32px, 2.5ch), auto)   auto
+   and at 320 px with 200 % text those minima add up to 8ch (157) + 2.5ch (49) + 68 (the button)
+   + 24 (gaps) = 298 px of tracks inside a 254 px card: the row's cells spilled past the card and the
+   DOCUMENT scrolled sideways, 9 px in chromium and 13 in webkit. Every floor obeyed the idiom; the
+   row still overflowed. So: WHEN A GRID HAS MORE THAN ONE FLOOR, CHECK THE SUM AGAINST THE
+   CONTAINER, NOT EACH FLOOR AGAINST 100 %.
+
+   THE FIX IS NOT A CLEVERER FLOOR, IT IS NOT NEEDING ONE. In the stacked form column 1 holds
+   `.skill-bar` and nothing else — the name spans all three columns — so the floor was protecting a
+   6 px progress bar. It is `minmax(0, 1fr)` now (part 1, above), and the row's minima come to
+   2.5ch + 68 + 24, which fits 254 px at every text size the app can be read at. The wide form keeps
+   its 12ch floor: there column 1 really does hold the name, and its own threshold
+   (22ch + 124 px) guarantees 12ch + 2.5ch + 68 + 24 always fits.
+   `min-width: 0` on the row is the belt: a grid item inside `.weak-list` may not refuse to shrink.
+   Verified: 0 horizontal overflow at 320x568 and 375x667 in both engines at 100 / 125 / 150 / 200 %
+   text (`node qa/fix-home-r3.mjs --zooms 16,20,24,32`).
+
+   Measured, NOT patched from here, and left to the `.home-today` owner as a Request
+   (notes/FIX-home.md §Requests) — the SAME sum mistake, one card up on the same screen:
+   `@media (max-width: 480px) { .home-today { grid-template-columns: repeat(2, minmax(min(100%, 8ch),
+   1fr)) } }` in the LAYOUT-ROOT block gives TWO columns a floor that may each reach 100 % of the
+   grid. At 320 px / 200 % text `.stat-goal` measures 323 px in a 288 px card — 36 px of document
+   overflow in chromium, 42 in webkit, and the largest single source of it on Home. The honest fix is
+   a per-column share (`min(50% - <half the gap>, 8ch)`) or an `auto-fit` re-derivation of that
+   card's tile count; a third copy of that template down here is how the rot in
+   notes/FIX-stats-r2.md started. */
+.weak-list { grid-template-columns: minmax(0, 1fr); }   /* a definite column for the row to shrink in */
+.weak-row { min-width: 0; }
+/* === /fix:home r3 === */

@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>layout-audit self-test — PLANTED DEFECTS</title>
+<style>
+  /* Every rule in this file is a deliberate defect. Do not "fix" this page: it is the
+     calibration target for qa/layout-audit.mjs. Each planted element carries
+     data-plant="<detector-type>" so the self-test can assert that detector fired on it. */
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 10px; background: #ffffff; color: #111418;
+         font: 16px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  h1 { font-size: 18px; margin: 0 0 10px; }
+  section { margin: 0 0 14px; }
+
+  /* 1. collapsed-text: a 12px-wide box holding a real paragraph → one letter per line. */
+  #plant-collapsed { width: 12px; overflow: visible; border: 1px solid #111418; }
+
+  /* 2. zero-track: a grid whose text track is 0px (the placement bug, distilled). */
+  #plant-track { display: grid; grid-template-columns: 0px 250px; gap: 8px; }
+  #plant-track > .fig { height: 60px; background: #d8dee9; }
+
+  /* 3. overlap: two in-flow labels dragged on top of each other by a negative margin. */
+  #plant-overlap-a, #plant-overlap-b { display: inline-block; background: #ffffff; padding: 2px 4px; }
+  #plant-overlap-b { margin-left: -120px; }
+
+  /* 4. doc-overflow: a 1200px table inside a 320px body. */
+  #plant-wide { width: 1200px; border-collapse: collapse; }
+  #plant-wide td { border: 1px solid #111418; padding: 4px 10px; white-space: nowrap; }
+
+  /* 5. tap-target: a 30x20 button. */
+  #plant-tiny { width: 30px; height: 20px; padding: 0; font-size: 10px; border: 1px solid #111418;
+                background: #ffffff; color: #111418; }
+
+  /* 5b. tap-target bought with a pseudo-element that is CLIPPED AWAY. This is the exact shape of the
+        app's Stats section chips (`.st-jump .chip`: position: relative + base.css's
+        `.chip { overflow: hidden }` + `::before { inset: -6px }`): the CSS says 44px, the browser
+        paints and hit-tests 32px, because an element's overflow clips its own absolutely positioned
+        pseudo when the element is that pseudo's containing block. The detector used to add the insets
+        to the box unconditionally and reported a perfect 44x44 for all six chips, so the whole matrix
+        returned zero tap-target findings (ticket fix:qa r2). If that check is ever relaxed, this plant
+        goes uncaught and the self-test fails. The un-clipped counterpart lives on selftest-clean.html
+        and must stay silent — a "fix" that just ignores pseudo-elements fails there instead. */
+  #plant-clipped-hit { position: relative; overflow: hidden; width: 30px; height: 20px; padding: 0;
+                       border: 1px solid #111418; background: #ffffff; color: #111418; }
+  #plant-clipped-hit::before { content: ""; position: absolute; inset: -12px; }
+
+  /* 5c. THE SAME DEFECT HIDDEN BY ONE HAIRLINE — the shape of the Boss's dock miss strip
+        (`#dock .boss-miss { max-height: 44px; overflow: hidden; border-block: 1px }` around a ~19px
+        "Drill 5" link with `::before { inset: -14px -8px }`). The strip's BORDER box is 44px, so a
+        detector that clips the hatch to getBoundingClientRect() scores the link 44 and says nothing;
+        overflow really clips at the PADDING edge, so the target a thumb can hit is 42. Measured
+        41.8px in chromium and webkit on the live app (ticket fix:boss-miss-dock). The strip is
+        deliberately EXACTLY 44px tall: a plant one pixel less honest than the bug it stands for
+        would pass the detector it is meant to calibrate. Its un-clipped twin (#ctl-hairline) is on
+        the clean page, where the hatch really is painted and the detector must stay silent. */
+  #plant-hairline-strip { box-sizing: border-box; width: 150px; height: 44px; padding: 0 10px;
+                          border: 1px solid #111418; border-left-width: 3px; overflow: hidden;
+                          display: flex; align-items: center; background: #ffffff; }
+  #plant-hairline-hit { position: relative; height: 19px; min-height: 0; width: 44px; padding: 0;
+                        border: 0; background: none; color: #111418; font: inherit; }
+  #plant-hairline-hit::before { content: ""; position: absolute; inset: -14px -8px; }
+
+  /* 6. clipped-text: a box that hides the end of its own line with NO ellipsis intent — the reader
+        simply loses the words. (Ticket TRIAGE: the clipped-text rule had no plant, and the same
+        round taught it to treat -webkit-line-clamp as ellipsis intent. A rule that was loosened
+        without a plant is a rule that can quietly go blind, so it gets two.) */
+  #plant-clip { width: 90px; overflow: hidden; white-space: nowrap; text-overflow: clip;
+                border: 1px solid #111418; }
+
+  /* 7. clipped-text on a QUESTION: an ellipsis (here a line clamp) is a style choice everywhere
+        except on the stem, where it truncates the thing the student has to answer. */
+  #plant-clamp-stem { width: 150px; display: -webkit-box; -webkit-box-orient: vertical;
+                      -webkit-line-clamp: 1; line-clamp: 1; overflow: hidden;
+                      border: 1px solid #111418; }
+</style>
+</head>
+<body>
+  <h1>Planted defects</h1>
+
+  <!-- ORDER MATTERS. The overlap and tap-target plants must sit ABOVE THE FOLD at 320x568: a detector
+       that only works on off-screen geometry is not a detector, and an earlier version of the overlap
+       rule passed this page for exactly that reason. The two plants that grow tall (the 0px grid track
+       and the 12px-wide paragraph) therefore come last. -->
+
+  <section>
+    <span id="plant-overlap-a" data-plant="overlap">Scratch work</span>
+    <span id="plant-overlap-b" data-plant="overlap">Run progress</span>
+  </section>
+
+  <section>
+    <button id="plant-tiny" type="button" data-plant="tap-target">Go</button>
+  </section>
+
+  <!-- No text inside: the defect under test is the HIT AREA, and an empty control keeps every other
+       detector (clipped-text, contrast, collapsed-text) out of this plant's result. -->
+  <section>
+    <button id="plant-clipped-hit" type="button" aria-label="Jump to section" data-plant="tap-target-clipped"></button>
+  </section>
+
+  <!-- Empty for the same reason as #plant-clipped-hit: the defect under test is the HIT AREA. -->
+  <section>
+    <div id="plant-hairline-strip">
+      <button id="plant-hairline-hit" type="button" aria-label="Drill 5" data-plant="tap-target-hairline"></button>
+    </div>
+  </section>
+
+  <section>
+    <div id="plant-clip" data-plant="clipped-text">Supplementary angles add to 180 degrees</div>
+  </section>
+
+  <section>
+    <div id="plant-clamp-stem" class="card-stem" data-plant="clipped-text-stem">Two complementary angles: one is twice the other. Find both.</div>
+  </section>
+
+  <section>
+    <table id="plant-wide" data-plant="doc-overflow">
+      <tr><td>Column one value</td><td>Column two value</td><td>Column three value</td><td>Column four value</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <div id="plant-track" data-plant="zero-track">
+      <div class="stem">Find the measure of the missing angle in the figure shown here.</div>
+      <div class="fig" aria-hidden="true"></div>
+    </div>
+  </section>
+
+  <section>
+    <div id="plant-collapsed" data-plant="collapsed-text">
+      <p style="margin:0">The quick brown fox jumps over the lazy dog and keeps running.</p>
+    </div>
+  </section>
+</body>
+</html>

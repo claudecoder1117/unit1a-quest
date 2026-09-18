@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "_doc": [
+    "Waivers for qa/layout-audit.mjs. Every entry MUST carry a reason. Waived hits are not deleted:",
+    "they are printed in the report as \"waived\" and counted, so the auditor never goes blind.",
+    "Fields: type (detector id, required), selector (CSS the offending element must match, required),",
+    "states (array of state-id prefixes, or [\"*\"] for all), reason (required, plain English).",
+    "A waiver is a promise that the hit is intentional AND accessible some other way — not a mute button."
+  ],
+  "entries": [
+    {
+      "type": "tap-target",
+      "selector": "#hdr-readiness, #hdr-level, #hdr-xp, #hdr-combo, #hdr-streak, #hdr-tminus, .ring, .combo, .streak",
+      "states": ["*"],
+      "reason": "Header status read-outs. The readiness ring and the T-minus chip sit inside the 48px-tall #hdr-home / #/settings anchors, which ARE >=44px; the inner spans are decoration reported by the DOM as their own hit boxes."
+    },
+    {
+      "type": "contrast",
+      "selector": ".sr-only, [aria-hidden=\"true\"]",
+      "states": ["*"],
+      "reason": "Visually-hidden or aria-hidden text is never read on screen; its computed colour is meaningless."
+    }
+  ]
+}

@@ -110,11 +110,20 @@ test('card r1 / source pins: the re-tap guard, the pips, the wedge floor, one Co
   assert.match(asnSrc, /short \? `Not \$\{LETTERS\[res\.verdict\]\}\. \$\{LETTERS\[res\.answer\]\}\.`/, 'chips-pending miss shows only the letters');
   assert.match(read('site/js/widgets/factored.js'), /pips: \(\) => \(\{ total: 1, filled: f\.wrap\.dataset\.state === 'ok' \? 1 : 0 \}\)/);
   assert.match(read('site/js/widgets/equation.js'), /pips: \(\) => \(\{ total: 1, filled: root\.dataset\.kind === 'correct' \? 1 : 0 \}\)/);
-  const m = /const WEDGE_MIN = (\d+), WEDGE_MAX = (\d+), BAND = (\d+), MIN_CHORD = (\d+);/.exec(read('site/js/figure/svg.js'));
+  const figSrc = read('site/js/figure/svg.js');
+  const m = /const WEDGE_MIN = (\d+), WEDGE_MAX = (\d+), BAND = (\d+), MIN_CHORD = (\d+);/.exec(figSrc);
   assert.ok(m, 'svg.js wedge constants');
-  // at 375 px the figure paints ≈ 0.78 css px per viewBox unit, so 44 px needs ≥ 57 vb of chord / band
-  assert.ok(+m[3] >= 57 && +m[4] >= 57, `BAND ${m[3]} / MIN_CHORD ${m[4]} are under the 44 px floor at 375`);
+  assert.ok(+m[3] >= 57 && +m[4] >= 57, `BAND ${m[3]} / MIN_CHORD ${m[4]} are under the drawn-wedge floor`);
   assert.ok(+m[2] >= +m[4] / (2 * Math.sin(Math.PI * 13 / 180)), 'WEDGE_MAX lets a 26° wedge reach the chord');
+  // fix:B3 — those four now size only the DRAWING. The 44 px rule moved to its own constants, because a
+  // chord is not what a thumb gets (a sector hugging an axis is `r·sin(span)` thick, not `2r·sin(span/2)`)
+  // and 375 px was never the width the figure is hosted at — the app renders it from 238 px to 650 px.
+  const hit = /const HIT_MIN_PX = (\d+);[\s\S]*?const HIT_PAD_PX = (\d+);[\s\S]*?const HIT_REF_W = (\d+);/.exec(figSrc);
+  assert.ok(hit, 'svg.js hit constants');
+  assert.ok(+hit[1] >= 44, `the wedge hit floor is ${hit[1]} px, under S5's 44`);
+  assert.ok(+hit[2] >= 1, 'the hit floor keeps headroom over the auditor\'s 43.5 px tolerance');
+  assert.ok(+hit[3] <= 238, `HIT_REF_W ${hit[3]} is wider than the narrowest figure the app renders (238 px at 320x568)`);
+  assert.match(figSrc, /const HIT_MIN = \(\(HIT_MIN_PX \+ HIT_PAD_PX\) \* VIEW\.w\) \/ HIT_REF_W;/, 'the floor is px → viewBox units, not a magic number');
   const css = read('site/css/polish.css');
   assert.match(css, /grid-template-areas: "head" "stage" "parts" "foot" "result" "solution" "side" "sandbox"/, 'phones: parts before Scratch/hints');
 });

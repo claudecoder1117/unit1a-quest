@@ -275,7 +275,17 @@ export function createCardView(host, source = {}, opts = {}) {
     if (open && focus) scratch.focus();
   }
   scratchToggle.addEventListener('click', () => openScratch(scratchWrap.dataset.open !== 'true', { focus: scratchWrap.dataset.open !== 'true' }));
-  const hintBtn = h('button.btn.card-hint-btn', { type: 'button' }, 'Hint');
+  const hintBtn = h('button.btn.card-hint-btn', { type: 'button' }, h('span.card-hint-n', 'Hint'));
+  /** fix:B6 — the ladder button carries TWO labels: the count ("Hint 3 of 3") and what the hint is
+   *  ("one step from the end"). They used to be a bare text node plus a span inside an inline-flex
+   *  button, and a bare text node is an ANONYMOUS flex item: it cannot be given `white-space: nowrap`
+   *  or a basis, so whenever the ladder was narrower than the button's max-content width it was the
+   *  COUNT that broke ("Hint 3 of" / "3") while the optional qualifier kept its own full line — the
+   *  important half losing its room to the decoration. Each label is its own element now, so the count
+   *  can never break and the qualifier has a wrap floor (polish.css "fix:B6"). */
+  const setHintLabel = (count, name = '') => {
+    hintBtn.replaceChildren(h('span.card-hint-n', count), ...(name ? [h('span.card-hint-q.muted.fs-1', `· ${name}`)] : []));
+  };
   const hintList = h('ol.hint-list', { 'aria-live': 'polite' });
   const hintWrap = h('div.hint-ladder', h('div.card-side-h', 'Hints ', h('span.muted.fs-1', '(H) — cost XP quality, never an attempt')), hintList, hintBtn);
   side.append(scratchWrap, hintWrap);
@@ -288,7 +298,14 @@ export function createCardView(host, source = {}, opts = {}) {
   stage.append(paper);
   root.append(head, stage, side, partsHost, foot, result, solution);
   if (o.sandbox) root.append(h('p.card-sandbox.muted.fs-1', 'Sandbox — nothing here is saved or scored.'));
-  host.append(root);
+  // LAYOUT-ROOT: the card engine is mounted at widths that have nothing to do with the viewport
+  // (#/card in #view, a .run-stage, onboarding's .ob-run-stage, .boss-stage, the night mini-mock,
+  // the step-2 sandbox), so every rule that decides its columns queries THIS wrapper's width, not
+  // the viewport's. A CSS container cannot query itself, which is why the wrapper exists at all and
+  // why nothing but `container-type` lives on it (see notes/LAYOUT-ROOT.md).
+  const cardHost = h('div.card-host');
+  cardHost.append(root);
+  host.append(cardHost);
 
   /* ---- dock ---- */
   const dock = createDock({ keys: KEYS.num });
@@ -438,8 +455,7 @@ export function createCardView(host, source = {}, opts = {}) {
   /* ---- hints (S3: H1 relationship, H2 setup, H3 one step from the end) ---- */
   function renderHints(item) {
     if (o.hints === false || o.mode === 'boss' || !item.hints.length) { hintWrap.hidden = true; dockHint.hidden = true; return; }
-    hintBtn.textContent = '';
-    hintBtn.append(`Hint 1 of ${item.hints.length}`, h('span.muted.fs-1', ` · ${HINT_NAMES[0]}`));
+    setHintLabel(`Hint 1 of ${item.hints.length}`, HINT_NAMES[0]);
     syncDockHint();
   }
   on(hintBtn, 'click', () => revealNextHint());
@@ -495,8 +511,8 @@ export function createCardView(host, source = {}, opts = {}) {
     hintList.append(li);
     requestAnimationFrame(() => li.classList.add('is-in'));
     const next = i + 1;
-    if (next < st.item.hints.length) { hintBtn.textContent = ''; hintBtn.append(`Hint ${next + 1} of ${st.item.hints.length}`, h('span.muted.fs-1', ` · ${HINT_NAMES[next]}`)); }
-    else { hintBtn.disabled = true; hintBtn.textContent = 'No more hints'; }
+    if (next < st.item.hints.length) setHintLabel(`Hint ${next + 1} of ${st.item.hints.length}`, HINT_NAMES[next]);
+    else { hintBtn.disabled = true; setHintLabel('No more hints'); }
     inlineHint(i, auto, entry);                    // card r1: also inside the part box (phones)
     syncDockHint();
     if (i >= 1 && !o.sandbox) setCombo(0);        // H2 / H3 reset the combo; H1 holds (S4)
@@ -1199,6 +1215,7 @@ export function createCardView(host, source = {}, opts = {}) {
     try { dock.destroy(); } catch { /* gone */ }
     for (const l of document.querySelectorAll('.levelup')) l.remove();
     root.remove();
+    cardHost.remove();       // LAYOUT-ROOT: the query-container wrapper goes with the card it wraps
   }
 
   return { el: root, destroy, state: st, get item() { return st.item; }, get ready() { return st.ready; }, grade: () => { const e = activeEntry(); return e ? gradeEntry(e) : null; }, hint: () => revealNextHint(), continue: continueNow };
