@@ -204,12 +204,19 @@ export const CORRECT_RAW_TYPES = Object.freeze([
  *
  * Every leaf below that a shipped writer leaves unrounded is priced at this width: `rating.value`
  * and `records.bestRating20` (`call.ratingDetail` clamps, it does not round), `player.elo.*`
- * (`guard.elo` returns `P + k·(o − e)` raw), `game.log[].rating` (the same `detail.value`
- * `state.endJob` writes), `game.ledger.phaseMeans.*` (`foldMean` is an incremental mean),
+ * (`guard.elo` returns `P + k·(o − e)` raw), `game.ledger.phaseMeans.*` (`foldMean` is an incremental mean),
  * `game.heat.press.*` (`guard.pushHeat` accumulates `posted · share`), `inProgress.game.rating0`
  * and `guard.dist.*`, and `runs[].ratingDelta` (a difference of two of the above).
  */
 export const WIDE_DOUBLE = 0.0000012345678901234567;
+
+/**
+ * The widest JSON form a 4-decimal value in [0, 10] can take: **6 characters** (`9.9999`). The one
+ * leaf priced at it is `game.log[].rating`, which `state.endJob` rounds with `econ.round(v, 4)`
+ * (verify round 4, notes/repair-state.md §4 — the 18 B a row it saves is what pays for
+ * `queueTargets` on the same row). Verified by search over 200 000 values in the range.
+ */
+export const WIDE_4DP = 9.9999;
 
 /** `WIDE_DOUBLE` with the sign a signed unrounded leaf (`runs[].ratingDelta`) can carry: 25 chars. */
 export const WIDE_SIGNED_DOUBLE = -0.0000012345678901234567;
@@ -227,6 +234,16 @@ export const WIDEST_SKILL = 'QUAD-SOLVE';
  * the longest — 8 characters, not the 6 the round-1 fixture typed.
  */
 export const WIDEST_W = 0.888889;
+
+/**
+ * The widest `q` a `player.rating.calls[]` entry can hold. Since round-4 verify a q̂-derived entry
+ * stores the q̂ and derives the weight from it (`call.callEntry`'s banner: `w = K·q̂(1−q̂)` is
+ * two-to-one, so a slot that stores only `w` cannot say what material the call was made on and the
+ * rank cap had to guess). q̂ is `k/n` with `n ≤ RATING.qHatWindow = 10`, so thirds are reachable and
+ * `round(1/3, 6) = 0.333333` is the longest — 8 characters, EXACTLY as wide as `WIDEST_W`, which is
+ * why the swap moves no line of G7's budget table.
+ */
+export const WIDEST_Q = 0.333333;
 
 /** The longest wing id (G3.4) — `calls`, `log[].guard` and `runs[].guard` all hold one. */
 const WIDEST_WING = 'FIGURES';
@@ -317,19 +334,26 @@ const dayStr = (n) => new Date(Date.UTC(2026, 7, 20) + n * 86400000).toISOString
  * `save.player` with the 50-call rating window full.  `caps` = `CAPS.game`.
  *
  * Every entry is exactly what `call.windowPush(win, {call, ok, qHat, skill, at})` appends — the key
- * ORDER is `callEntry`'s own (`p, ok, w, skill, at`) and the values are its widest: `w` rounded to
+ * ORDER is `callEntry`'s own (`p, ok, q, skill, at`) and the values are its widest: `q` rounded to
  * 6 dp at q̂ = 1/3, the longest make id there is. `job-save.test.mjs` rebuilds the window with the
  * shipped `windowPush` and asserts it deep-equals this one.
+ *
+ * `q`, not `w`, since round-4 verify: the entry stores the EVIDENCE and derives the weight, because
+ * `w = K·q̂(1−q̂)` is two-to-one and the round-4 rank cap cannot price a slot whose material it has
+ * to guess. Same key count, same 8-character worst case (`WIDEST_Q`), so no budget line moves. The
+ * Mock keeps the `w` form — it has no make, so it has no q̂ — and `windowOf` reads both.
  */
 export function worstCasePlayer(now, caps) {
   return {
     rating: {
-      calls: Array.from({ length: caps.calls }, (_, i) => ({ p: 0.85, ok: i % 3 !== 0, w: WIDEST_W, skill: WIDEST_SKILL, at: now + i * 60000 })),
+      calls: Array.from({ length: caps.calls }, (_, i) => ({ p: 0.85, ok: i % 3 !== 0, q: WIDEST_Q, skill: WIDEST_SKILL, at: now + i * 60000 })),
       value: WIDE_DOUBLE, n: caps.calls,
     },
     rank: 1,
     elo: { player: WIDE_DOUBLE, house: WIDE_DOUBLE },
-    records: { bestBag: 99999, bestChain: 99, bestRating20: WIDE_DOUBLE, cleanJobs: 999, cracked: 999, walked: 999, cleanGetaway: true },
+    // `bestRating` is priced because S3.1(c)'s audit record ships: state.js writes it at both rating
+    // writers and screens/mock.js at the third (notes/repair-save.md Request A, landed).
+    records: { bestBag: 99999, bestChain: 99, bestRating20: WIDE_DOUBLE, bestRating: WIDE_DOUBLE, cleanJobs: 999, cracked: 999, walked: 999, cleanGetaway: true },
   };
 }
 
@@ -367,7 +391,15 @@ export function worstCaseGame(now, caps) {
     /* `rating` is `call.ratingDetail(...).value` — the same unrounded double `player.rating.value`
        holds, NOT the `7.1234` round 1 typed. `targets` is `answered()`, which counts requeues, so it
        runs past the drafted 12; `bagged` is `econ.round`ed and reaches four digits on a real board. */
-    log: Array.from({ length: caps.log }, (_, i) => ({ day: dayStr(i), shape: 'JOB12', targets: 99, bagged: 99999, posted: 99999, rating: WIDE_DOUBLE, guard: WIDEST_WING, cracked: true, tGame: 3599999, tAnswer: 3599999 })),
+    /* ROUND-4 VERIFY, and the row is BYTE-NEUTRAL across the two changes (notes/repair-state.md §4):
+       `state.endJob` now records `queueTargets` — the drafted queue's own length, which `board.js`
+       `queuedTargetsOf` prefers and which retires its `min(published row, tonight's draft)` stand-in
+       — and it PAYS for it by rounding the log's own copy of `rating` to 4 dp. `rating` was the one
+       leaf on this row priced at `WIDE_DOUBLE`; 4 dp is 6 characters at its widest and is two orders
+       of magnitude more precision than any surface prints (they all print 2). 18 B saved, 18 B
+       spent. `player.rating.value` and `inProgress.game.rating0` are still unrounded and still
+       priced at `WIDE_DOUBLE` — it is only the LOG's copy that is rounded. */
+    log: Array.from({ length: caps.log }, (_, i) => ({ day: dayStr(i), shape: 'JOB12', targets: 99, queueTargets: 99, bagged: 99999, posted: 99999, rating: WIDE_4DP, guard: WIDEST_WING, cracked: true, tGame: 3599999, tAnswer: 3599999 })),
     commit: { kind: 'walkAtMinutes', byMin: 1305, honored: 999, bound: true },
   };
 }
@@ -431,7 +463,14 @@ export function inProgressJob12(now, caps) {
     last: { n: 12, d: -1152, rung: 3, ok: false, chainBefore: 11, looseBefore: 2332, shielded: true },
     ph: { board: 186000, guard: 124000, brief: 207000, getaway: 255000, debrief: 654000 },
     rating0: WIDE_DOUBLE,
+    /* `quiet` and `tellOff` are booleans, priced `false` — 5 characters, one more than `true`.
+       `tellOff` is `js/job/state.js` EXTRA_KEYS' tenth key (the brief window's declined tell); it
+       is added here, in the save lane's fixture, because the key list is the SHIPPED serialiser's
+       and `job-save.test.mjs` pins this fixture as a fixed point of it. 17 B on the
+       `inProgress.game` row (notes/repair-save.md, round-5 verify — cross-lane collateral from the
+       state lane, whose own note owns the behaviour). */
     quiet: false,
+    tellOff: false,
   };
 }
 
@@ -455,6 +494,13 @@ export function worstCaseBench(now, n = BENCH_ENTRIES) {
     template: 'T-quad-solve', seed: `a91f2c-w${i}`, skill: WIDEST_SKILL, skills: [WIDEST_SKILL],
     tier: 3, module: 'M1', sheet: 'QUAD', isReview: true, isRematch: false, isVariant: true,
     forCard: 'quad-12', done: false, result: null, bucket: 3, overdue: WIDE_DOUBLE, sweep: false,
+    /* `params` — the STUDY composer's key, on the bench because `benchFor` spreads `...t.item`
+       (see `worstCaseJobQueue` for why every entry can carry it). It is priced here and NOT in
+       `GAME_QUEUE_FIELDS`: `composePage` writes it with the layer off, so it is study bytes on the
+       queue — but the whole `bench` key is the layer's, so on THIS record it is game bytes and it
+       lands on G7's `inProgress.bench` row. That is what moved the row from 1.9 KB to 2.0 KB and
+       the headline from 39.6 KB to 39.7 KB at the round-5 verify (notes/repair-save.md). */
+    params: { mode: 'a2' },
     from: 'E', sources: ['E'], wing: WIDEST_WING, posted: 999, basePosted: 999, x2: false,
     critical: true, declined: 'E',
   }));
@@ -514,10 +560,63 @@ export function worstCaseJobQueue(now, n = JOB_QUEUE_ITEMS) {
        would be 17 B × 36 entries of pure fat on the single most expensive line in the table. */
     forCard: 'ang-wu-40', bucket: 3, overdue: 9999.9, sweep: false,
     rename: { F: 'E', D: 'L', C: 'T', B: 'M', A: 'V', E: 'Y' }, requeued: 1,
+    /* ROUND 5 (verify) — `params`, THE KEY THE COMPLETENESS GUARD COULD NOT SEE. `composePage`'s S7
+       algebra floor writes it (`site/js/page.js:392` `{ mode: quadOk && rng.chance(0.5) ? 'a2' : 'a1' }`
+       → `variantItem`'s `if (params && Object.keys(params).length) item.params = { ...params }`), and
+       a floor item reaches a JOB unchanged: `composeBundles` prices `page.queue` as it stands and
+       `draftUnion` spreads `...t.item`. Measured on the shipped writers — 198 of 200 seeded saves
+       with no backlog draft one (`node scratchpad/repair-save-r5/probe_job_floor.mjs`); the corpus
+       in `job-save.test.mjs` reaches them through its `lowDue` arm and asserts it still does.
+       WHY IT IS PRICED ON EVERY ENTRY AND NOT ON THE ONE OR TWO A PAGE COMPOSES. `freezeVariant`
+       PERSISTS it — `schedule.js:130` `if (item.params && …) rec.params = item.params` — and every
+       later due of that frozen Variant re-emits it (`page.js:287` `variantItem(d.template, d.seed,
+       'review', { …, params: d.params, … })`). `save.frozen` holds `CAPS.frozen` records, so a
+       worst-case queue of frozen-Variant reviews carries `params` on EVERY entry; there is no
+       structural bound at 2.
+       IT IS A STUDY KEY. `composePage` is untouched by the layer, so a `settings.game = false` page
+       writes it too — by the same attribution rule that put `from`/`sources`/`wing` in
+       `GAME_QUEUE_FIELDS`, `params` stays OUT of that list and `withoutGameKeys` leaves it in the
+       STUDY half, where it belongs. Its 828 B on this fixture are T01's bytes, not the layer's. */
+    params: { mode: 'a2' },
     done: false,
     result: { cleared: false, solutionShown: true, reason: 'third-wrong', attempt: 3, hints: 0, n: i + 1, role: 'rematch', skill: WIDEST_SKILL, tier: 3 },
     ...GAME_QUEUE_FIELDS,
   }));
+}
+
+/**
+ * The two keys a FROZEN-VARIANT REVIEW carries that the card-shaped entry above does not, at their
+ * widest — `page.js:287` `variantItem(d.template, d.seed, 'review', { …, frozenKey: d.key,
+ * templateVersion: d.templateVersion, … })`, fed from `save.frozen[key]` (`schedule.js dueList`).
+ *
+ * ROUND 5 (verify), found while pricing `params` one line above it: these reach a real job's queue
+ * too (22 of 840 entries over 60 seeded saves carrying frozen Variants) and were in no fixture, so
+ * the completeness guard could not see them either.
+ */
+export const FROZEN_REVIEW_FIELDS = Object.freeze({ frozenKey: 'T-fig-xlines-LL#58d000', templateVersion: 99 });
+
+/**
+ * A frozen-Variant REVIEW queue entry at its widest — the OTHER shape `composePage` writes into
+ * `inProgress.queue`, and the reason `FROZEN_REVIEW_FIELDS` is not simply added to every entry of
+ * `worstCaseJobQueue()`.
+ *
+ * THE TWO SHAPES ARE MUTUALLY EXCLUSIVE, and the card-shaped one is the wider. A card due goes
+ * through `cardItem(c, 'review', { bucket, overdue, sweep })` and may pick up `rename`
+ * (`page.js:281-284`); a frozen-Variant due goes through `variantItem(…, { frozenKey,
+ * templateVersion })` and gets NONE of those four. Measured over 840 real entries: **no entry ever
+ * carried both `rename` and `frozenKey`** (`job-save.test.mjs` asserts that on every run), and the
+ * frozen shape is 48 B NARROWER than the card shape (665 B against 713 B) once the four keys it cannot have are removed.
+ * So the LINE stays priced on `JOB_QUEUE_ITEMS` card-shaped entries — which is an upper bound for
+ * any mix of the two — and this fixture prices the two extra KEYS, which is what the completeness
+ * guard and the per-key width rows need. `job-save.test.mjs` asserts the dominance rather than
+ * asserting the prose: if the frozen shape ever becomes the wider one, the line is re-priced on it.
+ *
+ * Pricing the union on all 36 entries instead would add 2 088 B of bytes no single real entry can
+ * carry — to the STUDY half, which has 400 chars of slack left against T01's 500 000-char bound.
+ */
+export function worstCaseFrozenReviewItem(now, i = 0) {
+  const { rename, bucket, overdue, sweep, ...rest } = worstCaseJobQueue(now, 1)[0];
+  return { ...rest, n: i + 1, role: 'review', isReview: true, ...FROZEN_REVIEW_FIELDS };
 }
 
 /**
@@ -541,6 +640,113 @@ export function worstCaseGameTrophies(now) {
 }
 
 /**
+ * The SIX fields the game layer adds to `inProgress.meta.before`, the before-snapshot the debrief
+ * reads — and the same mistake as the bench and the queue fields, ONE LEVEL FURTHER OUT AGAIN.
+ *
+ * ROUND 4 (verify). `inProgress.meta.before` is written by BOTH paths, into the same slot:
+ *   · `screens/run.js:856` (the flat Page)  `const snap = { ...before, tiles: tilesBefore }`
+ *                                           → `skills, readiness, xp, coverage, tiles` — five keys
+ *   · `screens/run.js captureJobBefore`     → those five PLUS `tags, index, rating, startedAt,
+ *                                             seed, seedTag`, and `screens/job.js` calls it inside
+ *                                             `update()` on every job, so it reaches disk
+ * `withoutGameKeys` stripped `inProgress`'s KEY LIST and the queue ENTRIES and stopped there, so all
+ * six were charged to the STUDY half; and neither worst-case carrier wrote an `inProgress.meta` at
+ * all, so they appeared in no measurement either — exactly the shape of the bench (round 2), the
+ * queue fields and the trophies (round 3). Measured through the real store on a saturated save
+ * (`scratchpad/repair-save-v1/measure.mjs`): **1 531 B** of the 5 448 B snapshot, of which
+ * `tags` at 68 sealed ids is 1 214 B. With ZERO sealed tags it is still 309 B — larger than the
+ * `trophies` row that was given a row of its own.
+ *
+ * This is the KEY LIST (like `GAME_TROPHY_IDS`); `worstCaseJobBefore` prices it, because two of the
+ * fields need the caps and the clock, which this file takes as parameters and never bakes in.
+ * `job-save.test.mjs` derives the list from the two shipped writers — it parses run.js's own flat-Page
+ * literal and diffs it against what `captureJobBefore` returns over a corpus of real jobs — so an
+ * unpriced key fails there, naming itself, instead of landing in the study half.
+ *
+ * IT ALREADY HAS. The list was written with six fields; the derivation test came back naming a
+ * SEVENTH — `composed` (`captureJobBefore` → `composedCountOf`, added by the run lane in this same
+ * round, run.js "verify r1") — before it could reach a measurement. That is the whole point of
+ * deriving the list rather than typing it: three rounds running, a hand-maintained list was one
+ * level short of the writers.
+ */
+export const GAME_META_FIELDS = Object.freeze(['tags', 'index', 'rating', 'startedAt', 'seed', 'seedTag', 'composed']);
+
+/**
+ * How many entries `readiness.skillStates()` returns — every make in `data/skills.js`, in table
+ * order. `job-save.test.mjs` asserts `SKILL_IDS.length <= SKILL_STATES`, so a twentieth make fails
+ * there rather than silently under-pricing the STUDY half of the before-snapshot.
+ */
+const SKILL_STATES = 19;
+
+/**
+ * `inProgress.meta.before` for a LIVE JOB — the whole snapshot `captureJobBefore` writes, both
+ * halves, every leaf at its widest.
+ *
+ * The STUDY half (`skills, readiness, xp, coverage, tiles`) is priced too, and deliberately: it is
+ * what makes `inProgress.meta` a DELTA row like `inProgress.queue` and `trophies` rather than a
+ * whole-key row. A `withoutGameKeys` that deleted `before` outright — or that kept the six game
+ * fields — moves the measured delta off `SAVE_BUDGET_KB.metaDelta` in one direction or the other and
+ * `job-save.test.mjs` fails on the row.
+ *
+ * Widths:
+ *   · `tags`     `jobIndex.sealedOf` returns the TAG IDS out of `game.tags`, so they are priced with
+ *                the SAME 27-character ids `worstCaseGame` gives `game.tags` its keys (the longest
+ *                real tag in `data/misconceptions.js`, applied to all `caps.tags`). Pricing them
+ *                narrower than the same carrier's own `game.tags` keys would be incoherent — it is
+ *                one save, and these are the same strings. Real ids measure 1 214 B for 68; this
+ *                prices 2 041 B, and the pessimism is recorded in notes/repair-save.md.
+ *   · `index`    `jobIndex.indexProgress`'s record. `pct = sealed / total` is a raw quotient that
+ *                nothing rounds → `WIDE_DOUBLE`; `triggered` / `resolutions` are sums over all 68
+ *                records, priced at five digits.
+ *   · `rating`   `num(save.player.rating.value, 5)` — the same unrounded double as `player`.
+ *   · `skills`   `readiness.skillStates()`: one record per make, `m` / `mShown` / `score` unrounded
+ *                (`score = def.w · (1 − m/100)`).
+ *
+ * @param {number} now
+ * @param {object} caps  `CAPS.game`
+ * @param {{study?: boolean}} [opts]  `study: false` returns the six GAME fields only — used by the
+ *   carrier that also has to stay under T01's 500 000-char STUDY bound (see notes/repair-save.md
+ *   Request D: a real snapshot's study half does not fit inside it, and that half is T01's line).
+ */
+export function worstCaseJobBefore(now, caps, { study = true } = {}) {
+  const game = {
+    tags: Array.from({ length: caps.tags }, (_, i) => `confused-misconceptions-${String(i).padStart(3, '0')}`),
+    index: {
+      sealed: 68, cleared: 68, live: 68, untouched: 68, touched: 68,
+      triggered: 99999, resolutions: 99999, total: 68, pct: WIDE_DOUBLE,
+      milestones: [{ need: 25, have: 25, met: true }, { need: 68, have: 68, met: true }],
+      complete: true,
+    },
+    rating: WIDE_DOUBLE,
+    startedAt: now,
+    /* `inProgress.seed` as `job.startJob` writes it: `job|<profileId>|<day>|<n>`, and a real
+       `profileId` is `store.newProfileId`'s **UUID** — 36 characters, not the short label a test
+       corpus seeds. 54 characters, with room for a two-digit job index. */
+    seed: 'job|d6f2162f-4078-43a8-ba34-3d1c713c89b1|2026-09-16|99',
+    seedTag: 'a91f2c',
+    /* `composedCountOf(ip)` — the sum of `composePage`'s own per-role tally for the page the board
+       drafted out of. A count, priced with room for five digits. */
+    composed: 99999,
+  };
+  if (!study) return game;
+  return {
+    skills: Array.from({ length: SKILL_STATES }, () => ({
+      id: WIDEST_SKILL, name: 'Solve quadratics by factoring or formula', w: 3,
+      m: WIDE_DOUBLE, n: 99, mShown: WIDE_DOUBLE, untested: false, placed: false,
+      mastered: false, missed: false, helped: false, weak: false, started: false, score: WIDE_DOUBLE,
+    })),
+    readiness: { r: 100, provisional: false },
+    xp: 9999999,
+    coverage: { cleared: 999, total: 999 },
+    /* `tileIdsOf` collects the queue's originals, each item's `forCard` and each Variant's FAMILY
+       tile, so one per drafted target is the shape; the values are `tileRarity` / `familyRarity`
+       strings, of which `platinum` is the longest. */
+    tiles: Object.fromEntries(Array.from({ length: JOB_QUEUE_DRAFTED }, (_, i) => [`T-fig-xlines-LL-fam-${String(i).padStart(2, '0')}`, 'platinum'])),
+    ...game,
+  };
+}
+
+/**
  * The same save with every byte the GAME layer added removed — i.e. exactly the bytes T01 measured
  * when it set its 500 000-char bound. Splitting the worst case this way is what lets the study
  * layer's bound stay the number T01 asserted while G7's own `SAVE_BUDGET_KB.totalAdded` bounds the addition.
@@ -552,10 +758,18 @@ export function worstCaseGameTrophies(now) {
  *   · `inProgress.bench`              — likewise (round 2)
  *   · `inProgress.queue[*]` × 8       — `page.draftUnion`/`state.swapIn` add them to an item
  *                                       `composePage` composes without them (round 3)
+ *   · `inProgress.meta.before` × 6    — `captureJobBefore` adds them to the before-snapshot the flat
+ *                                       Page path writes without them (round 4 — `GAME_META_FIELDS`)
  *   · `trophies[<six game ids>]`      — only a job can earn them (round 3)
  *   · `runs[*]` × `GAME_RUN_FIELDS`   — reserved, see that constant
  * Each one of these was found by a critic AFTER the previous one was fixed, because the fix stopped
  * at the level the finding named. If you add a game-layer write anywhere, add it here too.
+ *
+ * THE LIST IS NO LONGER MAINTAINED BY HAND, which is why it kept being one level short: each of the
+ * last three lines is DERIVED in `job-save.test.mjs` by diffing the game writer against the study
+ * writer of the same record — `startJob` vs `startPage` for the queue entry, `data/trophies.js`'s own
+ * predicates for the trophies, and `captureJobBefore` vs run.js's flat-Page literal for the
+ * before-snapshot — so an unpriced seventh field fails there, naming itself.
  */
 export function withoutGameKeys(save) {
   const s = structuredClone(save);
@@ -565,8 +779,44 @@ export function withoutGameKeys(save) {
     for (const it of s.inProgress.queue ?? []) {
       if (it && typeof it === 'object') for (const k of Object.keys(GAME_QUEUE_FIELDS)) delete it[k];
     }
+    const before = s.inProgress.meta?.before;
+    if (before && typeof before === 'object' && !Array.isArray(before)) for (const k of GAME_META_FIELDS) delete before[k];
   }
   for (const id of GAME_TROPHY_IDS) delete s.trophies?.[id];
   for (const r of s.runs ?? []) for (const k of Object.keys(GAME_RUN_FIELDS)) delete r[k];
   return s;
+}
+
+/**
+ * ROUND 3, finding 55 — THE ONE THING THE SPLIT ABOVE CANNOT SEE, MEASURED INSTEAD OF ASSUMED.
+ *
+ * `game` is in `store.ARCHIVED_KEYS`, so a unit handoff copies it (with `inProgress`, bench, queue
+ * and `runs` and all) into `save.archive[<old unit>]` and resets the live key. That archived copy
+ * sits in BOTH halves of `withoutGameKeys` — `archive` is a kept key and nothing in it is stripped —
+ * so it CANCELS, and `addedBy()` reports the same number whether or not a saturated unit is filed
+ * away underneath it. The published bound is therefore a statement about the LIVE keys of ONE unit,
+ * and G7 now says so; this function prices the second copy so the total footprint is a measurement.
+ *
+ * Why the alternative was refused: making `withoutGameKeys` delete `archive` outright would put the
+ * whole archive on one side of the subtraction only, and an archived unit's CARDS alone are ~227 KB
+ * of STUDY bytes — the split would report a quarter of a megabyte as "added by the game layer". The
+ * archive has to cancel; what it may not do is cancel silently.
+ *
+ * The rule is the same one `withoutGameKeys` applies, applied to the archive entry: an entry carries
+ * the ARCHIVED_KEYS at its own top level (`game`, `inProgress`, `runs`, `cards`, …), so the layer's
+ * share of it is exactly what `withoutGameKeys` would strip from a save of that shape — `game`,
+ * `inProgress.game`, `inProgress.bench`, the eight per-queue-entry fields, the six
+ * `inProgress.meta.before` fields and the reserved `runs[]` fields. `player` and `trophies` are KEPT
+ * keys and are never archived, so they are not in it.
+ */
+export function archivedGameBytes(save) {
+  const a = save?.archive;
+  if (a === null || typeof a !== 'object' || Array.isArray(a)) return 0;
+  let n = 0;
+  for (const k of Object.keys(a)) {
+    const e = a[k];
+    if (e === null || typeof e !== 'object') continue;
+    n += JSON.stringify(e).length - JSON.stringify(withoutGameKeys(e)).length;
+  }
+  return n;
 }

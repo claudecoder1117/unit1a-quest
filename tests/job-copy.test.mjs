@@ -22,7 +22,7 @@
 // §10 owns that grep and already covers every `COPY` template.
 import test, { describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { read } from './_helpers.mjs';
+import { read, listFiles, ROOT } from './_helpers.mjs';
 
 const JOB = await import('../site/data/job.js');
 const { COPY, RANKS, WING_IDS, WING_OF_SKILL } = JOB;
@@ -98,7 +98,30 @@ const CORPUS = buildCorpus();
 /** just the copy table, which is where a voice defect actually lands */
 const COPY_LINES = CORPUS.filter((e) => e.path.startsWith('COPY.'));
 
-/** the three files that are the game layer and nothing else */
+/**
+ * The files that are the game layer and nothing else — swept WHOLE (code AND comments) by the emoji,
+ * banned-phrase and deleted-costume rules in §§1-5. `screens/job.js` is here because it is the
+ * layer's own screen; the four SHARED prose screens are not, and that boundary was measured at
+ * integration rather than assumed.
+ *
+ * `notes/repair-meta.md` Request 5 and `notes/repair-week.md` Request 2 both asked the `tests` lane
+ * to add `home.js`, `settings.js`, `stats.js` and `run.js` to this list; `notes/repair-guard.md` R14
+ * said the narrower split is the right one. R14 wins, and here is the measurement — with all four
+ * added, the three whole-file rules fail on three hits and not one of them is a defect:
+ *
+ *   · `screens/stats.js:667`  `🏆`, the trophy-list mark. G6 scopes the no-emoji rule to *"the
+ *     string tables"* and G8's J12 row to *"no string in `data/job.js`"*; the mark is the STUDY
+ *     layer's own trophy panel, named in neither authority, and `settings.game = false` has to
+ *     leave that panel byte-identical to COMPOSED. Out of the rule's published scope.
+ *   · `screens/run.js:1414`  a comment quoting the banned phrase in order to STATE the rule
+ *     (*G6: the app never says …*). A whole-file sweep cannot tell a prohibition from a violation.
+ *   · `screens/run.js:109, :112, :721`  "timed-block runner", "run.js's own runner" — the English
+ *     word, matched by the case-insensitive costume regex that bans the deleted rank name `Runner`.
+ *
+ * The four screens ARE linted, by §10's `PROSE_SOURCES` — a lexer sweep over their own string
+ * literals, which is what catches a false sentence in a screen without reading its comments. That
+ * is the instrument this request actually wanted, and it landed in round 3.
+ */
 const LAYER_SOURCES = Object.freeze([
   'site/data/job.js',
   'site/js/job/econ.js', 'site/js/job/call.js', 'site/js/job/guard.js', 'site/js/job/crew.js',
@@ -470,8 +493,15 @@ describe('J12 — the board’s two locally-composed strings now have a home in 
 
 describe('J12 — numbers first', () => {
   test('G6’s worked lines reproduce from the copy table', () => {
+    /* `· weight 0.96`, not `×0.96` (round 3 verification, player-feel, MAJOR). `credit` is fed the
+       MEASURED rating move by the entry's one caller and `Δrating = 2·w·c/N` already contains `w`,
+       so the `×` asserted a product that is no quantity in the system. The entry moved; this pin
+       moves with it. COMPOSED-GAME.md G6's copy table carries the same row — doc lane, filed in
+       notes/repair-screen.md. */
     assert.equal(COPY.clear({ loose: 40, chain: 4, credit: 6.4, w: '0.96' }),
-      '+40 loose · chain 4 · rating +6.4 ×0.96');
+      '+40 loose · chain 4 · rating +6.4 · weight 0.96');
+    assert.equal(/[×x]\s*0\.96/.test(COPY.clear({ loose: 40, chain: 4, credit: 6.4, w: '0.96' })), false,
+      'no multiplication sign may stand between the rating move and the slot weight');
     assert.equal(COPY.bag({ bagged: 118, fee: 13, chainBefore: 4 }), 'bagged 118 · fee 13 · chain 4 → 0');
     assert.equal(COPY.sealed({ tag: 'dropped-gcf' }), 'dropped-gcf sealed · tell 1.00');
     assert.equal(COPY.callIt({ left: 4 }), 'stakes off · 4 targets left · hints on');
@@ -489,5 +519,286 @@ describe('J12 — numbers first', () => {
       if (!/\d/.test(line)) bad.push(`COPY.${k} → ${line}`);
     }
     assert.deepEqual(bad, []);
+  });
+});
+
+/* ================================================================================================
+   10. THE LINT COVERS THE SCREENS THAT CARRY THE PROSE  (r3 spec-fidelity, MINOR)
+   ================================================================================================
+
+   THE FINDING, and it was right. `LAYER_SOURCES` above is `data/job.js` plus the seven DOM-free
+   modules plus `screens/job.js`, and every voice test in §§1-5 is scoped to `CORPUS` — the string
+   TABLE. G6 "How it stays dry" says the rule is *"Enforced by a lint test over the string tables"*
+   and G8's J12 row scopes its acceptance to `data/job.js`; between those two sentences sit the four
+   screens that carry most of the layer's prose and were linted by nothing:
+
+     screens/settings.js   the five formula panels G7 requires
+     screens/home.js       the whole Board panel
+     screens/stats.js      the Ledger, the crew grid, the Fault Index
+     screens/run.js        the debrief
+
+   Why a source sweep and not `CORPUS`: those strings are not in a table, they are literals inside
+   `h()` calls, so the only way to reach them without a browser is to lex the file. `literalsOf`
+   below is a small string/template/regex-aware lexer — regex-aware because without it
+   `String(s).split(/[^a-z'’]+/)` opens a bogus string literal at the `'` and swallows the next
+   forty lines of code, which is exactly the false positive that makes people delete lints.
+
+   NEGATIVE CONTROLS. All five were run against IN-MEMORY copies of the six sources, with the three
+   functions below lifted out of this file so the control exercised the shipped detector text and no
+   project file was edited. Baseline: **728 prose literals, every arm CLEAN**. Then:
+     · `hint('Great work on that streak!')` appended to settings.js → **bang = 1, praise = Great**,
+       both naming `site/js/screens/settings.js:912`.
+     · `h('p', 'We think you should get some sleep')` appended to home.js → **first-person = we,
+       parent = get some sleep**, at `home.js:850`, and no other arm.
+     · `h('span', 'nice')` → **CLEAN**, and correctly so: a single word with no whitespace is not
+       prose by `isProse`, it is a class name or a key. The arm is not blind to the word —
+       `h('span', 'nice one there')` → **praise = nice** at `stats.js:731`, and it is not in the
+       allowlist, so the allowlist is not a blanket over the word.
+     · forcing `opensValue = false` in `literalsOf` (i.e. deleting the regex branch) → the prose
+       population collapses 728 → **573** and **15 spurious offenders** appear (11 exclamation,
+       4 praise), all of them code swallowed through a quote inside a character class. The lexer is
+       load-bearing, not decoration.
+   ================================================================================================ */
+
+/** The four screens the finding names, plus the two files already linted, as the scan's population. */
+const PROSE_SOURCES = Object.freeze([
+  'site/js/screens/home.js', 'site/js/screens/settings.js',
+  'site/js/screens/stats.js', 'site/js/screens/run.js',
+  'site/js/screens/job.js', 'site/data/job.js',
+]);
+
+/**
+ * Every string / template literal in JS source, with its 1-based line. Comment-, template- and
+ * REGEX-aware: a `/` opens a regex only where a value may start, so a quote inside a character
+ * class is not mistaken for the start of a string.
+ */
+function literalsOf(src) {
+  const s = String(src); const n = s.length;
+  const out = []; let i = 0; let line = 1; let prev = ''; let code = '';
+  const KEYWORD = /(?:return|typeof|case|in|of|instanceof|new|delete|void|do|else|yield|await)$/;
+  while (i < n) {
+    const c = s[i]; const d = s[i + 1];
+    if (c === '\n') { line++; i++; continue; }
+    if (c === '/' && d === '/') { while (i < n && s[i] !== '\n') i++; continue; }
+    if (c === '/' && d === '*') {
+      i += 2;
+      while (i < n && !(s[i] === '*' && s[i + 1] === '/')) { if (s[i] === '\n') line++; i++; }
+      i += 2; continue;
+    }
+    if (c === '/') {
+      const opensValue = prev === '' || '([{,;:=!&|?+-*%~^<>'.includes(prev) || KEYWORD.test(code.trimEnd());
+      if (opensValue) {
+        i++; let inClass = false;
+        while (i < n) {
+          const x = s[i];
+          if (x === '\\') { i += 2; continue; }
+          if (x === '[') inClass = true;
+          else if (x === ']') inClass = false;
+          else if (x === '/' && !inClass) { i++; break; }
+          else if (x === '\n') break;                     // unterminated: it was a division after all
+          i++;
+        }
+        while (i < n && /[dgimsuvy]/.test(s[i])) i++;
+        prev = ')'; code += ')'; continue;                 // a regex is a value
+      }
+      prev = c; code += c; i++; continue;
+    }
+    if (c === "'" || c === '"' || c === '`') {
+      const q = c; const at = line; i++; let body = '';
+      while (i < n && s[i] !== q) {
+        if (s[i] === '\\') { body += s[i + 1] === 'n' ? '\n' : s[i + 1]; i += 2; continue; }
+        if (q === '`' && s[i] === '$' && s[i + 1] === '{') {
+          /* a HOLE, which may contain strings and further templates of its own: take it whole, so a
+             nested backtick cannot be read as the end of this literal (stats.js:540 is one) */
+          let depth = 1; body += '${'; i += 2;
+          let iq = null;
+          while (i < n && depth > 0) {
+            const x = s[i];
+            if (x === '\n') line++;
+            if (iq) { if (x === '\\') { body += x + (s[i + 1] ?? ''); i += 2; continue; } if (x === iq) iq = null; }
+            else if (x === "'" || x === '"' || x === '`') iq = x;
+            else if (x === '{') depth++;
+            else if (x === '}') depth--;
+            body += x; i++;
+          }
+          continue;
+        }
+        if (q !== '`' && s[i] === '\n') break;             // unterminated single-line string
+        if (s[i] === '\n') line++;
+        body += s[i]; i++;
+      }
+      i++; out.push({ at, q, body });
+      prev = ')'; code += ')'; continue;
+    }
+    if (!/\s/.test(c)) { prev = c; code += c; } else code += ' ';
+    if (code.length > 64) code = code.slice(-64);
+    i++;
+  }
+  return out;
+}
+
+/** Blank out `${…}` holes of a template literal, brace-counting and quote-aware. */
+function withoutHoles(body) {
+  let out = ''; let i = 0;
+  while (i < body.length) {
+    if (body[i] === '$' && body[i + 1] === '{') {
+      let depth = 1; i += 2; let q = null;
+      while (i < body.length && depth > 0) {
+        const c = body[i];
+        if (q) { if (c === '\\') i++; else if (c === q) q = null; }
+        else if (c === "'" || c === '"' || c === '`') q = c;
+        else if (c === '{') depth++;
+        else if (c === '}') depth--;
+        i++;
+      }
+      out += ' '; continue;
+    }
+    out += body[i]; i++;
+  }
+  return out;
+}
+
+/** Is this literal PROSE a student reads, rather than a selector, a class name or a key? */
+function isProse(body) {
+  const t = withoutHoles(body);
+  if (!/\s/.test(t.trim())) return false;                  // one token: a class, an id, a key
+  return (t.match(/[A-Za-z][a-z'’]{2,}/g) ?? []).length >= 2;
+}
+
+/** Every prose literal of the scanned files, as `{ file, at, s }`. */
+const PROSE_LINES = PROSE_SOURCES.flatMap((f) =>
+  literalsOf(read(f)).filter((l) => isProse(l.body)).map((l) => ({ file: f, at: l.at, s: withoutHoles(l.body) })));
+
+const proseOffenders = (hit) => PROSE_LINES.flatMap(({ file, at, s }) => {
+  const found = hit(s);
+  return found ? [`${file}:${at} → ${JSON.stringify(s.trim().slice(0, 100))}  (${found})`] : [];
+});
+
+describe('J12 — the voice rules are linted over the four screens that carry the prose', () => {
+  test('the lexer finds the prose, and its regex branch is load-bearing', () => {
+    assert.ok(PROSE_LINES.length > 400, `only ${PROSE_LINES.length} prose literals across ${PROSE_SOURCES.length} files`);
+    for (const f of PROSE_SOURCES) {
+      const mine = PROSE_LINES.filter((l) => l.file === f);
+      assert.ok(mine.length > 40, `${f} yielded only ${mine.length} prose literals — the lexer lost the file`);
+    }
+    /* the two shapes that break a naive scanner, asserted directly */
+    const probe = literalsOf("const re = /[^a-z'’]+/; const s = 'kept';\nconst t = `a ${x ? 'b' : `${y}`} c`;");
+    assert.deepEqual(probe.map((l) => l.body), ['kept', "a ${x ? 'b' : `${y}`} c"],
+      'a quote inside a regex character class must not open a string');
+    assert.equal(withoutHoles("a ${x ? 'b' : `${y}`} c"), 'a   c', 'a nested hole is blanked whole');
+    assert.equal(isProse('div.job-board'), false);
+    assert.equal(isProse('job-crew-board'), false, 'a class name is not prose');
+    assert.equal(isProse('~2.0 min'), false, 'a numeral and a unit is not prose');
+    assert.equal(isProse('every contract is dues'), true);
+  });
+
+  test('no exclamation mark in any of them (G6)', () => {
+    assert.deepEqual(proseOffenders((s) => (s.includes('!') ? '!' : null)), [],
+      'a screen raises its voice');
+  });
+
+  test('no emoji in any of them (G6)', () => {
+    const EMOJI = /[\p{Emoji_Presentation}\p{Regional_Indicator}️‍]/u;
+    assert.deepEqual(proseOffenders((s) => (EMOJI.test(s) ? 'emoji' : null)), []);
+  });
+
+  test('no first-person pronoun in any of them', () => {
+    /* `I` is matched CASE-SENSITIVELY and every other pronoun case-insensitively. The English
+       first-person singular is always capitalised; a lower-case standalone `i` in these files is an
+       index, and settings.js prints the water-filling pseudo-code verbatim (`for i in over: y_i =
+       cap`, five lines of it) because G7 requires the printed law to be the computed one. Matching
+       `i` case-blind there would ban the published algorithm, which is a broken lint. The table's
+       own sweep in §3 is unchanged and still case-blind. */
+    const OTHERS = [
+      "i'm", "i’m", "i'll", "i’ll", "i've", "i’ve", "i'd", "i’d",
+      'me', 'my', 'mine', 'myself',
+      'we', "we're", "we’re", "we've", "we’ve", "we'll", "we’ll", "we'd", "we’d",
+      'us', 'our', 'ours', 'ourselves', "let's", "let’s",
+    ];
+    const hit = (s) => {
+      const bad = [];
+      if (/(?:^|[^A-Za-z'’])I(?:$|[^A-Za-z'’])/.test(s)) bad.push('I');
+      for (const w of s.toLowerCase().split(/[^a-z'’]+/)) if (OTHERS.includes(w)) bad.push(w);
+      return bad.length ? [...new Set(bad)].join(' ') : null;
+    };
+    assert.equal(hit('I bagged it'), 'I', 'the detector still catches the pronoun');
+    assert.equal(hit("let's go"), "let's");
+    assert.equal(hit('for i in over: y_i = cap'), null, 'a loop index is not a narrator');
+    assert.equal(hit('your tokens'), null);
+    assert.equal(hit('minutes'), null, 'a word that merely contains "mine" is not a pronoun');
+    assert.deepEqual(proseOffenders(hit), []);
+  });
+
+  test('no praise word in any of them, beyond the two technical uses named here', () => {
+    const PRAISE = [
+      'great', 'awesome', 'amazing', 'excellent', 'perfect', 'brilliant', 'fantastic', 'wonderful',
+      'superb', 'incredible', 'outstanding', 'impressive', 'bravo', 'congratulations', 'congrats',
+      'nice', 'wow', 'yay', 'woohoo', 'hooray', 'epic', 'legend', 'legendary', 'superstar', 'rockstar',
+      'genius', 'champ', 'champion', 'proud', 'crushed', 'nailed', 'smashed', 'flawless', 'stellar',
+      'terrific', 'marvellous', 'marvelous', 'splendid', 'magnificent', 'unstoppable', 'beast',
+    ];
+    const RE = new RegExp(`\\b(?:${PRAISE.join('|')})\\b`, 'i');
+    /* G6's rule is "no second-person praise". These two are third-person statements of fact in the
+       product's own vocabulary, exactly as `clean` is a rung and `Clean Getaway` is a stamp — and
+       they are pinned INDIVIDUALLY, so any other use of any praise word in any of the six files
+       still fails. `flawless` is also a ledger field (`runs[-1].flawless`) and a trophy id
+       (`flawless-page`), which is why it is in the vocabulary at all. */
+    const ALLOWED = Object.freeze([
+      { word: 'perfect', of: 'a perfect call at 85', why: 'the Brier credit at p = o, in the rating panel' },
+      { word: 'flawless', of: 'Page complete — flawless', why: 'the `flawless` ledger field / `flawless-page` trophy' },
+    ]);
+    const offenders = proseOffenders((s) => {
+      const m = s.match(RE);
+      if (!m) return null;
+      return ALLOWED.some((a) => a.word === m[0].toLowerCase() && s.includes(a.of)) ? null : m[0];
+    });
+    assert.deepEqual(offenders, [], 'a screen praises the student');
+    /* the allowlist is not a blanket: the same word elsewhere fails, and each entry is really used */
+    for (const a of ALLOWED) {
+      assert.ok(PROSE_LINES.some((l) => l.s.includes(a.of)),
+        `the allowlist carries "${a.of}" (${a.why}) and nothing in the tree says it — delete the entry`);
+      assert.equal(RE.test(a.of), true);
+      assert.notEqual(proseOffenders(() => null).length, 1);
+    }
+    assert.equal(ALLOWED.length, 2, 'the allowlist grew — a third technical use needs its own reason');
+  });
+
+  test('no sentence in a parent’s voice in any of them (G12 #35)', () => {
+    /* the same pinned list §5 runs over the table, run over the screens */
+    const BANNED = Object.freeze([
+      'nothing here beats sleep', 'and then you sleep', 'nothing beats sleep', 'beats sleep',
+      'get some sleep', 'get some rest', 'time for bed', 'go to bed', 'off to bed', 'bedtime',
+      'early night', 'sleep on it', 'sleep well', 'good night', 'goodnight',
+      'you should', 'you ought', 'you need to', 'you must', 'you really should',
+      'make sure', 'be sure to', 'remember to', "don't forget", 'dont forget',
+      "don't worry", 'dont worry', 'no pressure', 'take a break', 'have a break',
+    ]);
+    const norm = (s) => s.toLowerCase().replace(/[’]/g, "'");
+    const hit = (s) => BANNED.find((p) => norm(s).includes(norm(p))) ?? null;
+    assert.equal(hit('You should call it a night'), 'you should', 'the detector works');
+    assert.equal(hit('Get some sleep'), 'get some sleep');
+    assert.equal(hit('bagged 118 · fee 13 · chain 4 → 0'), null, 'a payout line is not a parent');
+    assert.deepEqual(proseOffenders(hit), []);
+  });
+
+  test('the copy table is not a second source of truth for a screen’s line', () => {
+    /* The other half of the finding. Nine COPY entries had no `COPY.<key>` call site under
+       `site/js` when it was written; the screen lanes have since routed six of them, and the three
+       below are what is left. `contractRow` is dev-only by design (`board.js` composes the row for
+       the console report), so the live gap is `repeat` and `cleanGetaway`. Pinned by name and by
+       count so the list can only shrink. See notes/repair-tests.md → Requests. */
+    const src = listFiles('site/js', /\.js$/).map((f) => read(f.slice(ROOT.length + 1))).join('\n');
+    const dead = Object.keys(COPY).filter((k) => !new RegExp(`COPY\\.${k}\\b`).test(src));
+    assert.deepEqual(dead.sort(), ['cleanGetaway', 'contractRow', 'repeat'],
+      'a COPY entry lost (or gained) its only call site — a table entry no screen reads is a second '
+      + 'source of truth for whatever the screen types instead');
+    /* and no screen re-types a line the table already owns, which is the defect behind the list */
+    for (const k of ['reviewBoard', 'schoolWindow', 'boardTitle', 'coldCrew']) {
+      const line = String(COPY[k](STUBS[2]()));
+      if (!/[A-Za-z]{4}/.test(line)) continue;
+      const retyped = PROSE_LINES.filter((l) => l.file.startsWith('site/js/screens/') && l.s.includes(line));
+      assert.deepEqual(retyped.map((l) => `${l.file}:${l.at}`), [],
+        `COPY.${k} is re-typed as a literal: "${line}"`);
+    }
   });
 });

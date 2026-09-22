@@ -193,7 +193,14 @@ list.push(def('oracle', 'runs', 'The Oracle',
 
 list.push(def('flawless-page', 'runs', 'Flawless Page',
   'Finish a whole Page with every item clean — first try, no hints.',
-  ctx => ctx.someRun(r => ctx.kindOf(r) === 'page' && r.status === 'done'
+  /* verify r1 (ledger-invariance), one line added by the `run` lane under BUILD-POLICY §2 — see
+     notes/repair-run.md → Requests. A JOB writes a `kind:'page'` row for the queue it DRAFTED, a
+     strict subset of the page `composePage` dealt (mean 45 % over 60 corpus saves), so seven clean
+     answers were buying the trophy twenty clean answers buy on `#/run/page`. `screens/run.js
+     commitJobRun` now stamps `partial` on the row by comparing its own `drafted` against the
+     `composed` count the page carries; a job that deals a WHOLE page is not partial and still
+     earns this. Rows written by the flat route carry no `partial` key and are unaffected. */
+  ctx => ctx.someRun(r => ctx.kindOf(r) === 'page' && r.status === 'done' && r.partial !== true
     && Array.isArray(r.items) && r.items.length > 0 && (r.flawless === true || r.items.every(ctx.isClean)))));
 
 list.push(def('mock-90', 'runs', 'Mock 90',
@@ -290,15 +297,34 @@ function bestChain(ctx) {
 }
 
 /**
- * The rolling Brier over the last 20 INFORMATIVE calls. `save.player.rating.calls` holds only
- * informative ones (`js/job/call.js windowPush` drops the rest), and one entry is `{p, ok, w, …}`, so
- * the Brier term is `(p − o)²` — the same quantity `credit(p, ok) = 10 − 40(p − o)²` is built on.
- * Fewer than 20 calls is not a calibrated student yet, so it returns null rather than a flattering mean.
+ * The rolling Brier over the last 20 INFORMATIVE calls.
+ *
+ * WHAT `save.player.rating.calls` HOLDS (round-2 window fix, and this comment was wrong about it
+ * until round 3). It holds the last **50 CALLS**, not the last 50 informative ones: a call whose
+ * weight is under `RATING.informativeMin` still takes its slot and is stored as a **blank slot**
+ * with `p: null, w: 0` (`js/job/call.js callEntry`, and the banner at `windowPush` — "This used to
+ * `return list` unchanged when `w < 0.25` … Every call now takes its slot"). So the
+ * `Number.isFinite(c.p)` filter below is what SELECTS the informative calls. It is load-bearing,
+ * not defensive: drop it and farmed blank slots feed the `calibrated` trophy, which is the exact
+ * material the informative gate exists to exclude.
+ *
+ * AND THE FILTER COMES FIRST. `slice(-size)` before the filter asks for the last twenty SLOTS to
+ * all be informative, which is a different and far harder claim than the one this trophy publishes
+ * ("over 20 informative calls") — and it disagreed with the other surface that prints this same
+ * number (`screens/stats.js reliabilityBlock`, which filters first). Measured on a 50-slot window
+ * that alternates a calibrated 85-call at q̂ = 0.85 with a blank on mastered material: 25
+ * informative calls at a true Brier of 0.0225, which Stats printed as "at or under 0.10" while
+ * this predicate returned `null` and the trophy stayed unearned for ever.
+ *
+ * One entry is `{p, ok, w, …}`, so the Brier term is `(p − o)²` — the same quantity
+ * `credit(p, ok) = 10 − 40(p − o)²` is built on. Fewer than 20 informative calls is not a
+ * calibrated student yet, so it returns null rather than a flattering mean.
  */
 function rollingBrier(ctx, size = CALIBRATED_WINDOW) {
   const r = playerOf(ctx).rating;
   const calls = r && Array.isArray(r.calls) ? r.calls : [];
-  const win = calls.slice(-size).filter(c => c && typeof c === 'object' && Number.isFinite(c.p));
+  const informative = calls.filter(c => c && typeof c === 'object' && Number.isFinite(c.p));
+  const win = informative.slice(-size);
   if (win.length < size) return null;
   let sum = 0;
   for (const c of win) { const d = c.p - (c.ok ? 1 : 0); sum += d * d; }

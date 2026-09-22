@@ -96,8 +96,42 @@
   padding: 10px 12px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  background: var(--surface);
   color: var(--text);
+  /* **THE SCROLL SHADOW IS THE SHEET'S, NOT THE DRAFT'S** (round 2 verify, layout-safari MAJOR).
+     Round 1 added it under `.job-screen[data-phase="board"]`, so the one phase where the sheet is
+     LARGEST had the cue and the phases where the measured fit makes it smallest had none:
+     `job-envelope 320×568 h=80 client=78 scrollH=677 shadows=none`, an 11 % window onto the list
+     with no gradient, no scrollbar and nothing else saying it scrolls. The covers are `local`, so
+     they ride the content and reveal a shadow only while there is more list in that direction —
+     which means this costs exactly nothing at the sizes and phases where the list fits, and is why
+     it can live on the base rule. `var(--surface)` is the last layer, so the flat background the
+     rule used to set is still what is painted behind the content. */
+  background:
+    linear-gradient(var(--surface) 30%, transparent) top / 100% 24px no-repeat local,
+    linear-gradient(transparent, var(--surface) 70%) bottom / 100% 24px no-repeat local,
+    radial-gradient(farthest-side at 50% 0, color-mix(in oklab, var(--text) 22%, transparent), transparent) top / 100% 10px no-repeat,
+    radial-gradient(farthest-side at 50% 100%, color-mix(in oklab, var(--text) 22%, transparent), transparent) bottom / 100% 10px no-repeat,
+    var(--surface);
+  scrollbar-width: thin;
+  scrollbar-color: var(--line) transparent;
+}
+
+/* `N more ↓` — `screens/job.js syncBoardMore` fills it and hides it; it is a direct child of the
+   scroller and sticky against its bottom edge, so it is the one part of the sheet a clip cannot
+   take away. `margin-block-start: auto` keeps it off the last row when the list is short enough to
+   fit; the pill background is the sheet's own surface so the row it overlaps stays readable. */
+.job-board-more {
+  position: sticky;
+  bottom: 0;
+  margin: 0;
+  margin-inline-start: auto;
+  width: max-content;
+  padding: 2px 6px;
+  border: 1px solid var(--line);
+  border-radius: calc(var(--radius) / 2);
+  background: var(--surface2);
+  color: var(--muted);
+  pointer-events: none;
 }
 
 .job-board-line { display: none; color: var(--text); margin: 0; }
@@ -153,17 +187,92 @@
     overflow-y: auto;
     overscroll-behavior: contain;
   }
+  /* **AND AT THE DRAFT IT SAYS SO** (round 1 verification, player-feel). At the board phase the
+     sheet is not chrome beside a decision — the five contracts ARE the decision, and they do not
+     fit: measured at 375×667, `.job-board` is 251 px of a 502 px scrollHeight, so contracts A and B
+     are whole, C is cut through the middle of its own text by the sheet's bottom edge, and D and E
+     are not on screen at all, under a line that reads "take 3 of these". The screenshot shows no
+     gradient, no scrollbar and no count: a clipped list that looks like a finished one.
+
+     The cap itself stays. It is `LAYOUT.boardSheetPx`, G6's published phone sheet, and
+     `qa/job-screen.mjs` measures it AT THIS PHASE (`sheetCheck('the board phase')`, line 524) —
+     uncapping the sheet here, which is what the finding asks for, turns that rule red, and a rule
+     is not something this lane may weaken. The scroll shadow and `scrollbar-color` that were added
+     here in round 1 have moved to the base `.job-board` rule, where every phase gets them (round 2
+     verify, layout-safari — they were scoped away from the beats with the SMALLEST sheet).
+
+     **WHAT CHANGES HERE IS THE `38dvh` TERM** (round 2 verify, player-feel MAJOR). The DRAFT was
+     the only phase the two published terms made WORSE on the smallest phone: `min(264px, 38dvh)`
+     is 216 px at 320×568 against 253 px at 375×667, so the narrowest supported phone — whose rows
+     are also the TALLEST, 722 px of content against 502 px — got the smallest window onto them:
+     `rows=5 whole=1` against `whole=2`. The `dvh` term exists for the landscape phone, where a
+     264 px sheet leaves 70 px for a panel; at the draft the portrait phone's own rows are the taller
+     problem. So the draft drops the `dvh` term and takes G6's published sheet whole, and the
+     landscape phone keeps the term the base rule gives it. (Round 1 of this rule also dropped the
+     MEASURED term here, on the premise that `.job-start > .run-actions` "is sticky and rides the
+     fold" — it does not; see the round-3 note on the rule itself, below, and `MARKS_SELECTOR`.)
+     The count of what is still below
+     the clip is now live and inside the sheet (`.job-board-more`, `N more ↓`) rather than only in
+     the draft's teach line. The spec conflict — whether the DRAFT screen is one of G6's "decision
+     phases" at all, and therefore whether the 264 px cap belongs here — is Request 3 in
+     notes/repair-screen.md (verify round 2), for the doc owner and the tests lane together; it
+     cannot be settled inside this file. */
+  /* The rule itself is one line, and it is scoped to the PORTRAIT phone rather than written as a
+     new breakpoint: below 600 px of screen box the draft takes G6's published sheet whole, and
+     every wider box — a phone on its side, a small tablet — keeps the `38dvh` term the base rule
+     above already gives it, which is the shape that term was written for. This is the screen's own
+     container, never the window, so the file's no-viewport-width rule holds; and it is a
+     `max-width` query, so the single `min-width` block in this file is still the rail's. */
+  /* **THE MEASURED TERM IS BACK AT THE DRAFT** (round 3 verification, layout-safari, MAJOR). The
+     comment above says the draft has "no panel under the sheet whose decision can be pushed off,
+     because `.job-start > .run-actions` is sticky and rides the fold". It does not ride the fold: a
+     sticky box cannot be shifted above its containing block, and `.job-panel.job-start` puts ~600 px
+     of content above that footer, so the shift clamps to 0 and the row lands 51 px past the fold at
+     320×568 and 35 px past at 844×390 — with the browser text size at 20 px, TAKE THE POSTED JOB
+     itself is 35 px and 8 px below it in both engines. `MARKS_SELECTOR` now carries
+     `.job-start > .run-actions .btn-primary`, so `--job-board-fit` is published at this phase too
+     and the draft budgets for its own decision like every other beat.
+     The `38dvh` term stays dropped here — that is round 2's repair, and it is about the SMALLEST
+     phone getting the smallest window onto the TALLEST rows. The fit term only ever takes more
+     away, so `qa/job-screen.mjs`'s `sheetCheck` (which fails on a sheet TALLER than
+     `LAYOUT.boardSheetPx`) is unaffected. */
+  @container jobscreen (max-width: 599.98px) {
+    .job-screen[data-phase="board"] .job-board {
+      max-block-size: min(var(--job-board-sheet), var(--job-board-fit, 100dvh));
+    }
+  }
+  /* `padding-inline` drops with `padding-block` in the collapsed form: the strip is the student's
+     most-repeated line and it is 22 px too long for its box at 375 px (measured — see
+     `.job-board-line` below), so the 24 px of inline padding a 280 px sheet wants is 12 px the one
+     36 px line cannot spare. The open sheet keeps its 12 px. */
   .job-screen:has(.card-screen) .job-board,
   .job-screen[data-phase="brief"] .job-board {
     block-size: var(--job-board-collapsed);
     max-block-size: var(--job-board-collapsed);
     padding-block: 0;
+    padding-inline: 6px;
     overflow: hidden;
     display: flex;
     align-items: center;
   }
   .job-screen:has(.card-screen) .job-board-body { display: none; }
   .job-screen[data-phase="brief"] .job-board-body { display: none; }
+  /* THE ELLIPSIS IS DECLARED INTENT — but the field it eats is the push-your-luck state (round 3,
+     player-feel). Measured at 375 px, 13 px mono, in the strip's own box:
+
+       RECALL ×1.25 ⟨1⟩ · loose 0 · ×1.0 · chain 0     needs 337 px
+       ALGEBRA ×1.75 ⟨3⟩ · loose 131 · ×1.8 · chain 4  needs 360 px   (G6's own example)
+       WORDS guarded ×0.55 ⟨0⟩ · loose 24 · ×1.2 · chain 1  needs 399 px
+       …the same three WITHOUT `· chain N`                fit at every padding (need == box)
+
+     and the box is 315 px at the sheet's 12 px inline padding, 327 px at the 6 px this form now
+     takes. So the padding above buys 12 of the 22 px the commonest form is over, and `chain N` is
+     still clipped by ~10 px: the five-field line does not fit a 375 px phone in any form, and the
+     two fields it repeats — `loose` and `chain` — are BOTH live chips in the in-job header 36 px
+     above it (`app.js renderJobHeader`, HDR_JOB_ADD = hdr-loose / hdr-bag / hdr-chain). Closing it
+     is one field out of `COPY.collapsedBoard`, which is `site/data/job.js`'s and another lane's:
+     filed in notes/repair-screen.md → Requests, with the G6 example line that changes with it.
+     What must survive here is the WING clause, which the head of the line is, by construction. */
   .job-screen:has(.card-screen) .job-board-line,
   .job-screen[data-phase="brief"] .job-board-line {
     display: block;
@@ -183,7 +292,26 @@
    phases get the SAME one-line strip call-lock already gives them, and the panel tightens by one
    step. This is a HEIGHT query, which is the one measurement a container query cannot make and the
    one this file's no-viewport rule does not cover — no column, anywhere, is decided by the window;
-   `@container job` still decides every one of them. */
+   `@container job` still decides every one of them.
+
+   **AND IT IS THE LANDSCAPE PHONE'S RULE, SO IT IS SCOPED TO THE PHONE FORM** (round 3,
+   layout-safari). Unscoped, this block's selectors (`.job-screen[data-phase="envelope"]
+   .job-board`, specificity 0,3,0) outrank the rail's own rule (`.job-board`, 0,1,0 — see THE RAIL),
+   so any window SHORTER than 520 px collapsed the 320 px rail too, whatever its width. Measured,
+   chromium and webkit, `#/run/job` at the envelope, cold load, scrollY 0, scrollHeight == viewport
+   height (no scrolling and no fold in the way):
+
+     1280x900 → rail 320x599, `.job-board-body` grid          (G6: "permanently visible")
+     1280x520 → rail 320x36,  `.job-board-body` display:none   ← the whole board is one strip
+     1280x500 → rail 320x36,  `.job-board-body` display:none   ← with ~460 px of empty rail under it
+
+   COMPOSED-GAME.md:673 — *"≥ 1024 px: the board lives in the 320 px right rail, permanently
+   visible"*. No harness could see it: `qa/job-screen.mjs`'s RAIL_VP is one TALL size and
+   `qa/layout-audit.mjs`'s VP_ALL has no short-desktop row, so the intersection of "rail" and
+   "max-height: 520px" was untested by construction. The `@container` wrapper is the same
+   narrow-form guard the collapse rules above already sit inside — NOT an `@media (min-width)`,
+   which this file does not use and `tests/job-screen.test.mjs` forbids by count. */
+@container jobscreen (max-width: 895.98px) {
 @media (max-height: 520px) {
   .job-screen[data-phase="envelope"] .job-board,
   .job-screen[data-phase="call"] .job-board,
@@ -193,6 +321,7 @@
     block-size: var(--job-board-collapsed);
     max-block-size: var(--job-board-collapsed);
     padding-block: 0;
+    padding-inline: 6px;
     overflow: hidden;
     display: flex;
     align-items: center;
@@ -216,6 +345,64 @@
   }
   /* one step tighter, so the rungs clear the fold with the strip rather than only just missing it */
   .job-screen .job-panel { gap: 8px; --job-panel-pad: 10px; }
+}
+}
+
+/* ==========================================================================================
+   THE TWO MEASURED STATES UNDER THE CAP — `data-boardfit`, written by `screens/job.js
+   syncBoardFit` (round 2 verify, layout-safari ×2). The third term takes pixels away until the
+   decision clears the fold; these two are what it does when taking pixels away is not enough.
+
+     strip  the budget is under the height ONE WHOLE CONTRACT ROW needs, so the sheet would print a
+            row sliced through its own glyphs and a list that looks finished. Measured:
+            `job-envelope 320×568 h=80 client=78 scrollH=677 rows=5 whole=0 partial=1`. It takes
+            the same one-line strip call-lock and the landscape phone already take — which says
+            strictly less and claims nothing false.
+     off    even the 36 px floor leaves the decision below the fold. Measured with the browser's
+            own text size at 20 px, both engines, at rest, scrollY 0:
+            `320×568 fs=20px board=36 fit=36px decision=457-584 fold=568 → 16px BELOW THE FOLD`.
+            The sheet gives up its last 36 px. It is CLIPPED TO ZERO, not `display: none`: the rows
+            stay in the accessibility tree and keep their own boxes, which is what lets
+            `boardFitState` re-measure the row height that will let the sheet open again.
+
+   Both are scoped to the narrow form, like every other collapse in this file: above `--job-rail-at`
+   the board is a rail beside the stage and no decision sits under it. They are written after the
+   `max-height` block so that at equal specificity (0,3,0) the measured state wins — a landscape
+   phone that is ALSO too short for the floor must reach `off`, not stop at the media query's strip.
+   ========================================================================================== */
+@container jobscreen (max-width: 895.98px) {
+  .job-screen[data-boardfit="strip"] .job-board {
+    block-size: var(--job-board-collapsed);
+    max-block-size: var(--job-board-collapsed);
+    padding-block: 0;
+    padding-inline: 6px;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+  }
+  .job-screen[data-boardfit="strip"] .job-board-body { display: none; }
+  .job-screen[data-boardfit="strip"] .job-board-line {
+    display: block;
+    width: 100%;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;   /* declared ellipsis INTENT: one line is the design, not an accident */
+  }
+  /* `display: none`, and NOT a zero-height clip — measured, by this repo's own auditor. The first
+     form of this rule clipped the sheet to `block-size: 0; overflow: hidden` so that the contract
+     rows kept their boxes and `boardFitState` could re-measure a row from inside the state. That is
+     a grid child collapsed to 0 px that still carries text, which is exactly the defect
+     `qa/layout-audit.mjs` rule 2 exists to catch, and it caught it:
+
+       BLOCKER zero-track job-envelope light+dark/chromium 320x568@zoom20
+       section.job-board — grid child collapsed to 0.0px tall but carries text
+
+     It is right to be a blocker: a list that is 0 px tall is still read aloud in full by a screen
+     reader, so the two students get different screens. `boardFitState` caches the last measurable
+     row height (`boardNeed`) instead, which is the same mechanism the `strip` state has always
+     needed — its body is `display: none` too. */
+  .job-screen[data-boardfit="off"] .job-board { display: none; }
 }
 
 /* The posted column is a price. With the stakes off (CALL IT, the 22:00 close) nothing is charged,
@@ -503,24 +690,82 @@ button.job-contract:hover { background: var(--surface2); }
    beat's default path (`Enter` skips), so it takes the row and the thumb reaches it anywhere */
 .job-brief > .run-actions .btn-primary { flex: 1 1 auto; justify-content: center; }
 
+/* THE BOARD'S PRIMARY, PINNED — the same rule, at the screen every job begins on (round 1
+   verification, layout-safari). `.job-start` is the taller panel of the two (four guard bars, the
+   token teach line, three token rows, the COMMIT row, then the button), and MEASURED at rest with
+   the page at scrollY 0, no resize and no scrolling, in chromium AND webkit to the pixel:
+
+     375x667  .job-primary  t=1011 b=1099   → 344 px below the fold   (maxScroll 553)
+     320x568  .job-primary  t=1023 b=1134   → 455 px below the fold   (maxScroll 688)
+     390x844  .job-primary  t=1030          → 186 px below the fold
+
+   — on the control that carries `TAKE THE POSTED JOB`, i.e. the decision every single job starts
+   with, on the one screen a student cannot avoid. The file had already applied this remedy twice
+   (`.job-brief > .run-actions`, ~700 px above; `.job-beat`, 349 px) and `grep -n 'job-start'
+   css/job.css` returned nothing. Nothing measured it either: `qa/job-screen.mjs`'s reachability
+   rules cover the call row, the getaway, the payout beat and the brief, and `qa/layout-audit.mjs`'s
+   offscreen detector only runs in its 'bottom' phase, where the button has been scrolled into view.
+
+   Identical to the brief's rule — `sticky`, not `fixed` (G10 #13), the same `--job-dock-h + --kb`
+   offset, the same negative margins so the footer meets the panel's own edges — and it stops
+   travelling at the panel's real end, so nothing is permanently overlapped. */
+.job-start > .run-actions {
+  position: sticky;
+  bottom: calc(var(--job-dock-h, 0px) + var(--kb, 0px));
+  z-index: 3;
+  margin: 0 calc(-1 * var(--job-panel-pad, 14px)) calc(-1 * var(--job-panel-pad, 14px));
+  padding: 10px var(--job-panel-pad, 14px);
+  border-top: 1px solid var(--line);
+  border-end-start-radius: var(--radius);
+  border-end-end-radius: var(--radius);
+  background: var(--surface);
+}
+.job-start > .run-actions .btn-primary { flex: 1 1 auto; justify-content: center; }
+
 /* THE THREE TEACHING SENTENCES — one per verb, at the place the verb first appears (round 2,
    player-feel: "nothing teaches the game; the rulebook is Settings, written in Greek letters"). They
    are `--muted` because they are scaffolding beside a live number, never the number. */
 .job-board-teach, .job-token-teach, .job-call-teach { margin: 0; min-width: 0; color: var(--muted); }
+/* …and the fourth: what the staged brief press will do, above the button that submits it (S5). It
+   sits between the token rows and the option grid, so it is a row of its own rather than a grid
+   cell, and it wraps — it is a sentence, not a ledger line. `.btn:disabled` (base.css:223) already
+   greys the submit while the move is half-made. */
+.job-repress-hint { margin: 0; min-width: 0; color: var(--muted); }
 
 /* G1's swap option, rendered at last: the label carries its own price, so it wraps rather than
-   truncating (a price that ends in an ellipsis is not a printed price). */
-.job-swap { white-space: normal; }
+   truncating (a price that ends in an ellipsis is not a printed price).
+
+   **AND THE TWO PRICES ARE TWO LINES** (round 4 verification, exploit-hunt, BLOCKER). The row used
+   to print the WHOLE contract's declined posted on the same line as the `+N target(s)` the swap
+   really delivers — measured 2.45× to 58.67× overstated on 119 of 119 rows. What it delivers is now
+   the headline; the contract's own figure is a second, muted line, so the two numbers cannot be
+   read as one quantity. */
+.job-swap { white-space: normal; display: block; }
+.job-swap-whole { display: block; color: var(--muted); }
+
+/* WHAT THE WINDOW HAS STAGED, and the controls that say they are part of it. `brief()` takes any
+   subset in ONE call, so every option is a toggle and the pressed ones are marked — `aria-pressed`
+   carries it for a screen reader, this carries it for everyone else. */
+.job-brief-opts .btn[aria-pressed="true"],
+.job-crew-rank[data-staged="true"],
+.job-commit[data-staged="true"] {
+  border-color: var(--accent);
+  background: color-mix(in oklab, var(--accent) 12%, transparent);
+}
+.job-brief-staged { margin: 0; min-width: 0; color: var(--muted); overflow-wrap: anywhere; }
 
 /* the crew re-rank: the ordering G3.8 is a theorem about, and the price of each rung */
 .job-crew-order, .job-crew-legend, .job-crew-key, .job-crew-align, .job-crew-board,
-.job-crew-supply, .job-crew-thin { color: var(--muted); }
+.job-crew-pays, .job-crew-supply, .job-crew-thin { color: var(--muted); }
 .job-crew-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; min-width: 0; }
 .job-crew-make { font-weight: 650; color: var(--accent-ink); }
 .job-crew-rank { min-height: var(--tap); }
 
-.job-vault-line, .job-getaway-nums { min-width: 0; }
-.job-getaway-nums { color: var(--muted); }
+.job-vault-line, .job-getaway-nums, .job-getaway-floor { min-width: 0; }
+.job-getaway-nums, .job-getaway-floor { color: var(--muted); }
+/* the CRACK/WALK threshold's `0.00` case, printed as the two banks it comes out of — a sentence,
+   so it wraps rather than riding a mono track (see `getawayThreshold` in screens/job.js) */
+.job-getaway-floor { margin: 0; overflow-wrap: anywhere; }
 
 .job-quit {
   box-sizing: border-box;

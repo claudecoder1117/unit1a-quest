@@ -61,6 +61,31 @@
 //      now carries `domain.band`, `bandFloored`, `bandFloor` and `bandAgrees`, and `crewOrderTrue`
 //      is the ordering the shipped bands actually pay, so the fourth condition is an argmax
 //      comparison rather than a sentence.
+// VERIFY-1 FIX PASS (notes/repair-crew.md). Three more defects this file owned, all one defect:
+//   9. **The decision surface quoted the document instead of pricing the board.** The brief window's
+//      crew grid — the ONLY place a crew point can be spent — printed `alignmentFor().threshold`,
+//      which ran `heldValue` → `matrixParamsFor` → `data/job.js CREW_MATRIX`'s JOB row
+//      `{eHeld: 5, pChain3: 0.42, mSaved: 3}`, three constants COMPOSED-GAME.md G2 itself publishes
+//      as measured-false. It over-priced a HELD point 13.2× and told the student the dominated rung
+//      wins on 40 of the 66 boards where it spoke. `measuredParamsOn` measures all three off the
+//      board in front of the student (`encountersIn` for `e_held`, `simulateJob` for `m̄`,
+//      `P(chain ≥ 3)` and `Σm_saved`), `boardOptionsOn` prices both rungs there, and `alignmentFor`
+//      uses them whenever it is given a queue: mean threshold 6.02 → 0.34, "outbid" 40/66 → 4/66.
+//      Repricing `CREW_MATRIX` is still R7 and still another lane's file — this fix does not need it.
+//  10. **`domain.rank` and `domain.supply` were evaluated in two different pricing regimes**, so
+//      their conjunction did not imply the theorem and a counterexample could be built inside it.
+//      Both are board prices now. And the domain's REACHABILITY is measured and published on
+//      `alignmentFor` (1.0 % of boards at the brief's own call, 0.0 % over the 19-make pool), with
+//      `contenderDomain` as the per-candidate form that is reachable at all (7.7 %).
+//  11. **`buildDecisionOn` — S4's whole replacement for the matrix — had no caller under `site/`.**
+//      Fourteen acceptance tests and ~490 test lines verified a function the game never ran. It is
+//      on the shipped path now, as `alignmentFor().decision`.
+// VERIFY-2 landed three of those out-of-lane items rather than re-filing them a fourth time, each
+// one line or one sentence and each recorded in notes/repair-crew.md: `screens/job.js crewBlock`
+// now calls `reallocatable`, `screens/stats.js`'s crew line says one change per window, and
+// COMPOSED-GAME.md G2/G3.8/G8/G9/G11/G12 no longer publish the four-condition domain as a theorem.
+// Still filed and not edited: the `CREW_MATRIX` repricing (`data/job.js`, R7) and the two extra
+// `RUNG_BANDS` rows that would retire `domain.band` altogether (R5).
 // What this lane does NOT own — COMPOSED-GAME.md, `data/job.js`, `js/screens/*.js` — is written up
 // as exact, quotable requests in notes/crew-fix.md rather than edited from here. Five BLOCKERS are
 // of exactly that kind and have now been re-filed three rounds running: COMPOSED-GAME.md G2's 4×2
@@ -309,8 +334,18 @@ export const REFUSALS = Object.freeze({
  * spends exactly what this priced. `from` is likewise read off the effective rank, so the student
  * is never charged HELD for a rank the gate has already taken away.
  *
- * @returns {{ok: boolean, reason: string|null, from: number, to: number,
- *            manned: number, spent: number, capacity: number, mannedMax: number}}
+ * **`ok` IS NOT "this press does something" — read `raises` with it** (verify-3 finding 3). Rule 3
+ * above makes `to <= from` legal, which is right: a DOWNGRADE frees points and is the repair path
+ * out of an illegal save, and `to === from` is also the press that applies a pending G4 demotion. It
+ * does mean that re-pressing the rung the student already holds returns `ok: true` with nothing
+ * bought, and a caller that ends a one-action window on `ok` alone spends that window on a no-op —
+ * which is what `state.js`'s brief does today (notes/repair-crew.md → Requests R11). `allocate()`
+ * has always reported this as `changed`; this function now reports it BEFORE the write, as `raises`
+ * (`to > from`, a new point is bought) and `same` (`to === from`, the rung is already held), so the
+ * gate can be one field rather than a re-derivation at the call site.
+ *
+ * @returns {{ok: boolean, reason: string|null, from: number, to: number, raises: boolean,
+ *            same: boolean, manned: number, spent: number, capacity: number, mannedMax: number}}
  */
 export function canAllocate(save, make, rank, opts = {}) {
   const crew = opts.crew ?? crewOf(save);
@@ -320,6 +355,7 @@ export function canAllocate(save, make, rank, opts = {}) {
   const to = rankNumber(rank);
   const base = {
     from, to: to ?? from, manned: b.manned,
+    raises: to != null && to > from, same: to != null && to === from,
     spent: b.effectiveSpent ?? b.spent, capacity: b.capacity, mannedMax: b.mannedMax,
   };
 
@@ -337,8 +373,11 @@ export function canAllocate(save, make, rank, opts = {}) {
 
 /**
  * Move one make to one rank. PURE: returns a NEW crew map and a NEW save; neither argument is
- * touched. Re-allocation is free and unlimited (G2), so there is no cost, no cooldown and no
- * confirmation here — only legality.
+ * touched. There is no cost, no cooldown and no confirmation HERE — only legality. (The round-4
+ * docstring said "re-allocation is free and unlimited (G2)". It is not, and the limit is not this
+ * function's: `state.brief` applies at most ONE `actions.crew` and then ends the phase, so a rank
+ * change costs the brief window's single action — verify-2 finding 3, corrected in G2 and in
+ * `screens/stats.js`. This function is free; the window that calls it is not.)
  *
  * **The invariant this function exists for:** no call sequence, in any order, from any legal start,
  * can reach a build with `spent > capacity` or `manned > min(capacity, 12)`. A refusal returns the
@@ -757,6 +796,36 @@ export const BAND_FLOOR = Math.min(...Object.keys(RUNG_BANDS).map(Number));
 export const isBandFloored = (m) => clamp(num(m, 0), 0, 100) <= BAND_FLOOR;
 
 /**
+ * **The highest `m_shown` `data/job.js` publishes a rung band for — `bandFor` clamps HERE TOO**
+ * (verify-2 finding 6). `RUNG_BANDS` has nothing above 85, so `bandFor(x >= 85)` returns the m85
+ * band flat and `dRhoTrue(85) === dRhoTrue(95) === dRhoTrue(100) = 0.0325`, while `dRhoModel` keeps
+ * falling to exactly **0 at m = 100**. The clamp is therefore two-ended and the model error above
+ * the floor is not small — measured, `(model − true)/true`:
+ *
+ *     m  40   −1.3 %      m  60   +0.1 %      m  84  +21.3 %
+ *     m  85  +24.2 %      m  95  −58.6 %      m 100  −100.0 %
+ *
+ * **Why this is a domain condition and not a rounding note.** `crewValue` prices a fully mastered
+ * make at exactly 0 (`1 − m/100 = 0` at m = 100) while the shipped bands still pay 0.0325 of ρ for a
+ * first rung there — so on a save whose heaviest make is mastered the grid's first row and the
+ * board's best-paying first rung can be different makes with every candidate strictly above
+ * `BAND_FLOOR`. That save is built in `tests/job-crew.test.mjs` §16 and it is what a floor-only
+ * condition cannot see: before verify-2, `domain.band` read TRUE on it while `bandAgrees` read
+ * FALSE — the module's own two band quantities contradicting each other on one save.
+ *
+ * The repair that removes the condition rather than reporting it is still `data/job.js`'s
+ * (notes/crew-fix.md R5): a fourth `RUNG_BANDS` row in the flat tail AND a top-end row above 85.
+ * `DRHO_SLOPE` re-fits itself at module load, so no constant here is retyped when they land.
+ */
+export const BAND_CEIL = Math.max(...Object.keys(RUNG_BANDS).map(Number));
+
+/** Is this mastery score at or above the highest published band, i.e. in the top flat range? */
+export const isBandCeiled = (m) => clamp(num(m, 0), 0, 100) >= BAND_CEIL;
+
+/** Is this mastery score in EITHER flat range — the two ends `bandFor` clamps at? */
+export const isBandClamped = (m) => isBandFloored(m) || isBandCeiled(m);
+
+/**
  * **The linear model of forgiveness that G3.8's alignment theorem is stated in**: `Δρ(m) ∝ (1 −
  * m/100)`. `DRHO_SLOPE` is a least-squares fit THROUGH THE ORIGIN of the three shipped bands'
  * measured `Δρ` for STEADY, so a band that moves moves the slope and nothing here is a magic number:
@@ -907,9 +976,11 @@ export function encountersFor(save, make, shape = DEFAULT_SHAPE, { queue = null 
  *     make can outbid every weak one — so the BUILD argmax can be a make `crewOrder` ranks last.
  *     `bestBuy()` is the real argmax; `alignmentFor()` reports whether it coincides with the study
  *     argmax on this save, and prints the threshold it stops coinciding at.
- *  3. **The true payoff is not this linear model.** See `DRHO_SLOPE` / `dRhoTrue` / `BAND_FLOOR`:
- *     below m = 40 the shipped bands clamp, so the game's real forgiveness value orders makes by
- *     `w` alone, and the two orderings pick a different top make on 39 % of seeded saves.
+ *  3. **The true payoff is not this linear model.** See `DRHO_SLOPE` / `dRhoTrue` / `BAND_FLOOR` /
+ *     `BAND_CEIL`: the shipped bands clamp at BOTH ends (verify-2 finding 6), so below m = 40 the
+ *     game's real forgiveness value orders makes by `w` alone, above m = 85 it pays a flat 0.0325
+ *     where this function has already fallen to 0 at m = 100, and the two orderings pick a
+ *     different top make on **34–49 %** of saves across sixteen independently seeded corpora.
  *  4. **The encounter term is a model of a population, not of a board** (r2). `Δρ(m_i)·encounters_i`
  *     is only `weakSpots()`'s key because `encountersFor` assumes `encounters_i ∝ w_i`. On a real
  *     drafted queue supply is lumpy and mostly zero (`encountersFor`'s docstring carries the
@@ -918,14 +989,36 @@ export function encountersFor(save, make, shape = DEFAULT_SHAPE, { queue = null 
  *     row 2 needs that supply condition stated with it; `supplyGapFor(save, queue)` measures it per
  *     board and `alignmentFor(save, {queue}).domain.supply` reports it per save.
  *
- * So: a min-maxer who allocates crew by this number is doing the best available study action **while
- * `alignmentFor(save, {shape, queue}).domain.all`** — every candidate at full evidence depth, the
- * best STEADY outbidding the best HELD, the board serving the make more than once, and no candidate
- * in the flat band below `BAND_FLOOR` (r3 — `domain.band`; finding 3 above is a DOMAIN condition,
- * not just a measured error, and `alignmentFor` now carries it as one). Outside that domain the game
- * points at a mastered make, at a make the board never deals, or at the wrong end of a range the
- * shipped bands price identically — and the honest thing is to say so rather than to assert a fixed
- * point.
+ * **So what IS claimable, stated without the circle in it** (verify-2 finding 1, and the wording of
+ * finding 4). Rounds 1–3 ended this docstring — and COMPOSED-GAME.md G3.8 ended its paragraph —
+ * with *"a min-maxer who allocates crew by this number is doing the best available study action
+ * while `alignmentFor(save, {shape, queue}).domain.all`"*, four conditions offered as a sufficient
+ * domain. That sentence is withdrawn here, because two of those four conditions ARE the claim
+ * restated and the other two never enter the board path:
+ *
+ *   · `domain.rank` is *"no HELD row outbids the best STEADY row"* and `domain.supply` is
+ *     `supplyGapFor().agrees` = *"the board's best-PAYING first rung is on the study plan's first
+ *     make"*. Their conjunction is, term for term, *"the board's best-paying crew point is a STEADY
+ *     on `crewOrder()[0]`"* — which is the conclusion. `alignmentFor().claim` computes that
+ *     conclusion directly and `claimIsConditions` asserts the equivalence per board; measured over
+ *     300 drafted JOB-10 boards the two sets are the SAME set, mismatch 0.
+ *   · `domain.evidence` and `domain.band` are conditions on the MODEL regime. With a `queue` in
+ *     hand the prices come from `encountersIn(queue, make).active` and `dRhoTrue`, neither of which
+ *     reads `n` or `dRhoModel` at all, so flipping either condition cannot move `claim` — measured,
+ *     they changed it on **0 of 120** boards (`tests/job-crew.test.mjs` §16 lifts every make to
+ *     `n = 9` over `V2_BOARDS.slice(0, 120)`; 120 is the arm's own count). All they can do is shrink
+ *     the certified set, and they shrink it to **0.7 %** — 2 of 300 drafted boards — while the claim
+ *     itself is true on 27.0 % of them. Those two boards are boards the claim is true on, because
+ *     `domain.all ⟹ claim` is arithmetic (verify-3 finding 2).
+ *
+ * What survives is therefore two separate things, and neither is a theorem with a domain: the
+ * ORDERING IDENTITY (this function is `weakSpots()`'s sort key times a positive constant — exact,
+ * unfalsifiable, and worth nothing about prices), and a PER-BOARD MEASUREMENT (`claim`, true on
+ * 27.0 % of this lane's 300-board corpus — **on saves that have spent no crew point**; the corpus
+ * generators never write `game.crew`, and `alignmentFor`'s `nextOnly` section says what changes when
+ * a real build arrives). Outside it the game points at a mastered make, at a make
+ * the board never deals, or at the wrong end of a range the shipped bands price identically — and
+ * the honest thing is to measure that per board rather than to assert a fixed point.
  *
  * @param {object} save
  * @param {string} make   one of the 19 skill ids
@@ -1114,8 +1207,35 @@ export function crewOrderOn(save, queue, { shape = DEFAULT_SHAPE, of = MAKES } =
  * served a forgivable target every point pays 0, the argmax degenerates to `of`'s tie-break order,
  * and `gameValue === 0` is what says so.
  *
- * Measured over the suite's 150 drafted JOB queues: `agrees` on 15 %, `zeroPay` on 62 %. Those two
- * numbers are the finding, and `tests/job-crew.test.mjs` §14 re-measures and bounds them on every run.
+ * **`agrees` IS NOT A SUPPLY COUNT, and anything that describes it as one is wrong** (verify-2
+ * finding 4). *"The board serves the study plan's first make more than once"* is `studySupply > 1`
+ * — a different predicate: over two independently seeded 300-board corpora it reads 18.7 % and
+ * 23.7 % where `agrees` reads 27.3 % and 33.7 %, and the two disagree on one board in six or seven
+ * (44/300 here, 50/300 on the critic's draw). The wording matters because a supply COUNT reads like an
+ * independent hypothesis, while what this field actually holds is the argmax comparison that IS
+ * the STEADY half of G3.8's conclusion (see `crewValue`'s docstring and `alignmentFor().claim`).
+ * The mis-description reached `designs/SPEC-CORRECTIONS.md` C-1 and COMPOSED-GAME.md's condition
+ * list from THIS docstring, so the correct form is stated here first: **`agrees` = the board's
+ * best-paying first rung sits on the make the study plan puts first.**
+ *
+ * **`of` IS PART OF THE MEASUREMENT — say which pool every published pair belongs to** (verify-3
+ * finding 4). The default pool is all nineteen makes; the shipped surface passes `of: onBoard` (the
+ * makes the board deals), because that is the pool `alignmentFor` hands it, and the two regimes are
+ * not close. On the suite's own 300 drafted JOB-10 boards, the same saves and the same queues:
+ *
+ *     19-make pool (the default)   zeroPay 62.3 %   agrees 16.3 %
+ *     of: onBoard (what the brief calls)  zeroPay 35.7 %   agrees 27.0 %
+ *
+ * Over 24 re-seeded corpora × 80 boards of that population the two run **60.0–72.5 % / 10.0–18.8 %**
+ * and **35.0–43.8 % / 16.3–28.7 %** respectively — `tests/job-crew.test.mjs` §S4·4 measures BOTH
+ * arms on every run, so neither range can be quoted as the other's. And both pairs are a statistic
+ * of the save POPULATION as well as of the pool: an independent draw reads 18–20 % `zeroPay` under
+ * `of: onBoard`, below the floor this population clears, which is why the floor is published scoped
+ * to the population it was measured on and never as a fact about the game.
+ *
+ * Measured over the suite's 150 drafted JOB queues (19-make pool): `agrees` on 15 %, `zeroPay` on
+ * 62 %. Those two numbers are the finding, and `tests/job-crew.test.mjs` §14 re-measures and bounds
+ * them on every run.
  */
 export function supplyGapFor(save, queue, { shape = DEFAULT_SHAPE, of = MAKES } = {}) {
   // A gap against supply is only defined against a queue. Anything else is the EMPTY board — never
@@ -1137,6 +1257,328 @@ export function supplyGapFor(save, queue, { shape = DEFAULT_SHAPE, of = MAKES } 
     gameValue: best?.value ?? 0,
     agrees: !!studyTop && best?.make === studyTop,
     zeroPay: studyPays === 0,
+  };
+}
+
+/* ====================================== verify-1: the three stale constants, measured off the board
+   The r3 critic's BLOCKER: the ONE surface where a crew point can be spent — the brief window's crew
+   grid — printed `alignmentFor().threshold`, which ran through `heldValue` → `matrixParamsFor` →
+   `data/job.js CREW_MATRIX`, whose JOB row still carries `{eHeld: 5, pChain3: 0.42, mSaved: 3}`.
+   COMPOSED-GAME.md G2 publishes all three as measured-FALSE (`e_held` "below the published value on
+   every shape … structurally, not noisily"; the chain-hold firing "once per 84 to 266 jobs"), and
+   G2's own repriced table says a STEADY point beats a HELD upgrade by 4× to 17× on every shape. The
+   grid was over-pricing HELD by 13.2× and telling the student the dominated rung wins on 40 of the
+   66 boards where it spoke (measured below, and pinned in `tests/job-align.test.mjs` §7).
+
+   Repricing `CREW_MATRIX` is notes/crew-fix.md R7 and this lane does not own `data/job.js`. It does
+   not need to: all three constants are MEASURABLE ON THE BOARD IN FRONT OF THE STUDENT, by the same
+   harness the suite already runs against `composeBundles` → `draftUnion`. `encountersIn` gives
+   `e_held` exactly (it is a count, not an estimate) and `simulateJob` gives `m̄`, `P(chain ≥ 3)` and
+   `Σm_saved` per hold. So the decision surface stops quoting the document and prices the board.
+   ------------------------------------------------------------------------------------------------- */
+
+/**
+ * How many points of the lattice below `measuredParamsOn` integrates over.
+ *
+ * The binding quantity is `Σm_saved`, which is conditional on an event G2 measures at once per 84 to
+ * 266 jobs, so the count is set by ITS convergence and not by `m̄`'s — the smooth quantities are
+ * already exact to three decimals at 64 points (`P(chain ≥ 3)` reads 0.3812 at 64 against 0.3819 at
+ * 16 384 on the board of `tests/job-align.test.mjs` §8). The rare one is not: on that same board
+ * `E[Σm_saved per job]` reads 0.000 at 64 points, 0.026 at 256, **0.061 at 1 024**, 0.066 at 4 096
+ * and 0.067 at 16 384. Under-resolving it prices HELD DOWN, which is the direction this repair is
+ * already pushing, so the count is the first one that tracks the limit: **1 024 points, 6.4 ms per
+ * board** — nothing beside a 20-second brief window, and about 12 s across this lane's own tests.
+ *
+ * Three quadrature rules were compared at each count (R_d, `frac(√p_k)` Kronecker, and Halton);
+ * none resolves the conjunction materially better than another below ~1 000 points, so the simplest
+ * one ships.
+ */
+export const MEASURE_SAMPLES = 1024;
+
+/**
+ * **The quadrature `measuredParamsOn` integrates the rung draws over** — Roberts' R_d rank-1
+ * lattice, in `d` dimensions (one per target of the board).
+ *
+ * `φ_d` is the generalised golden ratio, the positive root of `x^(d+1) = x + 1`, reached here by the
+ * fixed-point iteration `x ← (1 + x)^(1/(d+1))` (it converges in a dozen steps for every `d` a queue
+ * can have). `α_k = φ_d^-(k+1)`, and point `j` of the lattice has coordinate
+ * `frac(½ + (j+1)·α_k)` in dimension `k`.
+ *
+ * This is a deterministic numerical-integration rule, not a generator: there is no seed, no state
+ * between calls and no entropy anywhere in it, which is what keeps this file free of the random
+ * source `tests/job-exploit.test.mjs` J9 forbids a payoff module to touch.
+ */
+export const RUNG_LATTICE = (d) => {
+  const dims = Math.max(1, Math.floor(num(d, 1)));
+  let phi = 2;
+  for (let i = 0; i < 48; i++) phi = Math.pow(1 + phi, 1 / (dims + 1));
+  const out = [];
+  let a = 1;
+  for (let k = 0; k < dims; k++) { a /= phi; out.push(a); }
+  return out;
+};
+
+/**
+ * **G2's five matrix parameters, measured on ONE board** — the honest counterpart of
+ * `matrixParamsFor`, which reads `data/job.js`'s published row.
+ *
+ * `lootMean`, `ρ̄·W̄`, `P(non-clean on a mastered make)` and the two `Δρ` are kept from the shape (the
+ * first is an exact function of the shape's tier mix, the rest are not board quantities). The three
+ * the document has wrong are replaced by measurements of THIS queue:
+ *
+ *   · `mBar`    the mean chain multiplier the board actually produces, over `samples` seeded plays
+ *   · `pChain3` the fraction of targets entered at chain ≥ `CHAIN_HOLD_MIN`, same plays
+ *   · `mSaved`  the chain-multiplier value ONE chain-hold saves — see the note on the estimator
+ *
+ * **THE `Σm_saved` ESTIMATOR, because the obvious one is both noisy and biased.** `heldPerPoint`
+ * prices the chain-hold as `h · V_hold` with `h = e_held · P(non-clean) · P(chain ≥ 3)` and
+ * `V_hold = Σm_saved · L̄ · ρ̄·W̄`, so the product that reaches the student is `h · Σm_saved` — the
+ * EXPECTED chain-multiplier a board's holds save. Taking `Σm_saved` as `total / holds` and
+ * multiplying it by the modelled `h` gets that product wrong twice: `total / holds` is a
+ * mean-of-ratios over an event that fires once per 40 to 260 jobs (on the board of
+ * `tests/job-align.test.mjs` §8 it reads 0.00 · 2.20 · 2.59 · 2.61 at 64 · 256 · 1 024 · 4 096
+ * points, four times slower than the per-job expectation), and the modelled `h` is not the board's —
+ * `P(non-clean)` is `CREW_MATRIX`'s 0.06 while `RUNG_BANDS`' own m85 row draws non-clean at 0.12, so
+ * the model over-states the hold rate by around 3×. Both errors push the HELD price UP, which is the
+ * direction this repair exists to stop.
+ *
+ * So `mSaved` is returned as **the value that makes the shipped formula reproduce the measurement**:
+ *
+ *     mSaved := E[Σm_saved per job]  /  (H · P(non-clean) · P(chain ≥ 3))        H = the board's
+ *                                                                    hold-active targets, all makes
+ *
+ * which cancels back to `h · V_hold = (e_held / H) · E[Σm_saved per job] · L̄ · ρ̄·W̄` — the board's
+ * whole measured chain-hold value, apportioned to a make by its share of the targets a hold can fire
+ * on. `E[Σm_saved per job]` is a plain Monte-Carlo mean, so it converges at the usual rate and needs
+ * no rare-event correction. `holds` is returned beside it so a caller can see how thin the event was.
+ *
+ * `e_forgiven` / `e_held` are NOT set here: `steadyValueOn` and `heldValueOn` already take them
+ * per-make from `encountersIn(queue, make)`, which is a count of this board and not a mean of any
+ * population.
+ *
+ * The crew the plays are run with is **HELD on every make this save could hold, STEADY everywhere
+ * else** — a build no capacity allows. That is deliberate and it is the conservative direction: it
+ * is the largest chain-hold statistic any legal build could produce on this board, so the HELD price
+ * it feeds is an upper bound and the repair can never under-price the rung it is repairing.
+ *
+ * **NO RANDOM SOURCE REACHES THIS FILE, and that is a hard invariant, not an accident.**
+ * `tests/job-exploit.test.mjs` J9 asserts that no payoff module (`econ.js`, `call.js`, this file)
+ * so much as names the seeded generator — *"luck cannot reach a payoff term"* — and a crew price is
+ * a payoff term. So the plays are not sampled, they are a **quadrature**: `RUNG_LATTICE` is Roberts'
+ * R_d rank-1 lattice, `u_k(j) = frac(½ + (j+1)·α_k)` with `α_k = φ_d^-(k+1)` and `φ_d` the
+ * generalised golden ratio `x^(d+1) = x + 1`, one dimension per target. It is a fixed constant of
+ * this module, it carries no seed and no entropy, and `measuredParamsOn` is therefore a PURE
+ * function of `(save, queue)` — the same board prices the same way on every render, in every test
+ * and on every machine. (A lattice also resolves the SMOOTH quantities faster than a pseudo-random
+ * stream would — `P(chain ≥ 3)` on the §8 board reads 0.3812 at 64 points against a 16 384-point
+ * limit of 0.3819, where a seeded stream reads 0.4250 — and on the rare one the two agree to 1 %
+ * once both have enough points: `E[Σm_saved per job]` 0.0668 against 0.0674 at 16 384.)
+ *
+ * @param {object} save
+ * @param {Array} queue  the drafted job (`draftUnion(...).queue`, or what is LEFT of it)
+ * @returns {object} a `matrixParamsFor`-shaped row, carrying `source: 'board'` and `holds`
+ */
+export function measuredParamsOn(save, queue, { shape = DEFAULT_SHAPE, samples = MEASURE_SAMPLES } = {}) {
+  const p = matrixParamsFor(shape);
+  const q = Array.isArray(queue) ? queue : [];
+  const n = Math.max(1, Math.floor(num(samples, MEASURE_SAMPLES)));
+  if (!q.length) return { ...p, source: 'published', holds: 0, samples: 0 };
+  const rankOfTarget = (t) => {
+    const mk = makeOf(t);
+    return mk && canHold(save, mk) ? HELD : STEADY;
+  };
+  const mOfTarget = (t) => mOf(save, makeOf(t));
+  const alpha = RUNG_LATTICE(q.length);
+  let mBar = 0; let pChain3 = 0; let mSaved = 0; let holds = 0;
+  for (let j = 0; j < n; j++) {
+    // `simulateJob` takes exactly one draw per target, in order, so dimension k IS target k.
+    let k = 0;
+    const point = () => {
+      const v = 0.5 + (j + 1) * alpha[(k++) % alpha.length];
+      return v - Math.floor(v);
+    };
+    const r = simulateJob(q, { rng: point, crewRank: rankOfTarget, m: mOfTarget });
+    mBar += r.mBar; pChain3 += r.pChain3; mSaved += r.mSaved; holds += r.holds;
+  }
+  const p3 = pChain3 / n;
+  // `H` — every target a chain-hold could fire on: a hold needs a HELD crew, which needs `canHold`,
+  // and `isHoldSuppressed` stands it down on every due review of the make.
+  let holdActive = 0;
+  for (const make of MAKES) if (canHold(save, make)) holdActive += encountersIn(q, make).holdActive;
+  const modelledRate = holdActive * p.pNonCleanMastered * p3;
+  return {
+    ...p,
+    mBar: mBar / n,
+    pChain3: p3,
+    mSaved: modelledRate > 0 ? (mSaved / n) / modelledRate : 0,
+    mSavedPerJob: mSaved / n,
+    mSavedPerHold: holds ? mSaved / holds : 0,
+    holdActive,
+    source: 'board', holds, samples: n,
+  };
+}
+
+/**
+ * **`buildOptions`' board-true counterpart** — every crew point this save could buy ON THIS BOARD,
+ * priced per point, best first. `steadyValueOn` / `heldValueOn` in place of `crewValue` / `heldValue`,
+ * so both rungs are priced against the same board and in the same regime. That last part is the r3
+ * critic's second finding: `domain.rank` compared a population model (`heldValue`) against a board
+ * measurement (`supplyGapFor`), and the conjunction of two conditions evaluated in two regimes does
+ * not imply the theorem — they hand-built a save where all four conditions pass and the board-true
+ * best point is still HELD on a mastered make. Priced here, both sides are board-true and that
+ * counterexample cannot be built: its HELD term collapses with the constants it rode on.
+ *
+ * Unlike `buildOptions` this keeps a **zero-valued** HELD row for every make `canHold` allows. A
+ * point that is buyable and pays nothing is exactly what the grid has to be able to say; dropping
+ * the row would make the surface print *"no HELD point is buyable tonight"* about a rung the student
+ * can see three buttons for.
+ *
+ * **`nextOnly` — the rungs this save does NOT already hold** (verify-3 finding 3). The default list
+ * is every priced POINT ON THE BOARD, which is what a price column beside nineteen rows needs; it is
+ * not what a DECISION needs, because a student who is already manning a make at STEADY cannot buy
+ * that STEADY again. `nextOnly: true` drops every row at or below `effectiveRankOf(save, make)` — the
+ * rank that PAYS, so a lapsed HELD's STEADY is not offered back either — leaving the points the next
+ * press can actually reach. On a save with an empty `game.crew` the two lists are identical, which
+ * is why every corpus measurement in this module and its suite is unmoved by the flag and why the
+ * published rates it feeds are all conditioned on an empty build (see `alignmentFor`).
+ */
+export function boardOptionsOn(save, queue, { shape = DEFAULT_SHAPE, of = MAKES, params = null, nextOnly = false } = {}) {
+  const q = Array.isArray(queue) ? queue : [];
+  const p = params ?? measuredParamsOn(save, q, { shape });
+  const out = [];
+  of.filter(isMake).forEach((make, i) => {
+    const at = nextOnly ? effectiveRankOf(save, make) : BARE - 1;
+    if (STEADY > at) out.push({ make, i, rank: STEADY, name: RANK_NAMES[STEADY], value: steadyValueOn(save, make, q, { shape: p }) });
+    if (canHold(save, make) && HELD > at) {
+      out.push({ make, i, rank: HELD, name: RANK_NAMES[HELD], value: heldValueOn(save, make, q, { shape: p }) });
+    }
+  });
+  return out.sort((a, b) => (b.value - a.value) || (a.i - b.i) || (a.rank - b.rank));
+}
+
+/**
+ * **The makes the brief's crew control must offer** — the makes on the board, PLUS every make this
+ * save already has a point on.
+ *
+ * G2 and `screens/stats.js` both tell the student that *"a build mistake costs you at most one job"*.
+ * It is false while the only control lists `of` alone: `save.game.crew` persists across jobs
+ * (`store.js freshGame()` puts `crew` on `game`, and nothing in `state.js` clears it at `startJob`),
+ * so a point spent on a make tonight's board does not serve cannot be handed back tonight either —
+ * and the median make is offered on 15.7 % of drafted boards (the verify-2 critic's own draw: 16.0 %;
+ * this lane's: 17.7 %), with three or four of the nineteen under 2 % on every corpus measured. At
+ * 15.7 % the expected wait to un-man the median make is **6.4 jobs**, not one.
+ * Ordering is `crewOrder`'s, so the grid's sort key is unchanged; the manned makes the board does not
+ * serve simply stop being unreachable.
+ *
+ * **WIRED at verify-2** (finding 2): `screens/job.js crewBlock` calls this instead of `crewOrder`,
+ * so the rows the brief offers are the rows a point can be handed back on. It does not make the
+ * withdrawn sentence true — the second half of G2's claim, that the window is free and unlimited,
+ * is false for a different reason (`state.brief` ends the phase after one action, verify-2
+ * finding 3) — and COMPOSED-GAME.md and `screens/stats.js` now say what is true instead.
+ */
+export function reallocatable(save, { shape = DEFAULT_SHAPE, of = MAKES } = {}) {
+  const pool = new Set(of.filter(isMake));
+  for (const make of mannedMakes(crewOf(save))) pool.add(make);
+  return crewOrder(save, { shape, of: [...pool] });
+}
+
+/* ------------------------------------- r4 / S4: the build decision, with no measured parameter in it
+   designs/REPAIR-DECISION.md §S4.2. `buildMatrix` prices a SHAPE from five measured parameters, and
+   three of the five (`mBar`, `eForgiven`, `eHeld`) are population means that no board reproduces —
+   which is why the published 4×2 winner column is wrong on three of four rows and why the matrix has
+   to stop being the build decision. What replaces it is one inequality over `RUNG_BANDS`, evaluated
+   against the board in front of the student:
+
+       DEEP on make A  beats  STEADY on A + STEADY on B      iff
+       (Δρ₂(m_A) − Δρ₁(m_A)) · e_A  >  Δρ₁(m_B) · e_B
+
+   Both sides are `Δρ · encounters`, so the two economy scalars `L̄` and `m̄` that `steadyValueOn`
+   carries multiply BOTH sides and cancel: **no measured parameter survives in the decision.** The
+   `Δρ` come off the shipped bands through `dRhoTrue` (which agrees with `dRhoOf` to the digit at
+   every published band key — `tests/job-crew.test.mjs` §S4), and `e` is the shipped idle rule's own
+   count, `encountersIn(queue, make).active`.
+   ------------------------------------------------------------------------------------------------- */
+
+/**
+ * **What the SECOND rung buys, on top of the first** — `Δρ₂(m) − Δρ₁(m)`, off the interpolated
+ * shipped band. This is the quantity a DEEP point is priced at, and it is strictly smaller than
+ * `Δρ₁(m)` on every band (the ladder is concave in the rank), which is why a second rung on one make
+ * only wins when that make is served materially more often than the next make you would man.
+ */
+export const marginalDRho = (m) => dRhoTrue(m, HELD) - dRhoTrue(m, STEADY);
+
+/**
+ * **The break-even encounter ratio at equal bands** — `Δρ₁ / (Δρ₂ − Δρ₁)` on one PUBLISHED band key.
+ * When A and B sit in the same band the inequality above reduces to `e_A / e_B > deepThresholdOf(band)`,
+ * and the threshold is **band-dependent**: `1.2156` (m40) · `1.3608` (m60) · `1.9697` (m85). A single
+ * band-free constant is refused — the three differ by 62 % end to end (REPAIR-DECISION §S4.2/§S4.4 1).
+ *
+ * @param {number|string} band  a key of `RUNG_BANDS` (40 / 60 / 85), not a mastery score
+ */
+export const deepThresholdOf = (band) => {
+  const d1 = dRhoOf(band, STEADY);
+  const d2 = dRhoOf(band, HELD);
+  return d2 === d1 ? Infinity : d1 / (d2 - d1);
+};
+
+/** Every published band's break-even ratio, computed from `RUNG_BANDS` at module load. */
+export const DEEP_THRESHOLDS = Object.freeze(Object.fromEntries(
+  Object.keys(RUNG_BANDS).map(Number).sort((a, b) => a - b).map((b) => [b, deepThresholdOf(b)]),
+));
+
+/**
+ * The break-even encounter ratio at an arbitrary mastery score — `Δρ₁(m) / (Δρ₂(m) − Δρ₁(m))` off
+ * the interpolated shipped band. Equals `deepThresholdOf(band)` at every published band key, and is
+ * flat below `BAND_FLOOR` and above the top band because `bandFor` clamps there.
+ */
+export const deepThresholdAt = (m) => {
+  const marg = marginalDRho(m);
+  return marg === 0 ? Infinity : dRhoTrue(m, STEADY) / marg;
+};
+
+/**
+ * **The build decision for ONE board, parameter-free** (S4.2).
+ *
+ * `A` is the make a point pays most on tonight (`Δρ₁(m)·e`, ties by `data/skills.js` table order);
+ * `B` is the next such make — the alternative use of the second point, which is what makes a second
+ * rung a decision at all (G11: *a rung nothing competes with is not a decision*). Makes the board
+ * serves no forgivable target are excluded: their `e` is 0, so a point on them pays exactly nothing
+ * and they are not the alternative to anything.
+ *
+ * `deep === true` means the marginal second rung on A outbids a first rung on B. The comparison is
+ * on `Δρ · e` alone — pass no economy parameter, store none, publish none.
+ *
+ * `null` when the board offers fewer than two served makes: there is no second use for the point, so
+ * there is no decision to report (and reporting one would be the forced-rung shape S4 condemns).
+ *
+ * @param {object} save    read for `skills[*].m` only
+ * @param {Array}  queue   the drafted job (`draftUnion(...).queue`, or what is LEFT of it)
+ * @param {{shape?: string, of?: string[]}} [opts]  `of` restricts the pool to the makes on the board
+ * @returns {null|{deep, A, B, eA, eB, mA, mB, lhs, rhs, ratio, sameBand, threshold}}
+ */
+export function buildDecisionOn(save, queue, { shape = DEFAULT_SHAPE, of = MAKES } = {}) {
+  const q = Array.isArray(queue) ? queue : [];
+  const rows = of.filter(isMake)
+    .map((make, i) => {
+      const e = encountersIn(q, make).active;
+      const m = mOf(save, make);
+      return { make, i, e, m, first: dRhoTrue(m, STEADY) * e, marginal: marginalDRho(m) * e };
+    })
+    .filter((r) => r.e > 0)
+    .sort((a, b) => (b.first - a.first) || (a.i - b.i));
+  if (rows.length < 2) return null;
+  const [A, B] = rows;
+  // "Same band" is an equality of the two Δρ PAIRS, not a nearest-key guess: it is true exactly
+  // when the reduction `e_A/e_B > Δρ₁/(Δρ₂ − Δρ₁)` is algebraically equivalent to the inequality.
+  const sameBand = dRhoTrue(A.m, STEADY) === dRhoTrue(B.m, STEADY)
+                && dRhoTrue(A.m, HELD) === dRhoTrue(B.m, HELD);
+  return {
+    shape,
+    deep: A.marginal > B.first,
+    A: A.make, B: B.make, eA: A.e, eB: B.e, mA: A.m, mB: B.m,
+    lhs: A.marginal, rhs: B.first,
+    ratio: A.e / B.e,
+    sameBand, threshold: sameBand ? deepThresholdAt(A.m) : null,
   };
 }
 
@@ -1165,13 +1607,18 @@ export function heldValue(save, make, shape = DEFAULT_SHAPE) {
  * Every crew point this save could buy, priced per point, best first: `{make, rank, value}` for
  * STEADY on all 19 makes and HELD on the mastered ones. Ties by `data/skills.js` table order, then
  * by the cheaper rank — so the list is a pure function of the save and the shape.
+ *
+ * `nextOnly` is `boardOptionsOn`'s (verify-3 finding 3): drop the rungs `effectiveRankOf` says this
+ * save already holds, so the list is the points the next press can reach rather than every point on
+ * the ladder. Identical to the default list whenever `game.crew` is empty.
  */
-export function buildOptions(save, { shape = DEFAULT_SHAPE, of = MAKES } = {}) {
+export function buildOptions(save, { shape = DEFAULT_SHAPE, of = MAKES, nextOnly = false } = {}) {
   const out = [];
   of.filter(isMake).forEach((make, i) => {
-    out.push({ make, i, rank: STEADY, name: RANK_NAMES[STEADY], value: crewValue(save, make, shape) });
+    const at = nextOnly ? effectiveRankOf(save, make) : BARE - 1;
+    if (STEADY > at) out.push({ make, i, rank: STEADY, name: RANK_NAMES[STEADY], value: crewValue(save, make, shape) });
     const held = heldValue(save, make, shape);
-    if (held > 0) out.push({ make, i, rank: HELD, name: RANK_NAMES[HELD], value: held });
+    if (held > 0 && HELD > at) out.push({ make, i, rank: HELD, name: RANK_NAMES[HELD], value: held });
   });
   return out.sort((a, b) => (b.value - a.value) || (a.i - b.i) || (a.rank - b.rank));
 }
@@ -1185,18 +1632,76 @@ export const bestBuy = (save, opts = {}) => buildOptions(save, opts)[0] ?? null;
  * a HELD point goes on a MASTERED make — a make with nothing left to study. This function returns
  * both argmaxes, whether the claim holds on this save, and the threshold it fails at:
  *
- *     holds  ⇔  max_i crewValue(i)  ≥  max_{j mastered} heldValue(j)
- *            ⇔  max_i w_i(1 − m_i/100)  ≥  heldValue(best) / k(shape)          ( = `threshold` )
+ *     holds  ⇔  max_i STEADY_i  ≥  max_{j mastered} HELD_j
+ *            ⇔  max_i STEADY_i / k  ≥  max_j HELD_j / k          ( = `steadyThreshold` ≥ `threshold` )
  *
- * `threshold` is printed in `w · (1 − m/100)` units, the units Home's Weak spots are sorted in, so
- * it can be read against the student's own weak spots: on a JOB-10 the study argmax stops winning
- * once no unmastered make scores above it.
+ * **WHICH TWO PRICES, and this is the verify-1 BLOCKER.** With a `queue` both sides are the BOARD's
+ * prices — `steadyValueOn` and `heldValueOn`, at parameters `measuredParamsOn` takes off that same
+ * board — and `pricedOn` says `'board'`. Without one they are the population model (`crewValue` /
+ * `heldValue`) and `pricedOn` says `'model'`. Before this fix the board path did not exist: the ONE
+ * surface that can spend a crew point printed `threshold` from `heldValue` → `CREW_MATRIX`'s JOB row
+ * `{eHeld: 5, pChain3: 0.42, mSaved: 3}`, all three of which COMPOSED-GAME.md G2 publishes as
+ * measured-false. Over 300 drafted JOB-10 boards it over-priced a HELD point by **17.5×** (mean
+ * printed threshold 6.02 against 0.34 priced on the board) and printed *"the study ordering is
+ * outbid by it"* on **40 of the 66** boards where it spoke — a sentence naming a purchase G2's own
+ * measured table says loses by 4× to 17× per point. Priced on the board it is **4 of 66**, and
+ * `tests/job-align.test.mjs` §7 re-measures both numbers on every run.
  *
- * **`holds` is ONE of the theorem's FOUR conditions.** `holds` has always been the RANK condition
- * and only that. The sentence COMPOSED-GAME.md:552 still publishes unrestricted — *"there is no step
- * in the min-maxer's list that is not also the best available study action"* — needs all four, and
- * the only restriction that paragraph carries (`q̂ ∈ [0.5, 1]`) is row 3's and is not one of the
- * four that fail. So `domain` carries all four, computed:
+ * `threshold` and `steadyThreshold` are both divided by `k = shapeConstant(params)`, the constant
+ * that maps the grid's `w · (1 − m/100)` sort column into a STEADY point's price — so they are
+ * comparable **with each other**, which is the comparison `holds` is. A surface that prints
+ * `threshold` beside the grid's own score column should print `steadyThreshold` with it: on the
+ * board path the score column is the study ORDERING and these two are the board's PRICES.
+ *
+ * ## `domain` IS NOT A DOMAIN — it is the claim, plus two conditions on the model (verify-2)
+ *
+ * **Read this before quoting `domain.all` anywhere.** Rounds 1–3 built `domain` as a conjunction of
+ * FOUR conditions and published it — here, in `crewValue`, in `designs/SPEC-CORRECTIONS.md` C-1 and
+ * in COMPOSED-GAME.md G3.8 — as the domain *"the strong claim holds only on"*. Verify-2's crew
+ * critic showed that sentence is false in both directions, and the algebra is short enough to check
+ * by eye:
+ *
+ *   · `domain.rank` = *"no HELD row outbids the best STEADY row"*.
+ *   · `domain.supply` = `supplyGapFor().agrees` = *"the board's best-PAYING first rung is on
+ *     `crewOrder()[0]`"* — an argmax comparison, never a supply count (finding 4).
+ *   · `boardOptionsOn` sorts STEADY rows by the same `steadyValueOn` and the same `of`-index
+ *     tie-break `supplyGapFor` uses. So `rank ∧ supply` says *"the best-paying point on this board
+ *     is a STEADY on the study plan's first make"* — **which is the conclusion**, not a hypothesis
+ *     for it. Each failing on its own makes the conclusion false; together they are equivalent to
+ *     it. `claim` computes the conclusion directly and `claimIsConditions` reports the equivalence
+ *     per board (measured: identical on 300/300 drafted JOB-10 boards, mismatch 0).
+ *   · `domain.evidence` and `domain.band` never enter the board path at all. With a `queue` the
+ *     prices are `encountersIn(queue, make).active` and `dRhoTrue`, and neither reads `n` nor
+ *     `dRhoModel`; `lootMean · mBar` are positive constants common to every make. Measured: the two
+ *     conditions changed `claim` on **0 of 120** boards — that arm lifts every make to `n = 9` over
+ *     `V2_BOARDS.slice(0, 120)` (`tests/job-crew.test.mjs` §16), and 120 is the count, not 300.
+ *     What they did change is the size of the certified set — from 27.0 % of boards to **0.7 %**.
+ *
+ * So the four-condition form certifies almost nothing: it is two restatements of the conclusion
+ * ANDed with two conditions that cannot affect it, and its conjunction holds on 2 of 300 drafted
+ * boards while the conclusion itself is true on 81 of the same 300. **The two sets are NOT disjoint
+ * and never could be** (verify-3 finding 2): `domain.all` is `claim ∧ evidence ∧ band`, so
+ * `domain.all ⟹ claim` is arithmetic — both of the two certified boards are boards where the claim
+ * is true, and `tests/job-crew.test.mjs` §16 asserts the implication rather than leaving it to
+ * prose. **`domain` is kept — every field in it is a real, separately useful measurement — but it is
+ * a REPORT, not a sufficient condition, and the field to read for the claim is `claim`.**
+ *
+ * **AND THERE IS NO `q̂` CONDITION HERE** (verify-2 finding 5, which is the third round in a row
+ * this has had to be written down). `domain` is `{evidence, rank, supply, band, all}`; `grep -n
+ * "qHat" site/js/job/crew.js` returns nothing, because nothing in this module reads a call's q̂.
+ * The `q̂ ∈ [0.5, 1]` restriction belongs to **row 3 of G3.8's monotone-transform table** — the
+ * rating weight `4q̂(1−q̂)`, which is monotone only on that half of the range — and it is neither
+ * condition 3 nor any other condition `alignmentFor` computes. "Row 3" was transcribed as
+ * "condition 3" during the r3 repair and the error then reached G8's J4 acceptance row, where it
+ * asserts, as an acceptance criterion, a condition the code does not have.
+ * `tests/job-align.test.mjs` §3 is where the real restriction is asserted, on `weightFor(q̂)`, and
+ * it never touches `alignmentFor`.
+ *
+ * `domain.all` remains for the surfaces and tests that
+ * already read it, and it is now documented as what it is: the conjunction of one measurement, one
+ * restatement of it, and two model-regime conditions.
+ *
+ * The four fields, computed:
  *
  *   · `domain.evidence` — every candidate make is at full evidence depth (`n ≥ N_FULL = 5`), where
  *     `m_shown = m` and the published derivation's dropped `min(1, n/5)` is 1. Off it the two
@@ -1206,51 +1711,260 @@ export const bestBuy = (save, opts = {}) => buildOptions(save, opts)[0] ?? null;
  *     hand-built counterexample fails** (19 makes at m 70 / n 6, one at m 52, one mastered at m 92:
  *     the game's best point is HELD on the make the study plan ranks 19 of 19), and it fails INSIDE
  *     the `q̂ ≥ 0.5` restriction — which is why the published paragraph is false on its own domain
- *     and not merely imprecise. `tests/job-crew.test.mjs` §15 pins that exact save.
- *   · `domain.supply` — the board actually pays for the study plan's first make: `supplyGapFor`'s
- *     `agrees`. `null` when no `queue` was given, because supply is not knowable from the save.
- *   · `domain.band` (r3) — **no candidate make sits in the flat tail below `BAND_FLOOR = 40`.**
- *     `RUNG_BANDS` publishes 40 / 60 / 85 and `bandFor` clamps, so `Δρ` is one constant 0.1635 for
- *     every `m ≤ 40` — the entire weak-spot range — while `crewValue`'s `dRhoModel` keeps climbing
- *     to 0.2691 at m = 0 (a 64.6 % model error). Below the floor the true payoff orders makes by
- *     test weight ALONE and the crew grid's key keeps ranking m 2 above m 38 for makes the game pays
- *     identically. `bandFloored` lists the offenders, `bandFloor` is the constant, and `bandAgrees`
- *     is the measured consequence: whether `crewOrder` and `crewOrderTrue` pick the same top make
- *     (they do not on 38.3 % of the suite's population). The repair that would remove this condition
- *     is a fourth `RUNG_BANDS` row at m ≈ 15–20 in `data/job.js` — `DRHO_SLOPE` re-fits itself at
- *     module load, so no constant is retyped — and this lane does not own that file
- *     (notes/crew-fix.md R5).
+ *     and not merely imprecise. `tests/job-crew.test.mjs` §15 pins that exact save. **On the board
+ *     path this condition no longer compares two regimes** (verify-1): a second r3 critic built a
+ *     save where all four conditions pass and the BOARD-true best point is still HELD, and it worked
+ *     only because condition 2 was priced against the population (`heldValue` → `CREW_MATRIX`) while
+ *     condition 3 was priced against the board. Both sides are now `…On` prices at board-measured
+ *     parameters, so the counterexample's HELD term collapses with the constants it rode on —
+ *     `tests/job-align.test.mjs` §8 rebuilds it and shows the collapse.
+ *   · `domain.supply` — `supplyGapFor`'s `agrees`: the board's best-PAYING first rung is on the
+ *     study plan's first make. An argmax comparison, **not** a count of how often the board serves
+ *     that make (verify-2 finding 4 — the count is `gap.studySupply`, a different predicate that
+ *     disagrees with this one on about one board in six). `null` when no `queue` was given, because
+ *     supply is not knowable from the save.
+ *   · `domain.band` (r3; both clamps since verify-2) — **no candidate make sits in EITHER flat
+ *     range: `m ≤ BAND_FLOOR = 40` or `m ≥ BAND_CEIL = 85`.** `RUNG_BANDS` publishes 40 / 60 / 85
+ *     and `bandFor` clamps at both ends, so `Δρ` is one constant 0.1635 for every `m ≤ 40` — the
+ *     entire weak-spot range, where `crewValue`'s `dRhoModel` keeps climbing to 0.2691 at m = 0, a
+ *     64.6 % model error — and one constant 0.0325 for every `m ≥ 85`, where `dRhoModel` FALLS to
+ *     0.0135 at m 95 and to exactly 0 at m 100 (−58.6 % and −100 %). A floor-only condition was
+ *     unsound in the direction that matters: verify-2 finding 6 hand-built a save with every make
+ *     strictly above 40 on which `domain.all` read TRUE while `bandAgrees` read FALSE and the grid
+ *     priced a fully mastered w-9 make at 0.0000 against the 0.9150 the shipped bands pay for a
+ *     first rung on it. `bandFloored` / `bandCeiled` / `bandClamped` list the offenders, `bandFloor`
+ *     and `bandCeil` are the constants, and `bandAgrees` is the measured consequence: whether
+ *     `crewOrder` and `crewOrderTrue` pick the same top make (they do not on 34–49 % of saves,
+ *     across sixteen independently seeded corpora). The repair that would remove this condition is
+ *     two more `RUNG_BANDS` rows in `data/job.js` — one in the tail at m ≈ 15–20 and one above 85 —
+ *     `DRHO_SLOPE` re-fits itself at module load, so no constant is retyped, and this lane does not
+ *     own that file (notes/crew-fix.md R5).
  *   · `domain.all` — all four (an unknown supply is not counted as a failure, only as unknown).
+ *     Read the section above before quoting it: it is `claim` ANDed with two conditions that cannot
+ *     change `claim`, and it is empty on drafted play.
  *
- * Pass `queue` (the drafted job) to get `domain.supply` and `gap`; without one this returns exactly
- * what it returned in r1, plus the evidence, rank and band conditions.
+ * **`claim`, `claimParts` and `claimIsConditions` — the conclusion, computed** (verify-2 finding 1).
+ * `claim` is *"the best-paying crew point **still buyable** on this board is a STEADY on the study
+ * plan's first make that is still bare"*, read off `buyable[0]`; it is `true`/`false` with a queue
+ * and `null` without one, because without a board there is no "pays most on this board" to speak of.
+ * `boardClaim` is the same sentence ownership-blind, off `options[0]` — equal to `claim` on an empty
+ * build, and the field a CORPUS statistic belongs in (see `nextOnly`, below). `claimParts` is
+ * `{rank, supply}` — the two `domain` fields that restate it — and `claimIsConditions` is
+ * `claim === (rank && supply)`, computed per board so the equivalence is evidence rather than
+ * assertion. It can legitimately read `false` on an exact tie (two makes with equal board price
+ * are separated by `of`-index in `boardOptionsOn` and by first-wins in `supplyGapFor`, and on a
+ * board where nothing is served every price is 0), which is why it is REPORTED per board and the
+ * suite asserts it over a corpus rather than as an identity.
+ *
+ * **HOW OFTEN `domain.all` IS REACHED — measured, because the conjunction is nearly empty.** Over
+ * 300 boards drafted through `composePage → composeBundles → draftUnion`, at the exact call the
+ * brief makes (`of: onBoard`, with the queue): evidence 2.3 % · rank 98.7 % · supply 24.3 % ·
+ * band 11.0 % · **all 1.0 %**. Over the 19-make default `of`: evidence 0.0 % · rank 98.7 % ·
+ * supply 14.3 % · band 1.0 % · **all 0.0 %**. Conditions 1 and 4 are universally quantified over the
+ * pool, so ONE untouched make (n = 0), ONE weak spot at m ≤ 40 or ONE mastered make at m ≥ 85
+ * empties them — and a student with no weak spot below 40 is a student with nothing left to study.
+ * **`domain.all` is therefore a limit case and not a description of an evening**, and any surface or
+ * document that reads G3.8 as covering ordinary play is reading it wrong. `tests/job-align.test.mjs`
+ * §7 asserts these reachability numbers so they cannot drift back into prose.
+ *
+ * **And the number that matters is not that one.** `claim` — the conclusion those conditions were
+ * supposed to be the domain of — is true on **27.0 %** (81 of 300) of the same drafted boards, while
+ * `domain.all` holds on **0.7 %** (2 of 300). The two boards where it holds are boards where the
+ * claim holds, and that is arithmetic, not luck: `domain.all = claim ∧ evidence ∧ band` once
+ * `claimIsConditions` is true, so **`domain.all ⟹ claim`** and the certified set can never contain a
+ * board the claim is false on (verify-3 finding 2 — this docstring and COMPOSED-GAME G3.8 both used
+ * to say the opposite, *"on every one of which `domain.all` is false"*, which is refuted by two
+ * boards of the module's own corpus). What the four-condition form does is shrink the certified set
+ * from a quarter of boards to under one percent **without changing the answer on any board in it**.
+ * `tests/job-crew.test.mjs` §16 measures both rates and asserts the implication.
+ *
+ * `contenderDomain` is the same four conditions stated **per candidate instead of universally**:
+ * `contenders` is the set of makes that can actually decide the argmax (the top of `crewOrder`, of
+ * `crewOrderTrue`, of `crewOrderOn`, and whichever makes the two priced rungs put first), condition
+ * 1 asks only that THOSE are at full evidence depth, and condition 4 is `bandAgrees` — the argmax
+ * comparison — rather than "no make anywhere is in a flat range". It is the strongest form of the
+ * theorem that is reachable at all, and it is still rare: **7.7 %** of boards at the brief's call,
+ * **2.0 %** over the 19-make pool, with supply the binding condition. Note what its condition 4
+ * being an argmax comparison costs it: like `rank` and `supply` it is then a partial restatement of
+ * the conclusion rather than a hypothesis for it (verify-2 finding 1), so `contenderDomain.all` is
+ * a narrower MEASUREMENT and not a sounder theorem. What holds everywhere is the ORDERING identity
+ * of G3.8's first paragraph (`crewValue` IS `weakSpots()`'s sort key, exactly —
+ * `tests/job-align.test.mjs` §1), not the argmax claim.
+ *
+ * ## `nextOnly` — THE DECISION IS ABOUT THE POINT YOU CAN STILL BUY (verify-3 finding 3)
+ *
+ * Every field above used to be read off `options`, which prices a STEADY on **every** make in the
+ * pool and a HELD on every mastered one, with no reference to `save.game.crew`. `save.game.crew`
+ * persists across jobs (`store.js freshGame()` puts `crew` on `game`; nothing in `state.js` clears
+ * it at `startJob`), so from evening two onward the student arrives with a build — and the brief's
+ * one sentence was then benchmarking the night against a purchase they could not make. Measured over
+ * 200 drafted JOB-10 boards with the top `k` makes of the study order manned at STEADY:
+ *
+ *     k = 0   `best` is a rung already owned on   0.0 %   claim 25.5 %
+ *     k = 3                                      70.5 %   claim 25.5 %
+ *     k = 6                                      97.5 %   claim 25.5 %
+ *     k = 12                                     99.0 %   claim 25.5 %
+ *
+ * `claim` was byte-identical at every `k`: the whole decision surface was blind to the build. Under
+ * `nextOnly` (the default) the priced list is `buyable` — `options` minus every rung at or below
+ * `effectiveRankOf(save, make)` — and `steadyPool` is the makes a FIRST rung is still for sale on,
+ * which is the pool `studyTop` and `gap` are computed over. That keeps `claim ⇔ rank ∧ supply`
+ * exact: `boardOptionsOn`'s STEADY rows over `steadyPool` are precisely what `supplyGapFor`
+ * argmaxes over. `nextOnly: false` restores the ownership-blind list for a caller that wants the
+ * board's own prices (the grid's per-row price column reads `options`, which is unfiltered either
+ * way, because a row needs a price whether or not it is buyable tonight).
+ *
+ * **Every corpus rate in this docstring and in the suite is measured on an EMPTY BUILD.** The
+ * generators (`randomSave`, `r7Save`, `jobSaveFor`) never write `game.crew`, so `buyable === options`
+ * on all of them and the flag moves no published number — but the conditioning is real and is now
+ * stated: 27.0 % is the rate for a student who has spent nothing, and `boardClaim` is the field that
+ * measures it without reference to a build. Two states a real save reaches and the old list could
+ * not express are reported: `nothingToBuy` (no rung left to buy on this board at all — 50 % of
+ * boards at `k = 6` above) and `noFirstRung` (every make on the board manned, a HELD upgrade
+ * possibly still open).
+ *
+ * **What this does NOT fix, because it is not in this file.** `canAllocate` returns `ok: true` for
+ * `to <= from`, so re-pressing the rung you already hold is legal and `allocate` reports it with
+ * `changed: false`; `state.js` takes any `res.ok === true` and ends the brief phase, so the window's
+ * single action can be spent on nothing, and `screens/job.js crewBlock` does not disable the
+ * already-pressed rung. Both are filed in notes/repair-crew.md → Requests (R11), and the field that
+ * makes each of them one line now exists before the write as well as after it: `canAllocate` returns
+ * `same` (`to === from`) and `raises` (`to > from`) beside `ok`, so a one-action window can gate on
+ * `check.ok && !check.same` without re-deriving the ranks. The predicate itself stays permissive,
+ * and must: a DOWNGRADE frees points and is the repair path out of an illegal save.
+ *
+ * Pass `queue` (the drafted job) to price on the board and to get `domain.supply`, `gap` and
+ * `decision`; without one this returns exactly what it returned in r1, plus the evidence, rank and
+ * band conditions.
  */
-export function alignmentFor(save, { shape = DEFAULT_SHAPE, of = MAKES, queue = null } = {}) {
-  const options = buildOptions(save, { shape, of });
-  const steady = options.find((o) => o.rank === STEADY) ?? null;
-  const held = options.find((o) => o.rank === HELD) ?? null;
-  const k = shapeConstant(shape);
-  const holds = !held || (steady != null && steady.value >= held.value);
+export function alignmentFor(save, { shape = DEFAULT_SHAPE, of = MAKES, queue = null, nextOnly = true } = {}) {
   const pool = of.filter(isMake);
+  const q = Array.isArray(queue) ? queue : null;
+  // VERIFY-1 BLOCKER. With a board in hand, BOTH rungs are priced against that board and from
+  // parameters measured on it — never from the three `CREW_MATRIX` constants G2 publishes as
+  // measured-false. Without one this is exactly what it was in r1/r2/r3: the population model.
+  const params = q ? measuredParamsOn(save, q, { shape }) : matrixParamsFor(shape);
+  /* THE PRICE COLUMN and THE DECISION are two different lists — verify-3 finding 3.
+     `options` is every priced point ON THE BOARD, ownership-blind, because the grid prints one row
+     per make and a row needs a price whether or not the student already manned it. `buyable` is
+     that list minus the rungs `effectiveRankOf` says are already bought, and it is what every
+     DECISION field below is read off: `best`, `steady`, `held`, `holds`, `threshold`,
+     `steadyThreshold`, `margin`, `claim`. Before this, `best` was "the best point on this board" and
+     the brief's one sentence benchmarked the evening against a purchase the student could not make
+     — on 70 % of boards with three makes manned and 97 % with six (measured: notes/repair-crew.md
+     verify-3). `game.crew` is empty on every corpus in this module's suite, where the two lists are
+     identical, so every published rate below is unmoved by the split AND is conditioned on an empty
+     build; that conditioning is now stated wherever the rate is. */
+  const ownedAt = (make) => (nextOnly ? effectiveRankOf(save, make) : BARE - 1);
+  const options = q ? boardOptionsOn(save, q, { shape, of: pool, params }) : buildOptions(save, { shape, of: pool });
+  const buyable = nextOnly ? options.filter((o) => o.rank > ownedAt(o.make)) : options;
+  /* The makes a FIRST rung is still for sale on. `studyTop` and `gap` are computed over this pool
+     rather than over `of`, so the study argmax the brief benchmarks against is a make the student
+     can still man — and so that `claim ⇔ rank ∧ supply` survives the split (`boardOptionsOn`'s
+     STEADY rows over this pool are exactly what `supplyGapFor` argmaxes over). */
+  const steadyPool = nextOnly ? pool.filter((make) => effectiveRankOf(save, make) < STEADY) : pool;
+  const steady = buyable.find((o) => o.rank === STEADY) ?? null;
+  const held = buyable.find((o) => o.rank === HELD) ?? null;
+  // `k` is the constant that maps the grid's sort column into a STEADY point's price, so it must be
+  // the constant of the parameters the prices were taken at — otherwise `threshold` is a board
+  // number divided by a document number, which is the regime mix this fix exists to end.
+  const k = shapeConstant(params);
+  const holds = !held || (steady != null && steady.value >= held.value);
   const thin = pool.filter((make) => nOf(save, make) < N_FULL);
+  // VERIFY-2 finding 6: `bandFor` clamps at BOTH ends, so the band condition has to look at both.
+  // `floored` and `ceiled` are reported separately because they are different defects — the tail
+  // orders weak makes by `w` alone, the top pays 0.0325 for a rung `crewValue` prices at 0.
   const floored = pool.filter((make) => isBandFloored(mOf(save, make)));
-  const gap = Array.isArray(queue) ? supplyGapFor(save, queue, { shape, of: pool }) : null;
+  const ceiled = pool.filter((make) => isBandCeiled(mOf(save, make)));
+  const clamped = [...floored, ...ceiled.filter((make) => !floored.includes(make))];
+  /* PRICED AT `params`, LIKE THE ROWS — verify-3 finding 6. `gap` is the supply line the grid prints
+     directly above the price column, and until now it went through `supplyGapFor(save, q, {shape})`
+     — `steadyValueOn` at `matrixParamsFor('JOB')`, the PUBLISHED row — while every row beside it was
+     priced at `measuredParamsOn`. Two regimes, one word: the sentence read "a point on NOTE pays
+     1.92" above a row that read "· pays 1.42" for the same make, 35 % apart, on screen at the same
+     moment. `lootMean · m̄` is a positive constant common to every make, so passing `params` moves
+     the MAGNITUDES onto the rows' scale and moves nothing else: `studyTop`, `gameTop`, `studySupply`,
+     `agrees` and `zeroPay` are invariant under it (asserted, `tests/job-crew.test.mjs` §17). */
+  const gap = q ? supplyGapFor(save, q, { shape: params, of: steadyPool }) : null;
   const bandAgrees = crewOrder(save, { shape, of: pool })[0] === crewOrderTrue(save, { shape, of: pool })[0];
   const domain = {
     evidence: thin.length === 0,
     rank: holds,
     supply: gap ? gap.agrees : null,
-    band: floored.length === 0,
-    all: thin.length === 0 && holds && floored.length === 0 && (gap ? gap.agrees : true),
+    band: clamped.length === 0,
+    all: thin.length === 0 && holds && clamped.length === 0 && (gap ? gap.agrees : true),
+  };
+  /* THE CONCLUSION, COMPUTED — verify-2 finding 1. `domain.rank && domain.supply` is not a pair of
+     hypotheses for the claim, it IS the claim: `boardOptionsOn` sorts STEADY rows by the same
+     `steadyValueOn` and the same `of`-index tie-break `supplyGapFor` argmaxes over. So the honest
+     shape is to compute the conclusion directly and report the equivalence as a measurement. */
+  const studyTop = crewOrder(save, { shape, of: steadyPool })[0] ?? null;
+  const best = buyable[0] ?? null;
+  const claim = q ? (!!best && best.rank === STEADY && best.make === studyTop) : null;
+  const claimParts = { rank: holds, supply: gap ? gap.agrees : null };
+  const claimIsConditions = q ? (claim === (holds && (gap ? gap.agrees : false))) : null;
+  /* The same sentence about the BOARD rather than about tonight's purchase: "the best-paying point
+     on this board is a STEADY on the study plan's first make", ownership-blind. It is what §6.2 /
+     §16 measure and what COMPOSED-GAME G3.8 publishes, and on an empty build it IS `claim`. Kept
+     separately so a corpus statistic and a decision can never be read off the same field again. */
+  const boardBest = options[0] ?? null;
+  const boardStudyTop = crewOrder(save, { shape, of: pool })[0] ?? null;
+  const boardClaim = q ? (!!boardBest && boardBest.rank === STEADY && boardBest.make === boardStudyTop) : null;
+  // The makes that can decide the argmax: the top of each ordering the four conditions compare, plus
+  // whichever points the pricing actually put first. `contenderDomain` is `domain` restricted to
+  // them — see the paragraph above on reachability.
+  const contenders = [...new Set([
+    studyTop,
+    crewOrderTrue(save, { shape, of: pool })[0],
+    q ? crewOrderOn(save, q, { shape, of: pool })[0] : null,
+    steady?.make ?? null, held?.make ?? null, best?.make ?? null,
+  ].filter(isMake))];
+  const contenderThin = contenders.filter((make) => nOf(save, make) < N_FULL);
+  const contenderDomain = {
+    evidence: contenderThin.length === 0,
+    rank: holds,
+    supply: gap ? gap.agrees : null,
+    band: bandAgrees,
+    all: contenderThin.length === 0 && holds && bandAgrees && (gap ? gap.agrees : true),
   };
   return {
     shape: matrixParamsFor(shape).shape,
     steady, held, holds,
-    best: options[0] ?? null,
+    best,
     threshold: held && k > 0 ? held.value / k : 0,
+    steadyThreshold: steady && k > 0 ? steady.value / k : 0,
     margin: (steady?.value ?? 0) - (held?.value ?? 0),
     domain, thinEvidence: thin, evidenceFloor: N_FULL,
-    bandFloored: floored, bandFloor: BAND_FLOOR, bandAgrees, gap,
+    /* EVERY priced rung, best first — the same list `best` / `steady` / `held` are read off, handed
+       back so a surface can print what a point on ONE row buys without reaching past this function
+       into `boardOptionsOn` / `steadyValueOn` (verify-2 finding 8: the grid's rows printed the study
+       sort key `w·(1 − m/100)` while the line above them printed a board PRICE, two numbers in two
+       units with nothing on screen saying which was which). `pricedOn` says which regime they are
+       in; on the board path they are in `gap.studyPays`'s units exactly. */
+    options,
+    /* …and the same list with the rungs this save ALREADY HOLDS removed (verify-3 finding 3) — the
+       points tonight's single press can actually reach, which is what every decision field above is
+       read off. `nothingToBuy` is the state the brief has to be able to say out loud: every make on
+       this board already manned at or above the rung a point would buy. `noFirstRung` is the weaker
+       half of it — no STEADY left, a HELD upgrade possibly still open. On an empty build `buyable`
+       IS `options` and both flags are false. */
+    buyable, nextOnly, steadyPool, nothingToBuy: q ? buyable.length === 0 : null,
+    noFirstRung: q ? steadyPool.length === 0 : null,
+    // the conclusion, and the two `domain` fields that are it restated (verify-2 finding 1)
+    claim, claimParts, claimIsConditions, studyTop,
+    /* the same sentence about the board rather than about tonight's purchase (verify-3 finding 3):
+       ownership-blind, equal to `claim` on an empty build, and the field a CORPUS statistic is read
+       off — §6.2, §16 and COMPOSED-GAME G3.8's 27 % are all this one. */
+    boardBest, boardClaim, boardStudyTop,
+    bandFloored: floored, bandCeiled: ceiled, bandClamped: clamped,
+    bandFloor: BAND_FLOOR, bandCeil: BAND_CEIL, bandAgrees, gap,
+    pricedOn: q ? 'board' : 'model', params,
+    contenders, contenderDomain,
+    // S4's parameter-free build decision, computed on the same board (verify-1, test-integrity):
+    // `buildDecisionOn` had no caller under `site/` at all, so the 14 acceptance tests over it
+    // verified a function the student's game never ran. It is on the shipped path now — this is the
+    // call `screens/job.js crewBlock` makes on every render of the brief's crew grid.
+    decision: q ? buildDecisionOn(save, q, { shape, of: pool }) : null,
   };
 }
 

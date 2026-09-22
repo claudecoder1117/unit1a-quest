@@ -103,6 +103,8 @@ const HEADER_IN_JOB = 5;
  *  viewport of 375x331 — the same visible band, and the reason the two are easy to confuse. */
 const KB_PX = 336;
 const HEADER_OUT = 6;
+/** `GUARD.tokens` — the press, read from the shipped table like every other constant here. */
+const GUARD_TOKENS = Number(/tokens:\s*(\d+)/.exec(JOB_DATA_SRC)?.[1] ?? 3);
 
 /* ---------------------------------------------------------------- the server */
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.webmanifest': 'application/manifest+json', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon' };
@@ -122,6 +124,40 @@ const BASE = `http://127.0.0.1:${server.address().port}/`;
 /* ---------------------------------------------------------------- the fixture */
 if (Object.keys(BUILDERS).some((n) => !existsSync(path.join(FIX_DIR, n)))) await buildAll();
 const SAVE = JSON.stringify(freshen(JSON.parse(readFileSync(path.join(FIX_DIR, 'midweek.json'), 'utf8'))));
+
+/* ---------------------------------------------------------------- the clock (S0, round 4)
+   **THE BOARD IS A FUNCTION OF THE HOUR, AND THIS FILE USED THE MACHINE'S OWN.** G1/G5: *"after
+   22:00 the board closes"*, and Mon–Fri 07:00–14:15 posts the RUN shape only. `plan.jobEntryGate` is
+   the one decision behind `#/run/job` and `screens/job.js mountJob` obeys it by NAVIGATING AWAY —
+   correctly, with no error and a clean console — so between 22:00 and midnight this harness reached
+   `#/today`, `.job-screen` never appeared, `waitForSelector` timed out and every measurement in the
+   table read 0. That is the whole of S0: not a throw at mount, the clock. Reproduced:
+
+     $ node -e 'console.log(new Date().getHours())'            → 22
+     $ node qa/job-screen.mjs --engines chromium --themes light
+       [mount] plan.jobEntryGate: {"allow":false,"redirect":"#/today","kind":"closed"}
+
+   The repair is `qa/job-walk.mjs`'s own idiom (its comment states the rule this file was missing:
+   *"A visual QA that only runs after dinner is not a QA"*): the PAGE's clock is moved by a CONSTANT
+   offset onto tonight at 19:30, so every wall-clock delta the app measures — and every one this file
+   measures — is untouched, while the hour-of-day gate sees an evening. Nothing about the layer's
+   arithmetic is faked: `Date` still ticks at one second per second. Override with `--at HH:MM`. */
+const EVENING_HHMM = opt('at', '19:30');
+function clockOffset() {
+  const [hh, mm] = EVENING_HHMM.split(':').map(Number);
+  const real = new Date();
+  const want = new Date(real); want.setHours(hh, mm, 0, 0);
+  return want.getTime() - real.getTime();
+}
+const CLOCK_OFFSET = clockOffset();
+const CLOCK_INIT = `(() => {
+  const R = Date, O = ${CLOCK_OFFSET};
+  const at = () => R.now() + O;
+  window.Date = new Proxy(R, {
+    construct(t, a) { return a.length ? new t(...a) : new t(at()); },
+    get(t, k) { return k === 'now' ? at : Reflect.get(t, k); },
+  });
+})();`;
 
 /* ---------------------------------------------------------------- probes (run in the page) */
 
@@ -280,6 +316,55 @@ const PROBE_REACH = () => {
   };
 };
 
+/**
+ * RULE 10 / 10b's VIEWPORT SWEEP — every phone the rule is claimed at, narrowest first.
+ *
+ * ROUND-2 VERIFY (layout-safari finding 8). Both at-rest reachability rules were hardcoded to
+ * `[[375, 667], [844, 390]]`, and the round-3 fix that asked for 320x568 never landed. That is the
+ * one size the rule is most likely to fail at, and the OTHER harness cannot substitute: the layout
+ * audit's vertical `offscreen` detector only fires at `phase === 'bottom'`, i.e. with the page
+ * already scrolled to its end, so "below the fold AT REST" is measured by nothing else at any size
+ * in either engine.
+ *
+ * The list is `qa/layout-audit.mjs`'s own VP_ALL phones, portrait smallest first, plus the
+ * landscape phone the rule already ran at. At the NARROWEST the sweep runs twice — once plain and
+ * once under `html{font-size:20px}`, the text-zoom pass that exhausts the few px of slack
+ * `syncBoardFit` converges on — and the measured slack (`fold − bottom`) is returned so the report
+ * carries the margin as a number instead of an invisible property.
+ */
+const REACH_VPS = [[320, 568], [360, 740], [PHONE_W, 667], [844, 390]];
+
+async function reachSweep(page, fail, where, { board = false } = {}) {
+  let worst = null;
+  for (const [vw, vh] of REACH_VPS) {
+    await page.setViewportSize({ width: vw, height: vh });
+    await nap(page, 300);
+    const passes = (vw === REACH_VPS[0][0] && vh === REACH_VPS[0][1]) ? [false, true] : [false];
+    for (const zoom of passes) {
+      let handle = null;
+      if (zoom) { handle = await page.addStyleTag({ content: 'html{font-size:20px !important}' }); await nap(page, 250); }
+      const r = await page.evaluate(PROBE_REACH);
+      const tag = `${vw}x${vh}${zoom ? '@zoom20' : ''}`;
+      for (const [what, box] of Object.entries(r.rects)) {
+        if (!box) continue;
+        const slack = Math.round(r.H - box.b);
+        if (!box.inView) {
+          fail('reach', `${what} is outside a ${tag} viewport ${where} `
+            + `(top ${box.y}, bottom ${box.b}, fold ${r.H}, slack ${slack}, scrollY ${r.scrollY}, board ${r.boardH}px)`);
+        }
+        if (worst == null || slack < worst.slack) worst = { slack, what, tag, where };
+      }
+      if (board && r.boardH != null && r.boardH > BOARD_SHEET + 0.5) {
+        fail('board sheet', `the board is ${r.boardH}px at the envelope on a ${tag} screen (G6: ${BOARD_SHEET}px)`);
+      }
+      if (handle) await handle.evaluate((e) => e.remove()).catch(() => {});
+    }
+  }
+  await page.setViewportSize({ width: PHONE_W, height: 667 });
+  await nap(page, 280);
+  return worst;
+}
+
 /** The brief: its primary inside the fold, and the board still one collapsed line. */
 const PROBE_BRIEF = () => {
   const vvB = window.visualViewport;
@@ -322,7 +407,35 @@ async function tap(page, sel, wait = 320) {
   return true;
 }
 
-async function goJob(page, { theme }) {
+/**
+ * WHY THE MOUNT WAIT NEEDS A DIAGNOSIS (S0, round 4). This file installs the capture the diagnosis
+ * needs — `pageerror` and `console.error` both land in `consoleErrors` — but that list is only read
+ * at the END of a walk, and a `waitForSelector` throw at mount aborts the walk before it: every
+ * measurement then reads 0 and the only sentence printed is Playwright's own timeout. So the mount
+ * wait prints what the PAGE said, plus the route's own verdict, BEFORE it re-throws.
+ *
+ * `plan.jobEntryGate` is read here rather than guessed at because the gate is the one thing that can
+ * refuse `#/run/job` without any error at all (`screens/job.js mountJob` navigates away and returns
+ * an empty teardown, exactly as G9 #9 asks) — which is a silent mount failure with a clean console.
+ */
+async function mountDiag(page, errors) {
+  const why = await page.evaluate(async () => {
+    const out = { hash: location.hash, title: document.title, body: document.body.innerHTML.slice(0, 400), gate: null };
+    try {
+      const plan = await import('/js/plan.js');
+      const save = JSON.parse(localStorage.getItem('u1a.save') || 'null');
+      const g = plan.jobEntryGate(save);
+      out.gate = { allow: g.allow, redirect: g.redirect, why: g.why, line: g.line, kind: g.policy?.kind ?? null };
+    } catch (e) { out.gate = { error: String(e?.message ?? e) }; }
+    return out;
+  }).catch((e) => ({ hash: '?', title: '?', body: '', gate: { error: String(e?.message ?? e) } }));
+  console.log(`  [mount] .job-screen never became visible — hash "${why.hash}"`);
+  console.log(`  [mount] plan.jobEntryGate: ${JSON.stringify(why.gate)}`);
+  console.log(`  [mount] page errors: ${(errors ?? []).length ? (errors ?? []).slice(0, 3).join(' | ') : '(none)'}`);
+  console.log(`  [mount] body: ${why.body.replace(/\s+/g, ' ').slice(0, 400)}`);
+}
+
+async function goJob(page, { theme, errors = null }) {
   await page.goto(BASE + 'version.js', { waitUntil: 'load' });
   await page.evaluate(async () => {
     try { for (const r of (await navigator.serviceWorker?.getRegistrations?.()) ?? []) await r.unregister(); } catch { /* blocked */ }
@@ -334,7 +447,9 @@ async function goJob(page, { theme }) {
     localStorage.setItem('u1a.save', JSON.stringify(s));
   }, [SAVE, theme]);
   await page.goto(BASE + '#/run/job', { waitUntil: 'networkidle' });
-  await page.waitForSelector('.job-screen', { timeout: 20000 });
+  try {
+    await page.waitForSelector('.job-screen', { timeout: 20000 });
+  } catch (e) { await mountDiag(page, errors); throw e; }
   await page.waitForSelector('.job-screen .job-primary', { timeout: 20000 });
   await nap(page, 250);
 }
@@ -422,6 +537,7 @@ async function answerOne(page) {
 async function walk(engineName, theme, out) {
   const browser = await ENGINES_BY_NAME[engineName].launch();
   const ctx = await browser.newContext({ viewport: { width: PHONE_W, height: 667 }, deviceScaleFactor: 1, serviceWorkers: 'block' });
+  await ctx.addInitScript(CLOCK_INIT);          // tonight at EVENING_HHMM, by a constant offset (S0)
   const page = await ctx.newPage();
   const fail = (what, detail) => out.fails.push(`${engineName}/${theme}: ${what} — ${detail}`);
   const warn = (what, detail) => out.warns.push(`${engineName}/${theme}: ${what} — ${detail}`);
@@ -442,12 +558,14 @@ async function walk(engineName, theme, out) {
     }
     return m.h;
   };
+  /* rule 12 is driven once per WALK (not once per run), so both engines measure it */
+  let pressDriven = 0;
   const consoleErrors = [];
   page.on('pageerror', (e) => consoleErrors.push(String(e?.message ?? e)));
   page.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(m.text()); });
 
   try {
-    await goJob(page, { theme });
+    await goJob(page, { theme, errors: consoleErrors });
 
     /* ---- 3. the header: five items during a job ---- */
     const boardHdr = await page.evaluate(PROBE_HEADER);
@@ -465,6 +583,24 @@ async function walk(engineName, theme, out) {
     const commitOpen = await has(page, '.job-commit-open');
     if (!commitOpen) fail('keyboard', 'C did not open the COMMIT row on the board');
     await page.keyboard.press('KeyC'); await nap(page, 150);
+    /* SPEND THE WHOLE PRESS (round 4, S5). G1's press is `GUARD.tokens` tokens and the brief
+       window's re-press exists only on a full one — `pressRefusal`'s `repress-unavailable`:
+       *"with fewer than GUARD.tokens down, 're-press one token' has no meaning that is not 'press a
+       token you never spent'"*. The arrow pair above nets to zero, so this walk used to reach every
+       brief window with 2 of 3 tokens down, where rule 12 below has nothing to measure. */
+    const spentAtBoard = await page.evaluate(async (cap) => {
+      for (let i = 0; i < cap + 2; i++) {
+        const rows = [...document.querySelectorAll('.job-token')];
+        const down = rows.reduce((t, r) => t + (Number(r.querySelector('.job-token-n')?.textContent?.replace(/\D/g, '')) || 0), 0);
+        if (down >= cap) return down;
+        const plus = rows.map((r) => [...r.querySelectorAll('.job-token-btn')].at(-1)).find((b) => b && !b.disabled);
+        if (!plus) return down;
+        plus.click();
+        await new Promise((r) => setTimeout(r, 60));
+      }
+      return [...document.querySelectorAll('.job-token')].reduce((t, r) => t + (Number(r.querySelector('.job-token-n')?.textContent?.replace(/\D/g, '')) || 0), 0);
+    }, GUARD_TOKENS);
+    if (spentAtBoard !== GUARD_TOKENS) fail('press', `the board press stopped at ${spentAtBoard} of ${GUARD_TOKENS} tokens`);
     await tap(page, '.job-primary', 800);
 
     /* ---- every target ---- */
@@ -479,19 +615,11 @@ async function walk(engineName, theme, out) {
         const hdrG = await page.evaluate(PROBE_HEADER);
         if (hdrG.n !== HEADER_IN_JOB) fail('header', `getaway shows ${hdrG.n} items (${hdrG.on.join(' ')}), want ${HEADER_IN_JOB}`);
         await sheetCheck('the getaway');          // the other pre-stem phase the sheet is open in
-        /* ---- 10b. CRACK and WALK on screen at rest, portrait and landscape (round 2) ---- */
-        for (const [vw, vh] of [[PHONE_W, 667], [844, 390]]) {
-          if (vh !== 667) { await page.setViewportSize({ width: vw, height: vh }); await nap(page, 300); }
-          const r = await page.evaluate(PROBE_REACH);
-          for (const [what, box] of Object.entries(r.rects)) {
-            if (!box || !box.inView) {
-              if (box) fail('reach', `${what} is outside a ${vw}x${vh} viewport at the getaway `
-                + `(top ${box.y}, bottom ${box.b}, scrollY ${r.scrollY}, board ${r.boardH}px)`);
-            }
-          }
+        /* ---- 10b. CRACK and WALK on screen at rest, every phone in VP_ALL (verify-2, finding 8) ---- */
+        {
+          const w = await reachSweep(page, fail, 'at the getaway');
+          if (w) out.slack.push(`getaway: ${w.slack}px under the fold — ${w.what} at ${w.tag}`);
         }
-        await page.setViewportSize({ width: PHONE_W, height: 667 });
-        await nap(page, 280);
         await page.keyboard.press('KeyK'); await nap(page, 600);     // CRACK, by key
         continue;
       }
@@ -514,9 +642,18 @@ async function walk(engineName, theme, out) {
             const onBoard = [...new Set(queue.map((it) => crew.makeOf(it)).filter(Boolean))];
             if (!onBoard.length) return { ...out2, why: 'no make left on the board' };
             const shape = ip.game?.shape ?? crew.DEFAULT_SHAPE;
-            const gap = crew.supplyGapFor(s, queue, { shape, of: onBoard });
-            const blind = crew.supplyGapFor(s, [], { shape, of: onBoard });
             const align = crew.alignmentFor(s, { shape, of: onBoard, queue });
+            /* VERIFY-3 (player-feel): the supply sentence is priced at the parameters the GRID's own
+               rows are priced at — `measuredParamsOn(save, board)` — and over the makes a first rung
+               is still for sale on. Recomputed here rather than read off `align.gap`, so this rule
+               still checks the screen against an independent call; what it takes from `align` is the
+               regime and the pool, which are the two things the sentence and the rows must share.
+               (Before this it recomputed at `matrixParamsFor(shape)`, the published `CREW_MATRIX`
+               row, which is the two-regime split the repair closed.) */
+            const params = align?.params ?? shape;
+            const gapPool = align?.steadyPool ?? onBoard;
+            const gap = crew.supplyGapFor(s, queue, { shape: params, of: gapPool });
+            const blind = crew.supplyGapFor(s, [], { shape: params, of: gapPool });
             const counts = {};
             for (const it of queue) {
               const mk = crew.makeOf(it);
@@ -533,6 +670,11 @@ async function walk(engineName, theme, out) {
             }));
             return {
               ok: true, why: null, gap, blind, counts, rows,
+              // VERIFY-2 (crew finding 2): the grid lists `crew.reallocatable` — the board's makes
+              // PLUS the ones the save already has a point on, so an unwanted point can be handed
+              // back on a night the board does not serve it. Those extra rows are legitimately not
+              // on the board, and rule (a) below has to know which they are.
+              manned: crew.mannedMakes(crew.crewOf(s)),
               held: align?.held ?? null,
               threshold: align?.threshold ?? null,
               holds: align?.holds ?? null,
@@ -547,8 +689,12 @@ async function walk(engineName, theme, out) {
           if (!crewM.hasGrid) fail('crew grid', 'the brief rendered no .job-brief-crew block');
           /* (a) the per-row board counts are THIS board's, not the shape's mean encounters */
           for (const row of crewM.rows) {
-            const c = crewM.counts[row.make];
-            if (!c) { fail('crew grid', `row "${row.make}" is not a make on the board`); continue; }
+            const manned = (crewM.manned ?? []).includes(row.make);
+            const c = crewM.counts[row.make] ?? (manned ? { left: 0, live: 0 } : null);
+            if (!c) {
+              fail('crew grid', `row "${row.make}" is neither on the board nor manned in the save`);
+              continue;
+            }
             const want = `${c.left} left · forgives ${c.live}`;
             if (row.board !== want) fail('crew grid', `row ${row.make} prints "${row.board}", the board says "${want}"`);
           }
@@ -598,6 +744,148 @@ async function walk(engineName, theme, out) {
         }
         if (!br.skip) fail('brief', 'the brief has no primary control');
         else if (!br.skip.inView) fail('brief', `the brief's primary is ${br.skip.b - br.H}px below the fold at rest (375x${br.H})`);
+
+        /* ---- 12. THE BRIEF PRESS IS ONE ATOMIC SUBMIT (round 4, S5) ------------------------------
+           `state.press` REDRAWS THE GUARD, and the screen's ± used to commit through it. So the LIFT
+           published a new wing (`envelopeFor` prints `guarded` on every target) and the student then
+           placed the freed token against a wing they already knew — and the redraw's seed is pinned
+           to `${seed}|brief${n}`, so the second half of the two-step faced a certainty. The machine
+           cannot refuse it: `tests/job-state-r3.test.mjs` pins the two-step legal at module level
+           (its own messages are "the lift-then-place did not restore the press" and "the place after
+           the lift was refused"), so the law lives in the screen and the only place it can be
+           measured is a real brief window with real clicks. `tests/job-screen.test.mjs` can pin the
+           ABSENCE of a `state.press(` call in `bump()`'s brief branch; only this can see that a ±
+           moves nothing on the disk.
+           The whole rule is the three reads: after the lift, after the place, after the submit.
+           It is driven on the FIRST brief window only; later windows keep taking the `Enter` skip,
+           which is the default path G1 budgets the beat for. */
+        const pressM = pressDriven > 0 ? { ok: false, skip: true, why: 'already measured in this walk' } : await page.evaluate(async (cap) => {
+          const store = await import('/js/store.js');
+          const read = () => {
+            const gv = store.getState()?.inProgress?.game ?? null;
+            const btn = document.querySelector('.job-repress');
+            return {
+              tokens: gv ? { ...gv.tokens } : null,
+              wing: gv?.guard?.wing ?? null,
+              drawnAt: Number(gv?.guard?.drawnAt ?? 0),
+              phaseAt: Number(gv?.phaseAt ?? 0),
+              briefs: Array.isArray(gv?.briefs) ? gv.briefs.length : -1,
+              seed: gv?.seed ?? null,
+              dist: gv?.guard?.dist ? { ...gv.guard.dist } : null,
+              took: Array.isArray(gv?.briefs) && gv.briefs.length ? [...(gv.briefs[gv.briefs.length - 1].took ?? [])] : null,
+              btn: btn ? { disabled: !!btn.disabled, label: btn.textContent.trim() } : null,
+              shown: Object.fromEntries([...document.querySelectorAll('.job-token')]
+                .map((r) => [r.dataset.wing, r.querySelector('.job-token-n')?.textContent?.replace(/\D/g, '') ?? null])),
+              /* THE ONE SURFACE THAT NAMES THE GUARDED WING: `COPY.guard`'s own line, in the live
+                 region (`GUARD: WORDS.  your tokens: …`). A whole-screen text search would be
+                 vacuous here — the brief's guard bars label EVERY wing — so what is read back is the
+                 wing that line names, which is the only thing that says which wing is dead. */
+              guardSays: /GUARD:\s*([A-Z][A-Z-]*)/.exec(document.querySelector('.job-say')?.textContent ?? '')?.[1] ?? null,
+            };
+          };
+          const out = { ok: false, why: null, before: read() };
+          if (!out.before.tokens) return { ...out, why: 'no live job' };
+          if (!out.before.btn) return { ...out, why: 'the brief renders no .job-repress control' };
+          const wings = [...document.querySelectorAll('.job-token')].map((r) => r.dataset.wing);
+          const down = wings.find((w) => Number(out.before.tokens[w] ?? 0) > 0);
+          const up = wings.find((w) => w !== down);
+          if (!down || !up) return { ...out, why: `no liftable/placeable pair in ${JSON.stringify(out.before.tokens)}` };
+          /* A window that never had a full press has no re-press at all (`repress-unavailable`), and
+             the screen must say so with dead controls rather than offer a move the machine refuses. */
+          const total = wings.reduce((t, w) => t + Number(out.before.tokens[w] ?? 0), 0);
+          const live = [...document.querySelectorAll('.job-token-btn')].filter((b) => !b.disabled).length;
+          if (total !== cap) return { ...out, unavailable: true, total, live };
+          const btnOf = (w, which) => {
+            const bs = [...document.querySelectorAll(`.job-token[data-wing="${w}"] .job-token-btn`)];
+            return which === '-' ? bs[0] : bs[bs.length - 1];
+          };
+          const lift = btnOf(down, '-');
+          if (!lift || lift.disabled) return { ...out, why: `the − on ${down} is disabled with ${out.before.tokens[down]} token(s) on it` };
+          lift.click();
+          await new Promise((r) => setTimeout(r, 120));
+          const afterLift = read();
+          const place = btnOf(up, '+');
+          if (!place || place.disabled) return { ...out, why: `the + on ${up} is disabled after a lift`, afterLift };
+          place.click();
+          await new Promise((r) => setTimeout(r, 120));
+          const staged = read();
+          const submit = document.querySelector('.job-repress');
+          if (!submit || submit.disabled) return { ...out, why: 'the submit is still disabled on an atomic move', afterLift, staged };
+          submit.click();
+          await new Promise((r) => setTimeout(r, 200));
+          /* THE REDRAW IS THE PINNED ONE: `press()` draws from the SAME published distribution with
+             the seed `${jobSeed}|brief${n}`, so the wing the submit lands on is reproducible from the
+             pre-submit state alone — which is also what makes pressing twice or reloading unable to
+             re-roll it. Recomputed here from `guard.drawGuard`, never re-implemented. */
+          let expectWing = null;
+          try {
+            const G = await import('/js/job/guard.js');
+            expectWing = G.drawGuard(out.before.dist, `${out.before.seed}|brief${out.before.briefs}`);
+          } catch (e) { expectWing = `import failed: ${String(e?.message ?? e)}`; }
+          return { ok: true, why: null, before: out.before, afterLift, staged, after: read(), down, up, expectWing };
+        }, GUARD_TOKENS);
+        if (!pressM.ok) {
+          if (pressM.unavailable) {
+            /* the machine's own `repress-unavailable`: nothing may be staged and nothing submitted */
+            if (pressM.live > 0) fail('brief press', `${pressM.total} of ${GUARD_TOKENS} tokens are down, so the re-press is unavailable (repress-unavailable) — but ${pressM.live} ± control(s) are live`);
+            if (pressM.before?.btn && !pressM.before.btn.disabled) fail('brief press', `the re-press button is live on a ${pressM.total}-token press the machine refuses`);
+            out.pressUnavailable = (out.pressUnavailable ?? 0) + 1;
+          } else if (!pressM.skip) {
+            fail('brief press', `${pressM.why} — S5's atomic submit could not be driven `
+              + `(before: ${JSON.stringify(pressM.before?.tokens)} btn ${JSON.stringify(pressM.before?.btn)})`);
+          }
+        } else {
+          const { before, afterLift, staged, after, down, up } = pressM;
+          pressDriven += 1;
+          out.pressSeen = (out.pressSeen ?? 0) + 1;
+          /* (a) nothing is offered for free: the button is dead until a whole move is staged */
+          if (!before.btn.disabled) fail('brief press', 'the re-press button is live before any token has moved — "redraw and move nothing" is a free re-roll (G11)');
+          if (afterLift.btn && !afterLift.btn.disabled) fail('brief press', 'the re-press button is live on a LIFT alone — committing it leaves the freed token to be placed against a known wing');
+          if (staged.btn && staged.btn.disabled) fail('brief press', 'the re-press button is dead on an atomic one-for-one move — nothing can be submitted at all');
+          /* (b) THE LEAK: neither ± may reach the save, and the guard may not redraw */
+          for (const [what, m] of [['the lift', afterLift], ['the place', staged]]) {
+            if (JSON.stringify(m.tokens) !== JSON.stringify(before.tokens)) {
+              fail('brief press', `${what} wrote the allocation to the save before the submit `
+                + `(${JSON.stringify(before.tokens)} → ${JSON.stringify(m.tokens)})`);
+            }
+            if (m.drawnAt !== before.drawnAt) fail('brief press', `${what} moved guard.drawnAt (${before.drawnAt} → ${m.drawnAt}) — the guard redrew on a staged token`);
+            if (m.wing !== before.wing) fail('brief press', `${what} redrew the guarded wing (${before.wing} → ${m.wing}) before the move was committed`);
+          }
+          /* …and the staging IS visible, or the ± did nothing at all and (b) is vacuous */
+          if (staged.shown[down] === before.shown[down] && staged.shown[up] === before.shown[up]) {
+            fail('brief press', `the ± changed no on-screen count (${JSON.stringify(before.shown)}) — the staging is invisible, so this rule proves nothing`);
+          }
+          /* (c) the submit is ONE press: the allocation lands, the guard redraws exactly once, and
+                 the window records the option it took */
+          const want = { ...before.tokens, [down]: Number(before.tokens[down]) - 1, [up]: Number(before.tokens[up] ?? 0) + 1 };
+          if (JSON.stringify(after.tokens) !== JSON.stringify(want)) {
+            fail('brief press', `the submit did not commit the staged move: ${JSON.stringify(before.tokens)} `
+              + `+ (−1 ${down}, +1 ${up}) should be ${JSON.stringify(want)}, the save has ${JSON.stringify(after.tokens)}`);
+          }
+          if (!(after.drawnAt > before.drawnAt)) fail('brief press', `the submit did not redraw the guard (guard.drawnAt stayed ${after.drawnAt})`);
+          if (after.wing !== pressM.expectWing) {
+            fail('brief press', `the submit's redraw is not the PINNED draw: guard.drawGuard(dist, "${before.seed}|brief${before.briefs}") `
+              + `is ${pressM.expectWing}, the save has ${after.wing} — pressing twice or reloading could re-roll it`);
+          }
+          if (after.briefs !== before.briefs + 1) fail('brief press', `the submit did not close the window (briefs ${before.briefs} → ${after.briefs})`);
+          if (!(after.took ?? []).includes('repress')) fail('brief press', `the window recorded ${JSON.stringify(after.took)} — the debrief counts no re-press, so the option was taken for free`);
+          /* (d) the wing the student staged against was the PRE-submit one. `guard.wing` itself is
+                 asserted unchanged in (b) — and since every "guarded" marker in the layer is derived
+                 from that field, that IS the proof no surface could publish the new wing early. This
+                 reads the printed sentence back as well, because a screen that cached the line would
+                 pass (b) and still show the student the wrong wing. */
+          for (const [what, m] of [['before the lift', before], ['after the lift', afterLift], ['after the place', staged]]) {
+            if (m.guardSays && m.guardSays !== before.wing) {
+              fail('brief press', `the guard line named ${m.guardSays} ${what} while the save's guarded wing was ${before.wing}`);
+            }
+          }
+          if (after.wing !== before.wing && staged.guardSays === after.wing) {
+            fail('brief press', `the redrawn wing ${after.wing} was printed before the submit`);
+          }
+          out.pressRows = [...(out.pressRows ?? []), `${engineName}/${theme} ${down}→${up} · wing ${before.wing}→${after.wing} (pinned ${pressM.expectWing}) · one redraw · took ${JSON.stringify(after.took)}`];
+          await nap(page, 400);
+          continue;                    // `brief()` closed the window; the machine is at the next phase
+        }
         await page.keyboard.press('Enter'); await nap(page, 500); continue;
       }
 
@@ -622,20 +910,8 @@ async function walk(engineName, theme, out) {
            that carries the other half of G1's decisions. 844x390 is the same phone turned
            sideways, where the whole sheet has to give way to the decision. */
         if (target === 0 || target === 3) {
-          for (const [vw, vh] of [[375, 667], [844, 390]]) {
-            if (vw !== PHONE_W || vh !== 667) { await page.setViewportSize({ width: vw, height: vh }); await nap(page, 300); }
-            const r = await page.evaluate(PROBE_REACH);
-            for (const [what, box] of Object.entries(r.rects)) {
-              if (!box) continue;
-              if (!box.inView) fail('reach', `${what} is outside a ${vw}x${vh} viewport at rest `
-                + `(top ${box.y}, bottom ${box.b}, scrollY ${r.scrollY}, board ${r.boardH}px)`);
-            }
-            if (r.boardH != null && r.boardH > BOARD_SHEET + 0.5) {
-              fail('board sheet', `the board is ${r.boardH}px at the envelope on a ${vh}px screen (G6: ${BOARD_SHEET}px)`);
-            }
-          }
-          await page.setViewportSize({ width: PHONE_W, height: 667 });
-          await nap(page, 280);
+          const w = await reachSweep(page, fail, `at rest (target ${target})`, { board: true });
+          if (w) out.slack.push(`call row (target ${target}): ${w.slack}px under the fold — ${w.what} at ${w.tag}`);
         }
 
         // the CALL, by key on the first target and by tap after that (both are real paths)
@@ -783,7 +1059,7 @@ async function walk(engineName, theme, out) {
        size at which the promise is testable — and the one at which the shipped build drew a 36 px
        strip with ~780 px of empty page beside it (round 1, layout-safari). ---- */
     await page.setViewportSize({ width: RAIL_VP[0], height: RAIL_VP[1] });
-    await goJob(page, { theme });
+    await goJob(page, { theme, errors: consoleErrors });
     const rail = await page.evaluate(PROBE_RAIL);
     const at = `${RAIL_VP[0]}x${RAIL_VP[1]}`;
     if (!rail.beside) fail('rail', `at ${at} the board is stacked above the card, not beside it (${JSON.stringify(rail)})`);
@@ -831,7 +1107,7 @@ async function walk(engineName, theme, out) {
 
 /* ---------------------------------------------------------------- run */
 
-const out = { rows: [], fails: [], warns: [], kbRows: [], worstBoard: 0, worstOpenBoard: 0 };
+const out = { rows: [], fails: [], warns: [], kbRows: [], slack: [], worstBoard: 0, worstOpenBoard: 0 };
 for (const e of ENGINES) for (const t of THEMES) await walk(e, t, out);
 await new Promise((r) => server.close(r));
 
@@ -839,9 +1115,22 @@ const pad = (s, n) => String(s).padEnd(n);
 console.log(`\nJ6 — THE JOB screen  (board collapses to <= ${BOARD_COLLAPSED}px with a stem in the DOM)\n`);
 console.log(`${pad('engine', 10)}${pad('theme', 7)}${pad('beat', 12)}${pad('board px', 10)}${pad('hdr', 5)}note`);
 for (const r of out.rows) console.log(`${pad(r.engine, 10)}${pad(r.theme, 7)}${pad(r.beat, 12)}${pad(r.boardH ?? '—', 10)}${pad(r.hdr, 5)}${r.note}`);
-console.log(`\nworst board height with a stem in the DOM, across every target of every walk: ${out.worstBoard}px (max ${BOARD_COLLAPSED})`);
+/* The clock the PAGE ran on, printed so the model is auditable: a board is a function of the hour
+   (G5's 22:00 close and the school window), and a harness that runs on the machine's own clock is a
+   harness that passes or fails by the time of day — S0. */
+console.log(`\npage clock: tonight ${EVENING_HHMM} local, by a constant ${Math.round(CLOCK_OFFSET / 60000)} min offset `
+  + '(wall-clock deltas unchanged; --at HH:MM)');
+console.log(`worst board height with a stem in the DOM, across every target of every walk: ${out.worstBoard}px (max ${BOARD_COLLAPSED})`);
 console.log(`worst OPEN board height, during the decision phases at 375x667: ${out.worstOpenBoard}px `
   + `(G6's sticky sheet is ${BOARD_SHEET}px — ${SHEET_RULE_SHIPPED ? 'ENFORCED by job.css, so this is fatal' : 'no job.css rule enforces it yet, so this is a warning'})`);
+/* THE AT-REST MARGIN, AS A NUMBER (verify-2, layout-safari finding 8). Rules 10 and 10b now sweep
+   every phone in the audit's own VP_ALL, narrowest first, and the narrowest is swept again under
+   `html{font-size:20px}`. The tightest `fold − bottom` each sweep saw is printed here, so the slack
+   the rule depends on is on the record rather than being an invisible property of one viewport. */
+console.log(`at-rest reach sweep: ${REACH_VPS.map(([w, h]) => `${w}x${h}`).join(', ')} (narrowest also at 20px text)`);
+if (out.slack.length) for (const line of out.slack) console.log(`  tightest ${line}`);
+else console.log('  tightest margin: NOT MEASURED — no decision beat was reached');
+
 /* The keyboard, as the app saw it — printed so the MODEL is auditable and not just its verdict.
    `innerH` must not move (a keyboard does not resize the layout viewport); `--kb` and `data-kb` are
    the app's own publication, read back off <html>, never written by this file. */
@@ -858,6 +1147,9 @@ if (out.kbRows.length) {
    than a tautology. */
 console.log(`crew grid: measured on ${out.crewSeen ?? 0} brief(s) · the queue-aware gap differs from `
   + `the supply-blind one on ${out.crewDiscriminating ?? 0} of them`);
+/* The brief press (S5): the staged move that was driven, so the rule's own subject is on the record
+   and a run that measured nothing cannot read as a pass. */
+console.log(`brief press: driven on ${out.pressSeen ?? 0} window(s)${(out.pressRows ?? []).length ? ` · ${out.pressRows.join(' · ')}` : ''}`);
 console.log('');
 if (out.warns.length) {
   console.log(`WARN — ${out.warns.length}`);

@@ -20,10 +20,13 @@ import assert from 'node:assert/strict';
 import * as state from '../site/js/job/state.js';
 import {
   OUTCOMES, startJob, beginTargets, beginAnswer, lockCall, applyTarget, push, brief,
-  crack, callIt, closeDebrief, swapOptions, canSwap,
+  crack, callIt, closeDebrief, swapOptions, canSwap, pricedTarget, envelopeFor,
   queueOf, idxOf, targetsLeft, answered, isVaultTarget, stateOf, resume, serialize, deserialize,
   STATE_KEYS,
 } from '../site/js/job/state.js';
+import * as econ from '../site/js/job/econ.js';
+import * as index from '../site/js/job/index.js';
+import { TAGS } from '../site/data/misconceptions.js';
 import { BACKCHECK, PHASE_MEANS_DEFAULT, SPLIT, COMPLETION, DECLINE_PRICE } from '../site/data/job.js';
 import { fresh } from '../site/js/store.js';
 import { applyOutcome, dueList, DAY_MS } from '../site/js/schedule.js';
@@ -622,5 +625,221 @@ describe('r1 · G1 — the brief window\'s fifth option exists, and declinePrice
     const reloaded = JSON.parse(JSON.stringify(s));
     resume(reloaded);
     assert.deepEqual(swapOptions(reloaded), before, 'the swap vanished when the tab was killed');
+  });
+});
+
+/* ==========================================================================================
+   ROUND-4 VERIFY — the two brief-window options that were published but not implemented.
+
+   Both were found by `exploit-hunt` against the SHIPPED machine, and both are the same shape of
+   defect: a decision G1 sells for one of the window's fifty seconds, wired to nothing.
+
+     1. DECLINE_PRICE reached no payout term. `benchFor` stored `round(posted · 1.15)` on the bench
+        item and `swapIn` added it to `g.posted` — the Elo BAR — but `pricedTarget` rebuilds the
+        target from `page.jobTargetOf`, which knows nothing about a decline, so the premium was
+        never paid. Measured over 470 swap rows: the ratio of the shipped priced posted to the bench
+        item's `basePosted` hit fourteen different values and `1.15` **zero times**. Taking the
+        published "declined price" made the job HARDER to win and paid nothing extra.
+     2. "Take / decline the next target's tell" was `took.push('tell' | 'no-tell')` and nothing else.
+        Forked three ways on 40 windows, `{tell:true}` / `{tell:false}` / `{}` left the next envelope
+        identical in `{posted, tell, make}` on 40/40, and `econ.tellFor` went on paying ×1.25 on the
+        very tell the student had just refused.
+   ========================================================================================== */
+describe('r4 · G1 — the declined price is PAID, and the declined tell is WITHHELD', () => {
+  /** The first corpus save whose board posts declines the brief window can buy back. */
+  function saveWithDeclines() {
+    for (let i = 0; i < 24; i++) {
+      const s = seededSave(i);
+      const probe = clone(s);
+      try { startJob(probe, { today: TODAY, now: NOW }); } catch { continue; }
+      if (swapOptions(probe).length >= 1 && queueOf(probe).length >= 4) return s;
+    }
+    return null;
+  }
+
+  /** A job driven to its first brief window, with the swap taken. Returns `{ s, t, k }`. */
+  function withSwapTaken() {
+    const save = saveWithDeclines();
+    assert.ok(save, 'no corpus board posted a draft with declines — the option is untestable here');
+    const s = clone(save);
+    startJob(s, { today: TODAY, now: NOW });
+    const id = swapOptions(s)[0].id;
+    beginTargets(s, { now: NOW + 6000 });
+    let t = NOW + 6000;
+    for (let n = 0; n < 200 && stateOf(s).phase !== 'brief'; n++) {
+      const g = stateOf(s);
+      if (g.phase === 'envelope') { lockCall(s, 70, { now: (t += 5000) }); continue; }
+      if (g.phase === 'answer') { applyTarget(s, CLEAN, { now: (t += 20000) }); continue; }
+      if (g.phase === 'payout' || g.phase === 'bagpush') { push(s, { now: (t += 5000) }); continue; }
+      break;
+    }
+    assert.equal(stateOf(s).phase, 'brief', 'the job never reached a brief window');
+    assert.ok(brief(s, { swap: { id } }, { now: (t += 12000) }).took.includes('swap'), 'the swap was refused');
+    const k = queueOf(s).findIndex((it) => it && it.declined);
+    assert.ok(k >= 0, 'the swapped-in targets do not carry `declined` — the premium has no key to read');
+    return { s, t, k };
+  }
+
+  /** The same queue entry, priced as if it had been DRAFTED rather than declined and bought back. */
+  const asDrafted = (s, k) => pricedTarget(s, { idx: k, item: { ...queueOf(s)[k], declined: null } });
+
+  /**
+   * The same two prices at the DEAREST tier. `econ.postedFor` rounds to an integer and a swapped-in
+   * tier-1 target posts 3, where +15 % is 0.45 and rounding swallows it — an arm that measured the
+   * ratio there would be measuring the rounding. Only `tier` is moved (it is `LOOT`'s only input);
+   * the wing, the guard, the tokens, the crew, the ×2 and the decline are the job's own.
+   */
+  const dear = (s, k, declined) => pricedTarget(s, {
+    idx: k, item: { ...queueOf(s)[k], tier: 4, declined: declined ? queueOf(s)[k].declined : null },
+  });
+
+  test('a swapped-in target PRICES at +0.15 — the premium is on the payout, not only on the bar', () => {
+    const { s, k } = withSwapTaken();
+    const declined = pricedTarget(s, { idx: k });
+    const drafted = asDrafted(s, k);
+
+    /* the multiplier is exact, and it is `econ`'s own `num(target.mult, 1)` term */
+    assert.equal(declined.mult, 1 + DECLINE_PRICE, 'the declined target carries no decline multiplier');
+    assert.equal(drafted.mult, 1, 'the control is not priced as a plain drafted target');
+    assert.equal(declined.declined, queueOf(s)[k].declined);
+
+    /* EXACTLY the drafted price with the decline term applied, and nothing else moved */
+    assert.equal(declined.posted, econ.postedFor({ ...drafted, mult: 1 + DECLINE_PRICE }),
+      'the swapped-in target is not the drafted target at its declined price');
+
+    /* …and the RATIO is visible at a tier where integer rounding cannot hide it */
+    const dearD = dear(s, k, true).posted;
+    const dearP = dear(s, k, false).posted;
+    assert.ok(dearP >= 10, `the control target posts ${dearP} — too cheap to measure +15 % on`);
+    assert.ok(dearD > dearP, 'the declined price is not dearer than the drafted one');
+    assert.ok(Math.abs(dearD - dearP * (1 + DECLINE_PRICE)) <= 1,
+      `the swapped-in target posts ${dearD} against ${dearP} × 1.15 = `
+      + `${(dearP * 1.15).toFixed(2)} — the declined price is not what the target pays`);
+
+    /* and the same number reaches the SEALED ENVELOPE, which is what the student bids against */
+    const env = envelopeFor(s, { idx: k });
+    assert.equal(env.posted, declined.posted, 'the envelope prints a price the payout does not pay');
+  });
+
+  test('…and the premium is PAID: a clear on a declined target settles 15 % higher, and a miss costs 15 % more', () => {
+    const { s, k } = withSwapTaken();
+    /* at the dearest tier, for the same reason the arm above gives: the shipped tier-1 swap posts 3 */
+    const declined = dear(s, k, true);
+    const drafted = dear(s, k, false);
+    const at = (t, rung, loose) => econ.settle({ ...t, call: 70, rung, crew: t.crew, idle: t.idle }, 0, loose);
+
+    /* the CLEAR branch — `econ.carryFor` ends on `num(target.mult, 1)` */
+    const clearD = at(declined, 0, 0).delta;
+    const clearP = at(drafted, 0, 0).delta;
+    assert.ok(clearP > 0, 'the control target pays nothing on a clean clear — the arm cannot measure a premium');
+    assert.ok(clearD > clearP,
+      `a declined target cleared pays ${clearD} against the drafted ${clearP} — the +15 % is still unpaid`);
+
+    /* the MISS branch — a decline is a TRADE, not a free spin: it costs more too (`econ.missFor`) */
+    const lossD = at(declined, 4, 100000).delta;
+    const lossP = at(drafted, 4, 100000).delta;
+    assert.ok(lossP < 0, 'the control target loses nothing on a miss — the arm cannot measure the price');
+    assert.ok(lossD < lossP,
+      `a declined target missed costs ${lossD} against the drafted ${lossP} — the premium is one-sided`);
+  });
+
+  /* ---------------------------------------------------------------- the declined tell */
+
+  /** A stub `tellFor` hook: the live record `econ.tellFor` reads, for every make. */
+  const liveTell = (tag) => () => ({ tag, triggered: 2, cleared: false, sealed: false });
+
+  /** A job driven to its first brief window, untouched. Returns `{ s, t }`. */
+  function atBrief(hook) {
+    const s = seededSave(3);
+    startJob(s, { today: TODAY, now: NOW });
+    beginTargets(s, { now: NOW + 6000 });
+    let t = NOW + 6000;
+    for (let n = 0; n < 200 && stateOf(s).phase !== 'brief'; n++) {
+      const g = stateOf(s);
+      if (g.phase === 'envelope') { lockCall(s, 70, { now: (t += 5000) }); continue; }
+      if (g.phase === 'answer') { applyTarget(s, CLEAN, { now: (t += 20000), tellFor: hook }); continue; }
+      if (g.phase === 'payout' || g.phase === 'bagpush') { push(s, { now: (t += 5000) }); continue; }
+      break;
+    }
+    assert.equal(stateOf(s).phase, 'brief', 'the job never reached a brief window');
+    return { s, t };
+  }
+
+  test('DECLINE THE TELL withholds the tag and its ×1.25 from the next target; TAKE and SKIP do not', () => {
+    const hook = liveTell(TAGS[0]);
+    const base = atBrief(hook);
+    const fork = (actions) => {
+      const s = clone(base.s);
+      brief(s, actions, { now: base.t + 12000 });
+      return { s, env: envelopeFor(s, { tellFor: hook }) };
+    };
+    const took = fork({ tell: true });
+    const skip = fork({});
+    const no = fork({ tell: false });
+
+    /* the affirmative and the skip are the same window — that is what an affirmative IS */
+    assert.deepEqual(skip.env.tell, took.env.tell);
+    assert.equal(skip.env.posted, took.env.posted);
+    assert.ok(took.env.tell && took.env.tell.tag === TAGS[0], 'the arm never produced a live tell to decline');
+    assert.ok(took.env.posted > 0);
+
+    /* the refusal is a real state change, on all three surfaces the finding measured */
+    assert.equal(no.env.tell, null, 'the declined tell is still named on the envelope');
+    assert.ok(no.env.posted < took.env.posted,
+      `the declined tell still pays: posted ${no.env.posted} against ${took.env.posted}`);
+    assert.equal(no.env.posted, econ.postedFor({ ...pricedTarget(no.s, { tellFor: hook }), tell: null }),
+      'the declined target is not priced at the no-tell price');
+    assert.equal(stateOf(no.s).tellOff, true);
+    assert.equal(stateOf(took.s).tellOff, false, 'taking the tell did not clear a refusal');
+    assert.ok(stateOf(no.s).briefs.at(-1).took.includes('no-tell'));
+
+    /* …and it survives the disk, like every other decision this window takes (G3.7 proof 6) */
+    const reloaded = JSON.parse(JSON.stringify(no.s));
+    resume(reloaded);
+    assert.equal(stateOf(reloaded).tellOff, true, 'the refusal vanished when the tab was killed');
+    assert.equal(envelopeFor(reloaded, { tellFor: hook }).tell, null);
+  });
+
+  test('the refusal is ONE TARGET WIDE — the target after it is priced with the tell again', () => {
+    const hook = liveTell(TAGS[0]);
+    const base = atBrief(hook);
+    const s = clone(base.s);
+    let t = base.t;
+    brief(s, { tell: false }, { now: (t += 12000) });
+    assert.equal(envelopeFor(s, { tellFor: hook }).tell, null);
+    lockCall(s, 70, { now: (t += 5000) });
+    applyTarget(s, CLEAN, { now: (t += 20000), tellFor: hook });
+    assert.equal(stateOf(s).tellOff, false, 'the refusal outlived the target it was made for');
+    push(s, { now: (t += 5000) });
+    if (stateOf(s).phase === 'brief') brief(s, {}, { now: (t += 5000) });
+    if (targetsLeft(s) > 0 && stateOf(s).phase === 'envelope') {
+      assert.ok(envelopeFor(s, { tellFor: hook }).tell, 'the next target lost its tell too');
+    }
+  });
+
+  test('a DECLINED tell is not RESOLVED either: the fault stays live, and goes on paying', () => {
+    const tag = TAGS[0];
+    const hook = liveTell(tag);
+    const base = atBrief(hook);
+    /* give the tag a real record, through the shipped pure updater the game persists */
+    const seed = (s) => { s.game.tags = index.trigger(s, tag, { day: TODAY }).tags; };
+
+    const run = (actions) => {
+      const s = clone(base.s);
+      seed(s);
+      assert.equal(index.recordOf(s, tag).resolved, 0);
+      let t = base.t;
+      brief(s, actions, { now: (t += 12000) });
+      lockCall(s, 70, { now: (t += 5000) });
+      applyTarget(s, CLEAN, { now: (t += 20000), tellFor: hook });
+      return index.recordOf(s, tag);
+    };
+
+    const taken = run({ tell: true });
+    assert.equal(taken.resolved, 1, 'a clean clear on a TAKEN tell did not resolve the fault');
+    const declined = run({ tell: false });
+    assert.equal(declined.resolved, 0,
+      'a clean clear on a DECLINED tell resolved the fault anyway — the refusal bought nothing');
+    assert.equal(declined.cleared, false, 'the declined fault was retired without being taken');
   });
 });

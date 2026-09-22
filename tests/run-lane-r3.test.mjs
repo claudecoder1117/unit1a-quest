@@ -29,6 +29,8 @@ import { read, stripCommentsAndStrings as strip } from './_helpers.mjs';
 import * as run from '../site/js/screens/run.js';
 import * as call from '../site/js/job/call.js';
 import * as state from '../site/js/job/state.js';
+import { pageIndexFor } from '../site/js/page.js';
+import { pushRun, makeRunRecord } from '../site/js/screens/run.js';
 import { fresh } from '../site/js/store.js';
 import { applyOutcome, DAY_MS, dueList } from '../site/js/schedule.js';
 import { todayISO, addDays } from '../site/js/days.js';
@@ -45,6 +47,7 @@ const CALL_SRC = read('site/js/job/call.js');
 const NOW = new Date(2026, 8, 16, 18, 0).getTime();
 const TODAY = todayISO(new Date(NOW));
 const BANK = ALL_CARDS.filter((c) => !isBonus(c.id));
+const num = (x, d = 0) => (Number.isFinite(+x) ? +x : d);
 
 /** A save with real Leitner records and real skills, and a backlog far larger than one job. */
 function seededSave(tag = 'r3', { cards = 60 } = {}) {
@@ -116,8 +119,8 @@ describe('run r3 §1 — the call-regret line names and prices the SAME ladder',
 
   test('the declared ladder is one ladder, and it is the one COPY.regret2 denominates in', () => {
     assert.deepEqual(run.DEBRIEF_CALL_LADDER, { best: 'rating', cost: 'rating' });
-    assert.match(COPY.regret2({ envelope: 1, called: 70, evMax: 85, cost: '0.3' }), /cost 0\.3 rating\./,
-      'the sentence prices itself in rating credit, so the rung it names must maximise rating credit');
+    assert.match(COPY.regret2({ envelope: 1, called: 70, evMax: 85, cost: '0.3' }), /cost 0\.3 credit\./,
+      'the sentence prices itself in rating CREDIT (finding 40 relabelled the unit; the ladder is unchanged), so the rung it names must maximise rating credit');
   });
 
   test('over a 101-point grid of q̂, the named rung is the maximiser of the printed currency', () => {
@@ -169,7 +172,7 @@ describe('run r3 §1 — the call-regret line names and prices the SAME ladder',
     assert.equal(Math.round(got.cost * 10) / 10, 0.3);
     assert.equal(
       COPY.regret2({ envelope: 6, called: 85, evMax: got.best, cost: (Math.round(got.cost * 10) / 10).toFixed(1) }),
-      'envelope 6: you called 85, EV-max was 70. cost 0.3 rating.',
+      'envelope 6: you called 85, EV-max was 70. cost 0.3 credit.',
       'notes/J6b.md claimed only the carry pair reproduces this line. It does not: the carry pair’s own cost is 0.05 loot.',
     );
     const carry = call.regretOf({ call: 85, qHat: q, ladder: 'carry' });
@@ -245,5 +248,102 @@ describe('run r3 §2 — the debrief never prints two different quantities under
       'Tomorrow’s board: 1 cold lock · worth 12 if you take it');
     assert.equal(run.tomorrowLine({ ...bare, locks: 2, cold: 2, posted: 25, makes: [{ skill: 'FAC2', locks: 2, name: 'x' }] }),
       'Tomorrow’s board: 2 cold locks on FAC2 · worth 25 if you took them all');
+  });
+});
+
+/* ================================================================================================
+   3. ONCE PER PAGE ON EVERY BRANCH — finding 63 (ledger-invariance, MINOR)
+   ------------------------------------------------------------------------------------------------
+   `commitJobRun`'s once-per-page guard was keyed on the before-snapshot and on nothing else:
+
+     const startedAt = num(before?.startedAt, 0) || num(opts.startedAt, 0);
+     if (jobRunRecorded(save, startedAt, before)) return null;   // → `if (!(startedAt > 0)) return false`
+
+   `screens/job.js:1626` renders the debrief with `before: jobBefore ?? undefined`, and on that
+   branch `jobSummaryContext` builds a FRESH fallback snapshot per call — no `startedAt`, and a new
+   object each render, so neither guard could hold: the `runs[]` scan was never reached and the
+   `runRecorded` flag was stamped on an object that was thrown away. Measured before the fix, three
+   renders of one debrief: `runs=3 · pageIndexFor(today)=3` (arm A, with the snapshot: 1 / 1).
+
+   `runs` is in `js/job/state.js`'s `LEDGER_A_KEYS` and `page.pageIndexFor` counts page runs to seed
+   the NEXT page, so a duplicate changes what the student is dealt tomorrow. The branch is live:
+   `holdForDebrief` (screens/job.js) swallows its own failure with `console.warn` and leaves
+   `jobBefore` null, which is the case the `?? undefined` was written for.
+
+   THE FIX: the dedupe key is the identity the row is WRITTEN with — `startedAt || submittedAt`,
+   where `submittedAt` is the job's own terminal stamp (`debrief.at`, else
+   `game.ledger.debriefAt`, which `state.endJob` writes and which is stable across re-renders).
+   One value, computed before the guard and used by both the scan and the write.
+   ================================================================================================ */
+
+describe('run r3 §3 — a re-render is not a second page, on EVERY branch', () => {
+  /** Render one finished job's debrief `times` times, the way `screens/job.js` does. */
+  const renderTimes = (tag, { hold, times = 3 }) => {
+    const { debrief, queue, before, save } = playJob(seededSave(tag));
+    assert.equal(debrief.complete, true, 'the fixture must CLOSE the page, or nothing is recorded');
+    for (let i = 0; i < times; i++) {
+      run.jobSummaryContext(save, debrief, { queue, before: hold ? before : undefined });
+    }
+    return { save, debrief, queue, before };
+  };
+
+  test('the terminal stamp the guard leans on is written by the machine, not by the screen', () => {
+    const { save, debrief } = renderTimes('stamp', { hold: true, times: 1 });
+    assert.ok(num(save?.game?.ledger?.debriefAt) > 0,
+      'state.endJob stamps game.ledger.debriefAt — the job identity a snapshot-free render can still read');
+    assert.equal(save.runs.length, 1);
+    assert.equal(num(save.runs[0].submittedAt), num(debrief.at, num(save.game.ledger.debriefAt)),
+      'and the row is filed under the job’s terminal clock, not the render’s');
+  });
+
+  test('WITH the held snapshot, three renders record one page (the r2 property, unchanged)', () => {
+    const { save } = renderTimes('held', { hold: true });
+    assert.equal(save.runs.length, 1, `runs=${save.runs.length}`);
+    assert.equal(pageIndexFor(save, TODAY), 1, 'and the next page is dealt as the second of the day');
+    assert.equal((save.forecastLog ?? []).length, 1);
+  });
+
+  test('WITHOUT it — `screens/job.js`’s `jobBefore ?? undefined` branch — still exactly one', () => {
+    const { save } = renderTimes('bare', { hold: false });
+    assert.equal(save.runs.length, 1,
+      `three renders on the snapshot-free branch wrote ${save.runs.length} page records`);
+    assert.equal(pageIndexFor(save, TODAY), 1,
+      `pageIndexFor seeds the NEXT board, so a duplicate deals the student a different page (${pageIndexFor(save, TODAY)})`);
+    assert.equal((save.forecastLog ?? []).length, 1);
+  });
+
+  test('the second commit returns null because it FOUND the first row, not because it gave up early', () => {
+    const { debrief, queue, save } = playJob(seededSave('scan'));
+    const first = run.commitJobRun(save, debrief, { queue, before: undefined });
+    assert.ok(first, 'the first commit writes the page record');
+    /* the row must be findable by the identity a snapshot-free caller can recompute */
+    const key = num(debrief.at, num(save?.game?.ledger?.debriefAt));
+    assert.ok(key > 0);
+    assert.ok(save.runs.some((r) => r.kind === 'page' && (num(r.startedAt) === key || num(r.submittedAt) === key)),
+      'the pushed row carries the job’s terminal identity');
+    assert.equal(run.commitJobRun(save, debrief, { queue, before: undefined }), null,
+      'a second commit with no snapshot must be refused by the save, which is the only witness left');
+    assert.equal(save.runs.length, 1);
+  });
+
+  test('the `runs[]` scan is REACHED with no snapshot — it is not the `startedAt > 0` early-out', () => {
+    /* The regression in one line: with the key taken from the snapshot only, `startedAt` was 0 on
+       this branch, so `jobRunRecorded`'s `if (!(startedAt > 0)) return false` returned before the
+       scan ran. Here the row is already in the save and was NOT written by `commitJobRun`, so the
+       in-memory flag cannot be what refuses the write — only the scan can. */
+    const { debrief, queue, save } = playJob(seededSave('early'));
+    const key = num(debrief.at, num(save?.game?.ledger?.debriefAt));
+    assert.ok(key > 0, 'the job must carry a terminal stamp');
+    pushRun(save, makeRunRecord({
+      kind: 'page', id: null, startedAt: key, submittedAt: key, results: run.pageResults(queue),
+    }));
+    assert.equal(save.runs.length, 1);
+    assert.equal(run.commitJobRun(save, debrief, { queue, before: undefined }), null,
+      'the scan must find the page this job already closed');
+    assert.equal(save.runs.length, 1);
+    /* and it is an identity, not a latch: a genuinely different page is still recorded */
+    const second = run.commitJobRun(save, { ...debrief, at: key + 60000 }, { queue, before: undefined });
+    assert.ok(second, 'a genuinely second page must still be recorded');
+    assert.equal(save.runs.length, 2);
   });
 });

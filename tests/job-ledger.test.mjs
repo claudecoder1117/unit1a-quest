@@ -45,7 +45,9 @@ import { readiness, logForecast } from '../site/js/readiness.js';
 import { check as trophyCheck, evaluate as trophyEvaluate } from '../site/js/trophies.js';
 import { trophyById } from '../site/data/trophies.js';
 import { fresh, markStreakDay } from '../site/js/store.js';
-import { pushRun, makeRunRecord, captureJobBefore, jobSummaryContext, pageResults } from '../site/js/screens/run.js';
+import {
+  pushRun, makeRunRecord, captureJobBefore, jobSummaryContext, pageResults, composedCountOf,
+} from '../site/js/screens/run.js';
 import { rngFrom } from '../site/js/rng.js';
 import { todayISO, addDays } from '../site/js/days.js';
 import { cards as ALL_CARDS, byId as cardById } from '../site/data/cards.js';
@@ -320,7 +322,17 @@ function runFlatScreen(save, queue, script, { now = NOW, today = TODAY } = {}) {
  */
 const runShape = (rec) => {
   if (!rec) return null;
-  const { seed, seedTag, submittedAt, ...rest } = rec;
+  /* VERIFY r1 (ledger-invariance), corrected by the `run` lane — see notes/repair-run.md.
+     `drafted` / `composed` / `partial` are the page's SIZE PROVENANCE, and they are dropped for the
+     same reason `seed` is: they are the identity of the PAGE, not of the study recorded on it. They
+     differ here because the two arms are not the same page — this harness hands the flat arm the
+     JOB's drafted queue, while `composed` is `composePage`'s own count for the page the job drafted
+     OUT of (7-10 of 16-24 items, mean 45 %). That gap is the finding; the record is now allowed to
+     state it, and `THE RUN RECORD` below asserts every one of the three against `composePage`
+     rather than waiving them. Everything the record says about the STUDY — `kind`, `status`,
+     `startedAt`, `limitMs`, `tabAway`, `xp`, `acc`, `flawless` and every item — is still compared
+     exactly, and nothing was removed from that list. */
+  const { seed, seedTag, submittedAt, drafted, composed, partial, ...rest } = rec;
   return rest;
 };
 
@@ -569,6 +581,47 @@ describe('J5c — and it is structural: Ledger A is not reachable from js/job/*'
     assert.throws(() => { s.errors.push({}); }, LedgerError);
     assert.throws(() => { s.forecastLog.push({}); }, LedgerError);
     assert.throws(() => { s.cards[id].history.push({}); }, LedgerError);
+    /* ROUND 3 (ledger-invariance, finding 64). The proof names FIVE keys and the guard covered
+       four of them: `counters` is SHARED by construction (`finishPage` writes `counters.pages`),
+       so it used to be wide open — `s.counters.clears = 999` landed silently, and the suite never
+       probed it, which is why the gap was invisible from both sides. `counters` is now a NARROW
+       proxy: `pages` — the single key `finishPage` writes — and nothing else. */
+    assert.throws(() => { s.counters.clears = 999; }, LedgerError, 'counters is writable from js/job/*');
+    assert.throws(() => { s.counters.mocks = 1; }, LedgerError);
+    assert.throws(() => { delete s.counters.pages; }, LedgerError);
+    assert.throws(() => { s.counters = { clears: 999 }; }, LedgerError, 'the whole counters object was replaceable');
+    /* …and `streak` / `jumps`, which G7 publishes as "unchanged" and which were in neither list */
+    assert.throws(() => { s.streak.count = 999; }, LedgerError, 'streak is writable from js/job/*');
+    assert.throws(() => { s.streak = { count: 9, best: 9, lastDay: null, freezes: 0 }; }, LedgerError);
+    assert.throws(() => { s.jumps.M1 = true; }, LedgerError, 'jumps is writable from js/job/*');
+    assert.deepEqual(save.counters, clone(CORPUS[0]).counters, 'a refused write still landed');
+    assert.deepEqual(save.streak, clone(CORPUS[0]).streak, 'a refused write still landed');
+  });
+
+  test('the ONE key `counters` lets through is `pages`, and finishPage still writes it', () => {
+    // The narrow proxy is only honest if the write it exists for still works through it — the same
+    // `finishPage(s)` call `state.endJob` makes at `state.js:1856`, on the guarded save.
+    const save = clone(CORPUS[0]);
+    const before = num(save.counters?.pages, 0);
+    const s = guardSave(save);
+    s.inProgress = {
+      kind: 'page', seed: 1, seedTag: null, queue: [{ n: 1, id: 'x', role: 'weak', tier: 1 }],
+      idx: 1, hearts: null, xp: 0, startedAt: NOW, day: TODAY, dayIndex: 0, pageIndex: 0, meta: null,
+    };
+    assert.ok(finishPage(s), 'finishPage refused to close the page through the guard');
+    assert.equal(save.counters.pages, before + 1, '`finishPage`\'s own counter is blocked by the guard');
+    // and it works on a save that has no `counters` at all — finishPage's own defensive branch
+    const bare = clone(CORPUS[1]);
+    delete bare.counters;
+    const b = guardSave(bare);
+    b.inProgress = {
+      kind: 'page', seed: 1, seedTag: null, queue: [{ n: 1, id: 'x', role: 'weak', tier: 1 }],
+      idx: 1, hearts: null, xp: 0, startedAt: NOW, day: TODAY, dayIndex: 0, pageIndex: 0, meta: null,
+    };
+    assert.ok(finishPage(b));
+    assert.deepEqual(bare.counters, { pages: 1 });
+    // …but that branch is not a hole: once `counters` exists it may not be replaced
+    assert.throws(() => { b.counters = {}; }, LedgerError);
   });
 
   test('P(losing study progress) = 0: an all-miss job at the harshest call leaves Ledger A intact', () => {
@@ -632,7 +685,14 @@ describe('J5c — the comparison is not vacuous, and where it still is, it says 
     // and the ones the arms genuinely cannot reach, NAMED rather than left to pass for free:
     //   variants, frozen  — this corpus composes no Variant items, so the branches added to
     //                       `writeLedgerA` are exercised directly in the next test instead.
-    assert.deepEqual(empty.sort(), ['frozen', 'variants'].sort(),
+    //   streak            — ROUND 3 (finding 64): now in `LEDGER_A_KEYS`, so the guard refuses it
+    //                       structurally, but it only MOVES when the daily goal flips, which
+    //                       `scriptFor(i)` does not reach. The non-vacuous byte-identity comparison
+    //                       is in the next test, on the all-CLEAN arm where the goal is met.
+    //   jumps             — JUMP-HERE marks on old module ids: written by the placement screen,
+    //                       which neither arm runs. Compared so a future write cannot land here
+    //                       unnoticed; the guard is what actually holds it.
+    assert.deepEqual(empty.sort(), ['frozen', 'variants', 'streak', 'jumps'].sort(),
       `these Ledger A keys are compared without ever being written: ${empty.join(', ')}. `
       + 'If the list has grown, the arm has stopped exercising something it used to; if it has shrunk, '
       + 'delete the name from this list so the shrinking is recorded.');
@@ -666,7 +726,7 @@ describe('J5c — the comparison is not vacuous, and where it still is, it says 
     assert.equal(Object.keys(sv2.frozen ?? {}).length, beforeFrozen, 'clearing it did not thaw the frozen copy');
 
     // the daily goal and the streak, driven through the composed queue where they DO fire
-    let goalMet = 0; let streakDays = 0;
+    let goalMet = 0; let streakDays = 0; let compared = 0;
     for (let i = 0; i < 10; i++) {
       const base = CORPUS[i];
       const probe = clone(base);
@@ -676,9 +736,21 @@ describe('J5c — the comparison is not vacuous, and where it still is, it says 
       runFlat(flat, queue, () => CLEAN);           // always clean: 400 XP is reachable
       if (flat.daily?.[TODAY]?.goalMet) goalMet++;
       if (flat.streak?.lastDay === TODAY && base.streak?.lastDay !== TODAY) streakDays++;
+      /* ROUND 3 (ledger-invariance, finding 64). `streak` is in `LEDGER_A_KEYS` now, so the guard
+         refuses it — but a guard is only half the claim, and the byte-identity half is vacuous on
+         the audit corpus below (`scriptFor(i)` rarely reaches 400 XP). THIS is the arm where the
+         streak actually moves, so the two routes are compared here, where it is not vacuous. */
+      if (flat.streak?.lastDay !== TODAY) continue;
+      const job = clone(base);
+      runInJob(job, () => CLEAN);
+      assert.deepEqual(job.streak, flat.streak,
+        `save ${i}: the job and the flat page disagree about the STREAK — G7 publishes it unchanged`);
+      assert.equal(job.streak.lastDay, TODAY, `save ${i}: the job route did not stamp the streak day`);
+      compared++;
     }
     assert.ok(goalMet > 0, 'no corpus save reached the daily goal — `daily.goalMet` is still vacuous');
     assert.ok(streakDays > 0, 'the goal was met but `store.markStreakDay` never stamped today — card.js:903 is not being mirrored');
+    assert.ok(compared > 0, 'the streak comparison above never ran — it proves nothing');
   });
 
   test('THE RUN RECORD: a job files the page record, the forecast point and the daily goal the flat page files', () => {
@@ -731,6 +803,36 @@ describe('J5c — the comparison is not vacuous, and where it still is, it says 
     assert.equal(job.runs.at(-1).seed, probe.inProgress.seed, 'the job\'s record lost the page seed');
     assert.equal(job.runs.at(-1).seedTag, probe.inProgress.seedTag, 'the job\'s record lost the page seedTag');
     assert.equal(job.runs.at(-1).startedAt, flat.runs.at(-1).startedAt, 'both pages started at NOW');
+
+    /* VERIFY r1 — and so is the SIZE `runShape` drops, measured against `composePage` itself rather
+       than against the row. The old arm compared the job's row to a flat arm handed the job's own
+       draft, so "the two routes record the same page" could not fail; it is false, and the row now
+       says by how much. */
+    const deal = composedCountOf(probe.inProgress);   // `composePage`'s own tally for the page the job drafted out of
+    const rec = job.runs.at(-1);
+    /* VERIFY r2 (ledger-invariance) — THIS PIN USED TO READ `rec.drafted === rec.items.length`, and
+       that is the defect it was supposed to guard, restated as an assertion. `items` is one entry per
+       ANSWER (`page.requeueReview` splices a second copy of every missed review into the queue, and
+       `scriptFor(7)` misses), while `composed` counts DISTINCT items. Comparing the two put `partial`
+       on two different units and moved it the wrong way — the more the student missed, the more of
+       the page the row claimed. `drafted` is now counted in `composed`'s unit, so it is asserted in
+       that unit: the distinct items the row recorded, never more than the answers, never more than
+       the page. */
+    const distinctAnswered = new Set(rec.items.map((it) => it.id)).size;
+    assert.equal(rec.drafted, distinctAnswered,
+      '`drafted` must be the DISTINCT items the row covers, not the number of answers');
+    assert.ok(rec.items.length >= rec.drafted,
+      'a re-answered review must add an answer without adding coverage');
+    assert.ok(jobAnswers.length > queue.length,
+      'this script re-answered nothing, so the two units cannot be told apart here');
+    assert.equal(rec.composed, deal, '`composed` must be `composePage`\'s own count for this page');
+    assert.equal(rec.partial, rec.drafted < deal, '`partial` must be the comparison, not a policy');
+    assert.ok(rec.drafted <= deal,
+      `a row may never claim more of the page than the page holds (${rec.drafted} of ${deal})`);
+    assert.ok(rec.drafted < deal,
+      `this corpus save must draft a strict subset or the arm proves nothing (${rec.drafted} of ${deal})`);
+    assert.equal(Object.hasOwn(flat.runs.at(-1), 'partial'), false,
+      'a flat page row carries no size provenance — the study route is untouched');
 
     // the forecast point and the daily goal, the other two writes of the same terminal
     assert.ok((job.forecastLog ?? []).length > (base.forecastLog ?? []).length, 'a job logged no forecast point');
@@ -792,13 +894,26 @@ describe('J5c — the comparison is not vacuous, and where it still is, it says 
       const lost = flatT.filter((id) => !jobT.includes(id));
       const gained = jobT.filter((id) => !flatT.includes(id));
 
+      /* ── CORRECTED AT VERIFY r1 (ledger-invariance) ───────────────────────────────────────────
+         This arm asserted that the job earns `flawless-page` too, with the flat control handed the
+         JOB's drafted queue — so "the identical flat play" was the job's own 45 % of the page, and
+         the whole-page trophy was being compared against something that was not a whole page. The
+         drafted/composed gap is measured here instead of assumed, and the trophy follows the page:
+         a job that deals the whole page earns it (pinned in tests/run-lane-r2.test.mjs), and one
+         that deals part of it does not. Every OTHER trophy the flat play earns is still asserted
+         to be earned by the job — that is the invariance G7 publishes, and it is unweakened. */
+      const deal = composedCountOf(probe.inProgress);   // `composePage`'s own tally for the page the job drafted out of
+      const rec = job.runs.at(-1);
       assert.ok(flatT.includes('flawless-page'),
         `save ${i}: the all-clean FLAT page did not earn flawless-page — the control is broken, not the game`);
-      assert.ok(jobT.includes('flawless-page'),
-        `save ${i}: an all-clean JOB did not earn flawless-page — the run record the debrief files is `
-        + 'the only thing that pays it, so the job screen terminal is not writing one');
-      assert.deepEqual(lost, [],
-        `save ${i}: a job LOST ${lost.map((id) => `${id} (${trophyById[id]?.group})`).join(', ')} — `
+      assert.equal(rec.partial, rec.drafted < deal,
+        `save ${i}: the row's own size claim is not the measured comparison`);
+      assert.equal(jobT.includes('flawless-page'), !rec.partial,
+        `save ${i}: the job dealt ${rec.drafted} of the page's ${deal} items and the whole-page trophy `
+        + `did not follow the page (earned: ${jobT.includes('flawless-page')})`);
+      const lostBeyondSize = lost.filter((id) => id !== 'flawless-page' || !rec.partial);
+      assert.deepEqual(lostBeyondSize, [],
+        `save ${i}: a job LOST ${lostBeyondSize.map((id) => `${id} (${trophyById[id]?.group})`).join(', ')} — `
         + 'G7 publishes "Streak, trophies, XP, levels | unchanged"');
 
       /* `save.trophies` is the AWARDED set — written by `trophies.install`'s listener in the app and
@@ -807,7 +922,11 @@ describe('J5c — the comparison is not vacuous, and where it still is, it says 
       const flatAwarded = Object.keys(flat.trophies ?? {}).sort();
       const jobAwarded = Object.keys(job.trophies ?? {}).sort();
       assert.ok(flatAwarded.length > 0, `save ${i}: nothing was awarded at all — the comparison is vacuous`);
-      assert.deepEqual(flatAwarded.filter((id) => !jobAwarded.includes(id)), [],
+      /* the same size exception as above, and only it: a partial page may not hold the whole-page
+         trophy in the AWARDED set either, for the same measured reason (verify r1) */
+      const missing = flatAwarded.filter((id) => !jobAwarded.includes(id))
+        .filter((id) => id !== 'flawless-page' || !rec.partial);
+      assert.deepEqual(missing, [],
         `save ${i}: the job's save is missing an awarded trophy the flat save holds`);
 
       /* Anything the job earned and the flat page did not is proved to come from LEDGER B by

@@ -1313,19 +1313,52 @@ if (CFG.selftest && !selftestOk) {
 const statesMod = await import('./audit-states.mjs');
 const statesFn = statesMod.states || statesMod.default;
 if (typeof statesFn !== 'function') throw new Error('qa/audit-states.mjs must export `states(h)`');
-let STATES = statesFn(H);
+const ALL_STATES = statesFn(H);
+let STATES = ALL_STATES;
 if (CFG.only.length) STATES = STATES.filter((s) => CFG.only.some((p) => s.id.startsWith(p)));
 if (!STATES.length) { server.close(); console.error('no states matched --only ' + CFG.only.join(',')); process.exit(1); }
 
-// Clear stale PNGs for the states we are about to re-audit, so the folder never claims a defect that
-// has since been fixed (PNGs for states NOT in this run are left alone).
+/* Clear stale PNGs, so the folder never claims a defect that has since been fixed.
+ *
+ * TWO SWEEPS, and the second one is round 3's fix (layout-safari, MINOR). A PNG is named
+ * `${state.id}-${label}-${theme}-${engine}.png` (see `pngPath`), and the old code cleared a file
+ * only when some id in THIS RUN was a prefix of it. That can never remove a file whose id has been
+ * RENAMED: `'run-page-1900x1200-light-chromium.png'.startsWith('run-page-item-1-')` is false, so
+ * four PNGs from `onboard-3-placement` and `run-page` — ids that stopped existing when the catalog
+ * was rewritten — survived every run, for ever. They were the ONLY pictures in the folder, because
+ * a clean state writes none, so a reader told to "look at the PNGs" found four pictures of screens
+ * that no longer exist and nothing else.
+ *
+ *   1. the states in THIS run are cleared by prefix, exactly as before (a filtered run must not
+ *      delete the evidence of states it is not re-auditing);
+ *   2. and on a FULL, unfiltered run, any file that NO id in the whole catalog can own is an
+ *      orphan and goes too. That is the only run that can tell an orphan from a state it simply
+ *      did not visit.
+ */
 try {
   const { readdir } = await import('node:fs/promises');
   const ids = new Set(STATES.map((s) => s.id));
+  const owners = ALL_STATES.map((s) => s.id + '-');
+  const orphans = [];
   for (const f of await readdir(PNG_DIR)) {
-    const id = [...ids].find((i) => f.startsWith(i + '-'));
-    if (id) await rm(path.join(PNG_DIR, f), { force: true });
+    if (!f.endsWith('.png')) continue;
+    if ([...ids].some((i) => f.startsWith(i + '-'))) { await rm(path.join(PNG_DIR, f), { force: true }); continue; }
+    if (!CFG.only.length && !owners.some((o) => f.startsWith(o))) {
+      await rm(path.join(PNG_DIR, f), { force: true });
+      orphans.push(f);
+    }
   }
+  if (orphans.length) say(`cleared ${orphans.length} orphaned PNG(s) — no state id owns them: ${orphans.join(', ')}`);
+  /* and the folder says why it is usually empty, so "no pictures" stops reading as "not audited" */
+  await writeFile(path.join(PNG_DIR, 'README.md'), [
+    '# qa/audit/png',
+    '',
+    'A screenshot lands here only for a state/viewport/theme that produced a FINDING.',
+    'A clean run writes no PNG, so an EMPTY folder means "audited, nothing found" — not "not audited".',
+    '',
+    'Filenames are `<state id>-<viewport>[@zoom20]-<theme>-<engine>.png`. A full, unfiltered run',
+    'deletes any file no current state id owns (see the two sweeps in qa/layout-audit.mjs).',
+  ].join('\n') + '\n');
 } catch { /* first run: nothing to clear */ }
 
 say(`\nmatrix: ${STATES.length} states x ${CFG.vps.length} viewports x ${CFG.themes.length} themes x ${CFG.engines.length} engines`

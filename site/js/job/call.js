@@ -230,6 +230,54 @@ export function informativeBand(min = INFORMATIVE_MIN) {
 /** The informative band, frozen: `[0.0669873…, 0.9330127…]`. */
 export const INFORMATIVE_BAND = Object.freeze(informativeBand());
 
+/**
+ * ── EVERY q̂ THE GAME CAN COMPUTE, AS `{q, hits, of}` ──────────────────────────────────────────
+ * The REACHABLE grid: `hits/of` for `of = 1 … RATING.qHatWindow`, deduped, ordered by `q`.
+ *
+ * ┌─────────────────────────────────────────────────────────────────────────────────────────────┐
+ * │ IT IS NOT THE DECILES, AND FOUR PUBLISHED CLAIMS SAID IT WAS (round-5 verify, BLOCKER).     │
+ * │ `qHatDetail` divides by the sittings the make HAS — `of = win.length ≤ qHatWindow` — not by │
+ * │ the window size, so a make on its seventh sitting reports SEVENTHS and only a make on its   │
+ * │ tenth or later reports tenths. "`RATING.qHatWindow` is 10, so every reachable q̂ is `k/10`"   │
+ * │ was therefore false of every make before its tenth sitting, which is where ordinary play     │
+ * │ spends most of its calls (a 60-job honest arm's own q̂ histogram: 0.67 ×1, 0.90 ×19,          │
+ * │ 1.00 ×393, null ×39).                                                                        │
+ * │ WHAT THE NARROW GRID GOT WRONG, in numbers this function's own consumers now print:          │
+ * │   · the INFORMATIVE reachable set has **31** members, not 9 — 1/9, 1/8, 1/7, 2/7, 3/8, 2/3,  │
+ * │     3/4, 5/6, 6/7, 7/8 and 8/9 are all in it, and none of them is a decile;                  │
+ * │   · `max w·E[c]` over it is **2.4980, at q̂ = 6/7** — 10.1 % above the 2.2680 at 9/10 that    │
+ * │     G3.1's Sanity table called "the best a 10-sitting window can actually express", and      │
+ * │     within 0.0018 of the CONTINUOUS peak 2.4998. So the anti-tanking residual in G3.7 #8 is  │
+ * │     priced against one throw in SEVEN reaching essentially the continuous peak, not one in   │
+ * │     eight reaching 91 % of it;                                                               │
+ * │   · G2 THE CAP's "over the informative grid, which is exactly `q̂ ∈ {0.1 … 0.9}`" verified    │
+ * │     the slot-by-slot propriety identity on 9 of at least 31 values `qHatDetail` can return.  │
+ * │ NOTHING WAS BROKEN BY IT: `argmax_p w·E[c](p, q̂) == honestCall(q̂)` holds at all 31, with 0  │
+ * │ mismatches. The guard was simply three times narrower than the space it claimed to cover, so │
+ * │ this function exists to make the space itself importable and `job-call.test.mjs` §1/§4/§6    │
+ * │ sweep it rather than a grid a test constructor invents.                                      │
+ * └─────────────────────────────────────────────────────────────────────────────────────────────┘
+ * @param {number} [size=RATING.qHatWindow] the largest `of` a make can reach — the q̂ window
+ * @returns {{q:number, hits:number, of:number}[]} ascending in `q`; the smallest `of` wins a tie
+ */
+export function reachableQHats(size = RATING.qHatWindow) {
+  const cap = Math.max(1, Math.floor(num(size, RATING.qHatWindow)));
+  const seen = new Map();
+  for (let of = 1; of <= cap; of++) {
+    for (let hits = 0; hits <= of; hits++) {
+      const q = hits / of;
+      const key = q.toFixed(12);            // 1/3 and 2/6 are ONE reachable value, not two
+      if (!seen.has(key)) seen.set(key, { q, hits, of });
+    }
+  }
+  return [...seen.values()].sort((a, b) => a.q - b.q || a.of - b.of);
+}
+
+/** The reachable q̂ that pass the informative gate — the set the rating window can ever weigh. */
+export function informativeQHats(size = RATING.qHatWindow) {
+  return reachableQHats(size).filter((r) => isInformative(r.q));
+}
+
 /* ------------------------------------------------------------------ G3.1: the carry ladder */
 
 /** Carry EV for one call: `EV = q·W − (1−q)·P`, in units of `L·ρ·m·scope·wing`. */
@@ -389,36 +437,125 @@ export function evidenceBandOf(qHat) {
   return bands.length - 1;
 }
 
+/**
+ * ── THE SECOND AND LAST THING A PRE-CALL SURFACE MAY SAY: WILL THIS CALL COUNT? ───────────────
+ * `{ band, measures }` — `band` is `evidenceBandOf(q̂)`, and `measures` is whether the slot this
+ * call writes will carry ANY weight (`isInformative`). A caller that prints only the band cannot
+ * tell the student the second thing, and that is a defect of the band, not an omission of the
+ * caller: `INFORMATIVE_MIN` cuts at q̂ = 0.9330127, which is STRICTLY INSIDE the top band
+ * (`[0.8375, 1]`). Inside one printed sentence:
+ *     q̂ 0.84 → w 0.5376 counts · 0.90 → 0.3600 counts · 0.95 → 0.1900 pays 0 · 1.00 → 0 pays 0
+ * On the app's own mid-week fixture that is not a corner: **60 % of the calls in a 40-job arm
+ * (240 of 400) are blank slots**, because spaced repetition drives q̂ to 1 on reviewed makes — the
+ * better the student, the more of their calls stop counting — and the student learns it only in
+ * the payout line, after committing. (`screens/job.js payoutLineOf` says it well; it says it too
+ * late.) A 40-job career on the same save ends with 50 slots in the window and `n = 11`.
+ *
+ * ── WHY THE FIX IS NOT A FOURTH BAND (Global law 6) ──────────────────────────────────────────
+ * Splitting `[0.8375, 1]` at the cutoff makes `[0.93301, 1]` a band whose every q̂ has honest rung
+ * 95 AND EV-max 95 — a band that NAMES the argmax, which is the one thing `evidenceBands` exists
+ * to prevent. The safe disclosure is the opposite shape: ONE state, shared by BOTH tails, printed
+ * INSTEAD of the band. `measures === false` means q̂ ∈ [0, 0.06699) ∪ (0.93301, 1] — the honest
+ * rung there is 50 OR 95 and the EV-max rung is 50 OR 95, maximally ambiguous — so it carries
+ * STRICTLY LESS than the band it replaces (band 0 and band 2 each resolve those tails today).
+ * A caller must therefore print the blank state and NOT the band when `measures` is false; printing
+ * both composes back to the tail, hence to the rung. `job-call.test.mjs` §9 pins all of it.
+ * @param {number|null} qHat
+ * @returns {{band:number|null, measures:boolean, w:number}}
+ */
+export function evidenceOf(qHat) {
+  const band = evidenceBandOf(qHat);
+  const w = band == null ? 0 : weightFor(qHat);
+  return { band: w >= INFORMATIVE_MIN ? band : null, measures: w >= INFORMATIVE_MIN, w };
+}
+
 /* ------------------------------------------------------------------ G3.1: the rating window */
 
 /**
  * One `player.rating.calls[]` entry, in the save's own key order so two entries built from the same
  * outcome are byte-identical under `JSON.stringify` (J7's Backcheck criterion: a shielded miss must
  * write the same entry as an unshielded one — a Backcheck shields the STAKE and only the stake).
- * `w` is rounded to 6 dp to keep the entry inside G7's 63-byte-per-entry save budget.
  *
- * A NON-INFORMATIVE call (`w < 0.25`) is written as a BLANK SLOT: `p: null, w: 0`. It still takes a
- * slot — that is the whole of the round-2 window fix (`windowPush`) — and it pays exactly 0, so the
- * rung it was made at changes nothing it could be read for. Nulling `p` is not tidiness: every
- * consumer that means *informative calls* already selects on a finite `p` (`data/trophies.js`
- * `rollingBrier`, `screens/stats.js` `reliabilityBlock`, both documented as "the last 20 INFORMATIVE
- * calls"), and handing them a farmed `p = 0.95 / ok = true` row would have made the `calibrated`
- * trophy and the reliability diagram farmable by the exact material the gate exists to exclude.
- * @param {{p?:number, call?:number, ok?:boolean, qHat?:number, w?:number, skill?:string|null, at?:number|null}} o
- * @returns {{p:number|null, ok:boolean, w:number, skill:string|null, at:number|null}}
+ * ┌─────────────────────────────────────────────────────────────────────────────────────────────┐
+ * │ THE SLOT STORES `q` — THE EVIDENCE — NOT `w`, THE FUNCTION OF IT (round-4 verify, BLOCKER).  │
+ * │ `w = K·q̂(1−q̂)` is TWO-TO-ONE: `q̂` and `1−q̂` weigh exactly the same. A slot that stores only  │
+ * │ `w` therefore cannot say what material the call was made on, and `slotCeiling` — the round-4  │
+ * │ rank cap — had to GUESS, which it did by flattering the report. Measured on the shipped       │
+ * │ ratchet, that guess made lying the best rank policy on every make the student clears less     │
+ * │ than half the time: at q̂ = 0.1 the honest 50 is worth a cap of 5.000 and the 85 lie was       │
+ * │ priced at 9.536 — the same 2.268 per slot as an honest master at q̂ = 0.9, whom (w, p) alone   │
+ * │ cannot tell it from. Branch-conditional over-calling ("one rung over wherever the honest call │
+ * │ is the bottom rung") then out-banked truth at five of six true `q`, which is G3.8 #3 false.   │
+ * │ IT IS NOT FIXABLE INSIDE `(w, p)`: an over-caller on q̂ = 0.1 and an honest master on q̂ = 0.9  │
+ * │ write the identical slot, so no rule over the stored pair can separate them. Taking the LOWER  │
+ * │ root instead prices the honest master at q̂ = 0.1 and demotes them, which is the S3 fault.     │
+ * │ So the entry stores `q̂` and `windowOf` derives `w` from it — the SAME information (`weightFor`│
+ * │ is total) at the SAME width (both are ≤ 6 dp; the widest `q̂` on the shipped `hits/of` grid is │
+ * │ `0.333333`, exactly as wide as the widest `w`), so G7's byte table does not move.             │
+ * │ A slot whose weight is not a MAKE's clear rate — the Mock, whose slider forecasts its own     │
+ * │ paper's score — keeps the `w` form, and keeps the double-root reading in `slotCeiling`.       │
+ * │ ITS WEIGHT IS MEASURED TOO, not defined, and this banner said otherwise for four rounds:      │
+ * │ `screens/mock.js mockCallWeight(ŝ) = min(4ŝ(1−ŝ), INFORMATIVE_MIN)` off the mean score of     │
+ * │ the trailing ten papers, and 0 with no prior paper or a mean outside the informative band.    │
+ * │ It has no `q` to store because it has no MAKE, never because the number was handed to it.     │
+ * │ `windowOf` reads either form, so every save written before this round scores as it did.       │
+ * └─────────────────────────────────────────────────────────────────────────────────────────────┘
+ *
+ * `q` is rounded to 6 dp and IS the weight's only source once it is stored, so `w` here and `w` in
+ * `windowOf` are the same arithmetic on the same number and can never drift apart.
+ *
+ * A NON-INFORMATIVE call (`w < 0.25`) is written as a BLANK SLOT: `p: null` and no evidence at all
+ * (`q: null`, or `w: 0` on the Mock form). It still takes a slot — that is the whole of the round-2
+ * window fix (`windowPush`) — and it pays exactly 0, so the rung it was made at changes nothing it
+ * could be read for. Nulling `p` is not tidiness: every consumer that means *informative calls*
+ * already selects on a finite `p` (`data/trophies.js` `rollingBrier`, `screens/stats.js`
+ * `reliabilityBlock`, both documented as "the last 20 INFORMATIVE calls"), and handing them a farmed
+ * `p = 0.95 / ok = true` row would have made the `calibrated` trophy and the reliability diagram
+ * farmable by the exact material the gate exists to exclude. `q` is nulled with it for the same
+ * reason: a slot that pays nothing must not carry a number anything could price.
+ * @param {{p?:number, call?:number, ok?:boolean, qHat?:number, q?:number, w?:number, skill?:string|null, at?:number|null}} o
+ * @returns {{p:number|null, ok:boolean, q?:number|null, w?:number, skill:string|null, at:number|null}}
  */
 export function callEntry(o = {}) {
   const lvl = o.call != null ? callLevel(o.call) : null;
   const p = lvl ? lvl.p : num(o.p);
-  const w = round(Number.isFinite(o.w) ? clamp(o.w, 0, RATING.weightK / 4) : weightFor(o.qHat), 6);
+  /* an explicit `w` is the DEFINED-weight form (the Mock) and wins over any q̂, as it always has;
+     `o.q` makes `callEntry` idempotent on an entry it already wrote. */
+  const defined = Number.isFinite(o.w);
+  const qRaw = Number.isFinite(o.q) ? o.q : Number.isFinite(o.qHat) ? o.qHat : null;
+  const q = defined || qRaw == null ? null : round(clamp(qRaw, 0, 1), 6);
+  const w = round(defined ? clamp(o.w, 0, RATING.weightK / 4) : weightFor(q), 6);
   const blank = w < INFORMATIVE_MIN;
-  return {
-    p: blank ? null : p,
-    ok: !!o.ok,
-    w: blank ? 0 : w,
-    skill: typeof o.skill === 'string' && o.skill ? o.skill : null,
-    at: Number.isFinite(o.at) ? o.at : null,
-  };
+  const skill = typeof o.skill === 'string' && o.skill ? o.skill : null;
+  const at = Number.isFinite(o.at) ? o.at : null;
+  /* THE FORM IS CHOSEN BY WHERE THE WEIGHT CAME FROM, and a blank keeps its own form's key so the
+     Mock's `{p: null, w: 0}` slot is byte-for-byte what it has always been. */
+  return defined
+    ? { p: blank ? null : p, ok: !!o.ok, w: blank ? 0 : w, skill, at }
+    : { p: blank ? null : p, ok: !!o.ok, q: blank ? null : q, skill, at };
+}
+
+/**
+ * The weight one window entry carries, in EITHER form — `K·q̂(1−q̂)` from a stored `q̂`, or the
+ * defined `w` the Mock writes. The single reader of the two forms: `windowOf`, `state.applyTarget`
+ * (which prints "not informative" off it) and the suite all go through this, so no caller has to
+ * know which form it is holding, and the gate is applied in exactly one place.
+ * A legacy `qHat` key is read too, so a window written before this round scores unchanged.
+ * @param {{q?:number|null, w?:number, qHat?:number}|null} e
+ * @returns {number} `0 … RATING.weightK/4`
+ */
+export function weightOf(e) {
+  if (!e || typeof e !== 'object') return 0;
+  const q = Number.isFinite(e.q) ? e.q : Number.isFinite(e.qHat) ? e.qHat : null;
+  if (q != null) return round(weightFor(clamp(q, 0, 1)), 6);
+  return Number.isFinite(e.w) ? clamp(e.w, 0, RATING.weightK / 4) : 0;
+}
+
+/** The q̂ a slot was made on, or `null` when the slot records a DEFINED weight (the Mock). */
+export function qHatOf(e) {
+  if (!e || typeof e !== 'object') return null;
+  const q = Number.isFinite(e.q) ? e.q : Number.isFinite(e.qHat) ? e.qHat : null;
+  return q == null ? null : clamp(q, 0, 1);
 }
 
 /**
@@ -468,12 +605,17 @@ function windowOf(calls, N) {
   for (const raw of src) {
     if (!raw || typeof raw !== 'object') continue;
     const p = num(raw.p, NaN);
-    const stored = Number.isFinite(raw.w) ? clamp(raw.w, 0, RATING.weightK / 4) : weightFor(raw.qHat);
+    /* `weightOf` reads BOTH forms — the stored `q̂` (a game call) and the defined `w` (the Mock, and
+       every window written before round-4 verify). `q` is carried through beside it because the rank
+       cap needs the EVIDENCE, not just the weight: see `slotCeiling`. */
+    const stored = weightOf(raw);
+    const q = qHatOf(raw);
     /* the informative gate, G3.1 — a blank slot (`p: null`, or a weight under the gate) is KEPT and
        scores 0, so it displaces the oldest entry exactly as a measured call does */
     const informative = Number.isFinite(p) && stored >= INFORMATIVE_MIN;
     keep.push({
       w: informative ? stored : 0, c: informative ? credit(p, raw.ok) : 0,
+      q: informative ? q : null,
       p: Number.isFinite(p) ? p : null, ok: !!raw.ok, informative,
       skill: raw.skill ?? null, at: raw.at ?? null,
     });
@@ -515,30 +657,222 @@ export function ratingFrom(calls, N = RATING.N) {
  * causes that are not the same claim about the student: a window of fifty 50-calls (measured
  * cowardice) and a window with no informative call in it at all (NO MEASUREMENT — every make the
  * student staked on sits outside `INFORMATIVE_BAND`, which is where a genuinely mastered player
- * lives). Printing the second as `Called 2` demotes a student for improving. Pass `opts.rank` — the
- * rank they already hold — and an unmeasured window HOLDS it instead of recomputing to `Called 2`;
- * `held` says that is what happened. Default-off: with no `opts` this is the shipped behaviour.
+ * lives).
+ *
+ * ┌─────────────────────────────────────────────────────────────────────────────────────────────┐
+ * │ THE RANK IS A RATCHET (S3). `opts.rank` is the rank the student already HOLDS and it is a    │
+ * │ FLOOR on the rank this window may print — `rankFor(earned, { floor: opts.rank })`, never a    │
+ * │ recomputation that can come out lower. `held` says the floor BOUND, i.e. the window on its    │
+ * │ own would have printed something lower. (`earned` was `value` until the round-4 cap below.)   │
+ * │                                                                                               │
+ * │ This used to fire only on the `n === 0` corner (`held = !measured`), and that was measured to  │
+ * │ be the wrong shape of fix. The demotion is a CONTINUOUS SLIDE, not a corner: the expressible   │
+ * │ honest ceiling is `5 + 2·k·(w·E[c])/N` in the number of informative slots `k`, so as a         │
+ * │ Called-5 student masters their makes and `k` falls, the recomputed rank walks 5 → 4 → 3 → 2    │
+ * │ with `measured === true` at every step. Measured on a homogeneous 50-call window at the        │
+ * │ honest rung: q̂ 0.90 → 9.536 / Called 5, q̂ 0.93 → 8.656 / Called 4, q̂ 0.95 → 5.000 / `n = 0` / │
+ * │ Called 2 — three ranks, the 95 rung and guardMult 0.75 → 0.55 for getting BETTER. A floor      │
+ * │ covers the whole path; `!measured` covers only the last step of it.                           │
+ * │                                                                                               │
+ * │ Rank gates the 95 call and the guard multiplier — loot, never learning (G2 "Rank") — and this  │
+ * │ layer never removes a tool you own, so the RATING falls as the material is mastered (that is   │
+ * │ the deflation G3.1 wants, and the board says so in words when `measured` is false) while the   │
+ * │ rank it bought does not. A NON-BINDING floor changes nothing and reports `held === false`: a   │
+ * │ rating you earned can still fall, and so can the rank of a student whose window still measures │
+ * │ above the floor they came in with.                                                             │
+ * │                                                                                               │
+ * │ Still default-off: with no `opts.rank` this is the shipped recomputation, `rankFor(earned)`.   │
+ * │ The three writers that persist `player.rank` (`state.applyTarget`, `state.endJob`,             │
+ * │ `mock.applyMockCall`) pass it; the audit surfaces print the rating that earned it, because     │
+ * │ under a floor `player.rank` is a stored high-water rather than a recomputation (G7, G9 #4).    │
+ * └─────────────────────────────────────────────────────────────────────────────────────────────┘
+ *
+ * ┌─────────────────────────────────────────────────────────────────────────────────────────────┐
+ * │ AND THE RATCHET IS PRICED OFF `ceiling`, NOT OFF LUCK (round-4 verify, the S3 blocker).      │
+ * │ A ratchet makes the rank `max_t rankFor(rating_t)`, and a max over a NOISY statistic pays    │
+ * │ for VARIANCE, not for accuracy: at equal mean the wider report strictly dominates, so        │
+ * │ over-reporting bought ranks truth-telling could not. Measured through the shipped            │
+ * │ `windowPush → ratingDetail({rank}) → persisted rank` path over 300 calls, 400 players:       │
+ * │   true q 0.55 — honest reached Called ≥ 3 in 33.0 % of lives, `always 70` in 83.0 %;          │
+ * │   true q 0.50 — honest is EXACTLY 5.000 with probability 1 (c(0.5,o) = 0 either way), so the │
+ * │                 honest player is Called 2 for ever while any report with variance eventually │
+ * │                 ratchets past them. The brake G3.7 #9 names (the carry ladder) does not      │
+ * │                 touch the rank, so nothing stopped it.                                       │
+ * │ THE FIX IS A CAP, NOT A PENALTY: the rank may not exceed the rank the student's own REPORTS  │
+ * │ are WORTH on this material. `ceiling` is `Σ slotCeiling(w, p)/N` mapped through the rating   │
+ * │ formula — the rating their reporting policy earns in expectation — and it reads `ok` on no    │
+ * │ slot, so no run of luck can raise it and no ratchet can bank luck through it. Because the     │
+ * │ credit is proper, that cap is maximised slot by slot by the rung truthful ABOUT q̂ — the       │
+ * │ slot's stored trailing-10 CLEAR RATE, not the student's belief about THIS target; the two     │
+ * │ come apart, and `slotCeiling`'s scope paragraph measures the two-band gap they open. So       │
+ * │ reporting your RECORD ON THE MAKE is the best RANK policy as an identity rather than as a     │
+ * │ horizon-dependent bet: at q̂ = 0.50 the                                                        │
+ * │ honest 50 caps at 5.00 (Called 2) and the 70 lie at 1.80 (Called 1); at q̂ = 0.80 the honest   │
+ * │ 85 caps at 9.480 (Called 5) and the 95 lie at 8.456 (Called 4). THE IDENTITY IS NOW            │
+ * │ UNCONDITIONAL. It was not when the cap shipped: the slot stored `w`, `w` is two-to-one in `q̂`,│
+ * │ and the guess `slotCeiling` made priced an 85 lie on material cleared 1 time in 10 at the      │
+ * │ honest master's own 2.268 per slot. Branch-conditional over-calling then out-banked truth at   │
+ * │ five of six true `q`. `callEntry` stores `q̂` itself since round-4 verify, so the cap reads the │
+ * │ slot's own material and `argmax_p w·E[c](p, q̂) = honestCall(q̂)` holds at EVERY q̂ the game can │
+ * │ compute — pinned by `job-call.test.mjs` §1, and by §4 over the branch-conditional family that  │
+ * │ broke it.                                                                                      │
+ * │                                                                                                │
+ * │ AND `min(value, ceiling)` IS GONE WITH IT — IT WAS THE OTHER HALF OF THE SAME BLOCKER.         │
+ * │ Round 4 wrote `earned = min(value, ceiling)` so that a rank had to be BOTH scored and worth    │
+ * │ scoring. Measured, the `min` term does not add a safeguard: it DESTROYS the honest player's    │
+ * │ ceiling and leaves the liar's standing, because the two quantities are taken at two different  │
+ * │ rates. `ceiling` is the value of the report conditional on the ESTIMATE q̂; `value` realises at │
+ * │ the TRUE rate, and a window is selected into the honest 70 rung precisely when q̂ has run ABOVE │
+ * │ the true rate. At a true q of 0.55, over 60 lives × 200 calls:                                 │
+ * │     honest             value ≥ its own ceiling in   4.7 % of windows, mean gap −1.501          │
+ * │     +1 rung on the     value ≥ its own ceiling in  45.9 % of windows, mean gap −0.098          │
+ * │     bottom-rung branch                                                                          │
+ * │ so the `min` threw the truthful ceiling away 19 windows in 20 and the lie's away 1 in 2. The   │
+ * │ branch-conditional liar then out-banked truth at four of six true q even with q̂ stored.        │
+ * │ THE RANK IS NOW PRICED OFF `ceiling` ALONE: what the student's own reports were WORTH on this  │
+ * │ material. That is outcome-free by construction (`slotCeiling` reads `ok` on no slot), so no    │
+ * │ run of luck can raise it and the ratchet's `max_t` is no longer a lottery; and it is maximised │
+ * │ slot by slot by the truthful rung, so truth is the argmax over EVERY reporting policy, not     │
+ * │ over a two-member family. Measured over the same eight policies at six true q, truth is the    │
+ * │ strict argmax at all six (job-call.test.mjs §4). A ceiling above the neutral cannot be had     │
+ * │ without real clears: it needs `w ≥ 0.25` AND a rung worth more than the 50's flat 0, which is  │
+ * │ q̂ ≥ 0.7 — the ceiling IS a competence measurement, not a substitute for one.                   │
+ * │                                                                                                │
+ * │ The rating VALUE is untouched — it is the measurement, and it is allowed to be lucky. The RANK │
+ * │ is a different quantity and the surfaces must say so: `capped` reports that the window's luck  │
+ * │ ran AHEAD of the calls, and `offBand` reports the thing a reader can actually catch you on —   │
+ * │ that the printed rank is not the band the printed rating falls in. Whenever `offBand` is true, │
+ * │ a surface that prints the rating and the rank MUST also print `ceiling`, or the student is     │
+ * │ given two numbers that contradict each other and nothing to reconcile them with (G7, G9 #4).   │
+ * │ `screens/settings.js ratingAuditParts` and `screens/stats.js ledgerRatingParts` do, and        │
+ * │ `job-call.test.mjs` §7 drives both shipped builders and asserts it.                            │
+ * │ NOTE FOR CALLERS: `player.rank` may be EITHER SIDE of `rankFor(player.rating.value)`. Read     │
+ * │ the legal rungs off the rank (`callsFor(player.rank)`, which is what `state.lockCall` gates    │
+ * │ on), never off the rating band.                                                                │
+ * └─────────────────────────────────────────────────────────────────────────────────────────────┘
  * @param {Array} calls
  * @param {number} [N=50]
- * @param {{rank?: number|null}} [opts] the currently-held rank, to hold across an unmeasured window
- * @returns {{value:number, raw:number, sum:number, mean:number, n:number, slots:number, N:number, filled:number, rank:number, measured:boolean, held:boolean, clamped:boolean}}
+ * @param {{rank?: number|null}} [opts] the rank the student HOLDS — a floor under the printed rank
+ * @returns {{value:number, raw:number, sum:number, mean:number, n:number, slots:number, N:number, filled:number, ceiling:number, earned:number, capped:boolean, offBand:boolean, rank:number, measured:boolean, held:boolean, clamped:boolean}}
  */
 export function ratingDetail(calls, N = RATING.N, opts = {}) {
   const size = Math.max(1, Math.floor(num(N, RATING.N)));
   const win = windowOf(calls, size);
-  let sum = 0; let n = 0;
-  for (const e of win) { sum += e.w * e.c; if (e.informative) n++; }
+  let sum = 0; let best = 0; let n = 0;
+  for (const e of win) { sum += e.w * e.c; best += slotCeiling(e.w, e.p, e.q); if (e.informative) n++; }
   const raw = RATING.base + RATING.scale * (sum / size);
   const value = clamp(raw, RATING.min, RATING.max);
+  const ceiling = clamp(RATING.base + RATING.scale * (best / size), RATING.min, RATING.max);
   const measured = n > 0;
-  const held = !measured && Number.isFinite(opts.rank);
+  /* THE RATCHET (S3): the held rank is a FLOOR, not a fallback for the `n === 0` corner. `held` is
+     true exactly when that floor BOUND — the window alone would have printed something lower.
+     THE PRICE (round-4 verify, restated): the rank is read off what the student's own REPORTS were
+     WORTH on this material and off nothing else. `ceiling` reads `ok` on no slot, so no run of luck
+     can raise it, and it is maximised slot by slot by the rung that is truthful ABOUT THE SLOT'S
+     STORED q̂ (`slotCeiling`'s scope paragraph — the rank is priced at `E[c](p, q̂)`, so a report
+     that is right about THIS target but far from the record on the make is worth less RANK than it
+     is worth RATING), so the ratchet's `max_t`
+     is the best honest window the student ever held rather than their luckiest one. `value` is what
+     the dice paid for the same calls; it is the MEASUREMENT and it is deliberately not in here —
+     the banner above has the numbers that show why taking `min(value, ceiling)` demoted the honest
+     player 19 windows in 20 and left the liar's ceiling standing. */
+  const earned = ceiling;
+  const bare = rankFor(earned);
+  const rank = rankFor(earned, { floor: opts.rank });
   return {
     value, raw, sum,
     mean: n ? sum / n : 0,
     n, slots: win.length, N: size, filled: n / size,
-    rank: held ? rankOf(opts.rank).rank : rankFor(value),
-    measured, held, clamped: value !== raw,
+    ceiling, earned, capped: value > ceiling,
+    /* THE READER'S HOOK (G7 "the printed formula is the running one", G9 #4). True exactly when the
+       printed rank is NOT the band the printed rating falls in — in EITHER direction, the ratchet's
+       floor included. A surface that prints both numbers must then also print `ceiling`, or it hands
+       the student a contradiction it gives them no way to resolve. */
+    offBand: rankFor(value) !== rank,
+    rank,
+    measured, held: Number.isFinite(opts.rank) && rank > bare, clamped: value !== raw,
   };
+}
+
+/**
+ * `slotCeiling(w, p) = w · E[c](p, q̂)` — what ONE window slot was WORTH in expectation, read off
+ * the two things the slot stores: the report the student made and the weight the evidence bought.
+ * Outcome-free by construction: the slot's `ok` is not an input, so no run of luck can raise it.
+ *
+ * ── WHY THIS IS THE RIGHT CAP, AND WHY IT IS PROPER ────────────────────────────────────────────
+ * `Σ slotCeiling / N` is the rating the student's own REPORTING POLICY earns on this material. The
+ * credit is a strictly proper rule, so for a fixed `q̂` the rung that maximises `E[c](p, q̂)` is the
+ * truthful one — which is `honestCall(q̂)`, by definition. The cap is therefore maximised, SLOT BY
+ * SLOT and with no appeal to luck, by reporting `q̂` — the trailing-10 clear rate the slot stores,
+ * which is what "the truthful rung" means HERE and is not the same thing as the student's belief
+ * about this one target (the scope paragraph below has the measured two-band gap): one rung over
+ * at q̂ = 0.80 caps at 8.456
+ * where the honest 85 caps at 9.480, and the 70 call on coin-flip material (q̂ = 0.50) caps at 1.80
+ * — BELOW the 5.00 an honest 50 scores there with probability 1. That is G3.8 #3 ("truthful
+ * self-assessment is the dominant reporting policy") as an identity rather than a hope, and it is
+ * what the ratchet needs: `max_t` of a statistic that rewards variance is a lottery, `max_t` of one
+ * that no outcome can move is just the best honest window the student ever held.
+ *
+ * ── THERE IS NO BRANCH ANY MORE: THE SLOT BRINGS ITS OWN q̂ ───────────────────────────────────
+ * `w = K·q̂(1−q̂)` is two-to-one, so a ceiling read off `w` alone has to pick between `q̂` and `1−q̂`
+ * (`informativeBand(w)` is exactly that pair) and NOTHING outcome-free in `(w, p)` tells them apart.
+ * Until round-4 verify this picked the root that FLATTERED the report, and that guess was the whole
+ * of the propriety hole: on a make cleared 1 time in 10 the 85 lie was priced at the honest
+ * master's own 2.268 per slot, against 0 for the honest 50, so branch-conditional over-calling
+ * out-banked truth through the ratchet. `callEntry` now stores `q̂` itself (its banner says why that
+ * costs no save bytes), so this reads the slot's OWN material and the cap is EXACT at every q̂ —
+ * which is what makes `argmax_p w·E[c](p, q̂) = honestCall(q̂)` an identity over the WHOLE ladder
+ * rather than over half of it. `job-call.test.mjs` §1 pins it at every q̂ the game can compute.
+ *
+ * ── PROPER IN THE REPORT AGAINST q̂ — WHICH IS NOT THE SAME AS PROPER IN BELIEF ───────────────
+ * READ THE IDENTITY ABOVE WITH ITS ARGUMENT. `argmax_p w·E[c](p, q̂) = honestCall(q̂)` is proper in
+ * the report AGAINST THE SLOT'S STORED q̂ — the trailing-10 CLEAR RATE — and the rank is therefore
+ * maximised by reporting the rung the student's RECORD ON THAT MAKE supports, which coincides with
+ * what they believe about THIS target only when they have no information beyond the window. They
+ * often do: `RUNG_BANDS` gives m60 material a true clear rate of 0.92 while a 7-of-10 record reads
+ * q̂ = 0.70, and the two ladders then point at different rungs. Measured through `callEntry` →
+ * `ratingDetail` on a fifty-slot window of each (`job-call.test.mjs` §8):
+ *     report 70 (honest about q̂ = .70) | per-slot ceiling  1.3440 | rating 7.688 | Called 3
+ *     report 85                        | per-slot ceiling  0.5880 | rating 6.176 | Called 2
+ *     report 95 (honest about the TRUE | per-slot ceiling −0.7560 | rating 3.488 | Called 1
+ *       clear rate .92)                | but E[w·c] at .92 is 5.8968 against the 70's 4.3008
+ * So the report that is TRUE about the student's clearing earns the HIGHEST rating in expectation
+ * (+1.60 a slot) and the LOWEST rank — two bands, and Called 3 is the gate on the 95 button itself.
+ * THIS IS NOT A BUG IN THE CAP and it is not fixable here: `ok` is the only other thing the slot
+ * carries, and pricing the rank off an outcome is the S3 lottery the ratchet exists to refuse. It
+ * is a SCOPE, and it has to be published with the identity or the identity overstates itself —
+ * `screens/settings.js`'s "the only way to score well is to say what you actually believe" is true
+ * of the RATING and false of the RANK. G2 THE CAP and G3.1 carry the qualifier; so does the rank
+ * formula block in Settings.
+ *
+ * ── THE ONE SLOT THAT HAS NO q̂, AND WHY IT KEEPS THE OLD READING ─────────────────────────────
+ * The Mock has no MAKE, so there is no clear rate for it to store: `screens/mock.js mockCall`
+ * writes a weight measured off the Mock's own history instead (`mockCallWeight(ŝ)`, the trailing-10
+ * mean score fraction, capped at `INFORMATIVE_MIN`) and a report that is an error-equivalent rather
+ * than a forecast of a clear. That weight is MEASURED, not defined — this docblock and G12 #40d
+ * both said "defined" while `mockCallWeight` was already deriving it, which is the r5 BLOCKER.
+ * Those slots (and every window written before this round) reach here with `q == null`, and they
+ * keep the flattering double-root reading they have always had: `dE[c]/dq = 2k(p − ½)`, so a report
+ * above the roots' own midpoint is worth more at the higher root and one below it at the lower.
+ * Flattering can only cap TOO HIGH, never too low, so a legacy slot can never demote anybody — and
+ * it is not the ratchet hole, because no game call reaches it any more. The LOW arm is live code,
+ * not a dead branch: `screens/mock.js` writes `p = 1 − err`, and a prediction wrong by more than
+ * half (predict 95, score 20) gives `p = 0.25`, which is read at `lo`. `job-call.test.mjs` §1b
+ * builds exactly that slot and pins the arm.
+ *
+ * A blank slot (`w = 0`, `p = null`) is worth exactly 0, which is what it pays.
+ * Not one numeral: everything comes from `expectedCredit` / `informativeBand` / `RATING`.
+ * @param {number} w  the slot's weight, `0 … RATING.weightK/4`
+ * @param {number|null} p  the probability the student reported on that slot
+ * @param {number|null} [q]  the q̂ the slot was made on, when the slot records one
+ * @returns {number} the slot's expected `w·c`
+ */
+function slotCeiling(w, p, q = null) {
+  const ww = clamp(num(w), 0, RATING.weightK / 4);
+  if (ww <= 0 || !Number.isFinite(p)) return 0;
+  if (Number.isFinite(q)) return ww * expectedCredit(p, clamp(q, 0, 1));   // the slot's own material
+  const [lo, hi] = informativeBand(ww);          // the two q̂ with `weightFor(q̂) === w`
+  return ww * expectedCredit(p, num(p) >= (lo + hi) / 2 ? hi : lo);
 }
 
 /**
@@ -559,7 +893,15 @@ export function expectedRating(qHat, opts = {}) {
   return clamp(RATING.base + (RATING.scale * (n * per)) / N, RATING.min, RATING.max);
 }
 
-/** `w · E[c]` at a truthful DISCRETE report — the per-slot quantity `expectedRating` sums. */
+/**
+ * `w · E[c]` at a truthful DISCRETE report — the per-slot quantity `expectedRating` sums.
+ *
+ * THE REACHABLE MAXIMUM IS 2.4980, AT q̂ = 6/7 — not the 2.2680 at 9/10 that G3.1's Sanity table
+ * published as "the best a 10-sitting window can actually express". Four reachable values beat
+ * 2.2680 (6/7 → 2.4980, 5/6 → 2.4630, 7/8 → 2.4500, 8/9 → 2.3660), because `qHatDetail` divides by
+ * the sittings the make HAS and not by the window size. `reachableQHats` carries the argument and
+ * the rest of the consequences; the continuous peak, unreachable, is 2.4998 at q̂ = 0.85.
+ */
 export function wTimesEcDiscrete(qHat) {
   const w = weightFor(qHat);
   return w * expectedCredit(callLevel(honestCall(qHat)).p, qHat);
@@ -572,8 +914,11 @@ export function wTimesEcDiscrete(qHat) {
  * Calling 50 on everything scores exactly 5.0 → **Called 2 forever** (G3.7 #9): cowardice keeps its
  * money and buys no rank. Rank gates the 95 call and the guard multiplier — loot, never learning.
  *
- * `opts.floor` is the rank the result may not fall below — the hook a display needs so the ladder
- * never DEMOTES (see `ratingDetail`'s `measured`, and notes/call-fix.md §6). Default-off.
+ * `opts.floor` is the rank the result may not fall below — the ratchet (G2 "Rank": rank gates the 95
+ * call and the guard multiplier, and this layer never removes a tool you own). `ratingDetail` passes
+ * the held rank here, which is what stops the ladder DEMOTING a student for mastering their material
+ * (see its banner, and notes/call-fix.md §6, notes/repair-call.md §S3). Default-off on this
+ * function: with no `floor` it is the plain band lookup, and `rankFor.length === 1`.
  * @param {number} rating
  * @param {{floor?: number|null}} [opts]
  * @returns {number} 1 … 5

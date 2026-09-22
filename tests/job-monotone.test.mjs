@@ -56,7 +56,7 @@ import assert from 'node:assert/strict';
 
 import {
   optimalOrder, walkOrder, playOrder, settle, bagBank, bagFee, getawayBank, chainAfterBag,
-  chainMult, missFor, carryFor, round,
+  chainMult, missFor, carryFor, round, COMPLETION,
 } from '../site/js/job/econ.js';
 import { honestCall } from '../site/js/job/call.js';
 import * as state from '../site/js/job/state.js';
@@ -66,6 +66,10 @@ import { applyOutcome, DAY_MS } from '../site/js/schedule.js';
 import { todayISO, addDays } from '../site/js/days.js';
 import { cards as ALL_CARDS } from '../site/data/cards.js';
 import { isBonus } from '../site/data/source-manifest.js';
+/* verify round 3 (test-integrity, meta lane): the scoped sweep below now reads G3.7 proof 2's own
+   published numerals back out of COMPOSED-GAME.md and compares them with what it just measured.
+   Additive only — no existing assertion changed. Recorded in notes/repair-meta.md §Cross-lane. */
+import { read as readRepoFile } from './_helpers.mjs';
 
 const BANK = ALL_CARDS.filter((c) => !isBonus(c.id));
 const NOW = new Date(2026, 8, 16, 18, 0).getTime();
@@ -291,20 +295,42 @@ describe('J9 · the exception — proof 2 is FALSE for a general order (reported
     { tier: 4, call: 85, scope: 1, cold: 1.5, tokens: 3, guarded: false, rank: 3, x2: true, crew: 0, rung: 0 },
     { tier: 1, call: 50, scope: 1, cold: 1.25, tokens: 2, guarded: true, rank: 2, x2: false, crew: 0, rung: 4 },
     { tier: 3, call: 70, scope: 0.5, cold: 1, tokens: 2, guarded: true, rank: 4, x2: false, crew: 0, rung: 4 },
-    { tier: 4, call: 95, scope: 0.5, cold: 1.25, tokens: 3, guarded: false, rank: 5, x2: false, crew: 0, rung: 4 },
+    /* target 3 CLEARED. It was `rung: 4` while the carry ladder paid its premium on an empty pile;
+       the COVER (`econ.coverFor`, econ lane verify r1) re-priced the optimum on that vector and the
+       violation moved to this one, which is the same four targets on a different outcome mask. The
+       mechanism below is untouched — it traces targets 0…2 — and the removal is asserted, not
+       assumed, in the pinned test. */
+    { tier: 4, call: 95, scope: 0.5, cold: 1.25, tokens: 3, guarded: false, rank: 5, x2: false, crew: 0, rung: 0 },
   ]);
   const withRung = (i, rung) => COUNTEREXAMPLE.map((t, k) => (k === i ? { ...t, rung } : { ...t }));
 
-  test('PINNED: clearing target 1 LOWERS the optimum from 616 to 603', () => {
+  test('PINNED: clearing target 1 LOWERS the optimum from 476 to 460', () => {
     const missed = withRung(1, 4);
     const cleared = withRung(1, 0);
-    assert.equal(OPT(missed), 616);
-    assert.equal(OPT(cleared), 603);
-    assert.equal(OPT(missed) - OPT(cleared), 13, 'the pinned drop moved — re-read notes/J9.md §Deviations');
-    /* not an artefact of the crack-only model: the WALK line is the optimum on BOTH sides */
-    assert.equal(bestWalk(missed), 616);
-    assert.equal(bestWalk(cleared), 603);
-    assert.ok(bestWalk(missed) > OPT_CRACK(missed), 'the WALK option is what makes 616 reachable');
+    /* 483/467 until verify round 2, when the econ lane moved the call's premium onto `missFor`'s own
+       base (`econ.carryFor`). Target 3 is a mastered tier-4 at call 95, so its clear repriced by 3
+       loot and both sides of the violation fell by 7 — **the drop itself, 16, is unchanged**, and so
+       is every number in the mechanism trace below. */
+    assert.equal(OPT(missed), 476);
+    assert.equal(OPT(cleared), 460);
+    assert.equal(OPT(missed) - OPT(cleared), 16, 'the pinned drop moved — re-read notes/J9.md §Deviations');
+    /* not an artefact of the walk model: the CRACK line is the optimum on BOTH sides here, and the
+       walk line is the same order 145 lower. Both exits are pinned so neither can absorb the other. */
+    assert.equal(OPT_CRACK(missed), 476);
+    assert.equal(OPT_CRACK(cleared), 460);
+    assert.equal(bestWalk(missed), 331);
+    assert.equal(bestWalk(cleared), 336);
+
+    /* WHAT THE COVER DID TO THIS ORDER, asserted rather than left to the reader. On the outcome
+       vector this counterexample used to be pinned at — target 3 MISSED — the violation is gone:
+       clearing target 1 now RAISES the optimum, 331 → 336 (untouched by verify round 2: every target
+       on that vector is either a 50 call or a miss, and neither carries a premium). The exception is
+       not gone, which is why G3.7 proof 2 stays scoped; the sweep below measures how wide it is. */
+    const t3Missed = (rung) => COUNTEREXAMPLE.map((t, k) => ({ ...t, rung: k === 1 ? rung : (k === 3 ? 4 : t.rung) }));
+    assert.equal(OPT(t3Missed(4)), 331);
+    assert.equal(OPT(t3Missed(0)), 336);
+    assert.ok(OPT(t3Missed(0)) > OPT(t3Missed(4)),
+      'the pre-cover counterexample vector still violates — the cover was supposed to remove it');
   });
 
   test('the mechanism, in arithmetic: the clear is worth +5 and it makes the next miss cost +18', () => {
@@ -414,8 +440,59 @@ describe('J9 · the exception — proof 2 is FALSE for a general order (reported
     const where = `${violations} of ${pairs} flips (${(rate * 100).toFixed(3)} %), worst ${worst} `
       + `(${(worstRel * 100).toFixed(2)} % of the bag) at ${JSON.stringify(first)}`;
     assert.ok(pairs >= 40000, `only ${pairs} flip pairs checked — the sweep shrank`);
-    assert.ok(rate <= 0.0025, `the general-order exception is wider than §3.7(2) states: ${where}`);
-    assert.ok(worstRel <= 0.02, `the general-order exception costs more than §3.7(2) states: ${where}`);
+    /* **This bound was 0.0025 / 0.02 and verify round 2 RAISED it, which is a cost and is published
+       as one.** Moving the call's premium onto `missFor`'s base (`econ.carryFor`) closed a BLOCKER —
+       over-calling was the dominant carry policy on every dressed target — and it widened this
+       exception, because a clear's payout now carries a term that does not shrink with the target's
+       own gain multipliers, so more orders have a clear whose chain amplification outruns it.
+       Re-measured rather than relaxed to fit: **0.190 % → 0.334 % of flips and 1.92 % → 2.32 % of
+       the bag; the worst absolute violation is unchanged at 22 loot.** The design bound this sits
+       inside — ≤ 1 % of flips and ≤ 5 % of the bag, the test two above — is untouched and still
+       passes. The band here is TWO-SIDED so the number cannot drift in either direction unnoticed. */
+    assert.ok(rate <= 0.0035, `the general-order exception is wider than §3.7(2) states: ${where}`);
+    assert.ok(worstRel <= 0.025, `the general-order exception costs more than §3.7(2) states: ${where}`);
+    assert.ok(rate >= 0.003, `the exception NARROWED to ${(rate * 100).toFixed(3)} % — re-publish it in G3.7 proof 2`);
+    assert.equal(worst, 22, 'the worst absolute violation moved — re-publish it in G3.7 proof 2');
+
+    /* ── AND THE DOCUMENT IS READ BACK, NOT TRUSTED (verify round 3, test-integrity) ────────────
+       The band above is two-sided and it still could not catch what happened: G3.7 proof 2's scope
+       blockquote went on publishing **0.190 % of flips, at most 1.92 % of the bag** for a round
+       after verify round 2 widened the exception — while G2, three hundred lines earlier in the
+       SAME document, published the corrected 0.334 % / 2.32 %, and while this band already excluded
+       the stale rate. A band pins the measurement; nothing pinned the paragraph. So the paragraph's
+       own three numerals are parsed here, where the measurement already exists, and compared with
+       it. Zero extra runtime, and the failure message says which numeral to re-publish. */
+    const SPEC = readRepoFile('COMPOSED-GAME.md');
+    const scope = /\*\*Scope of \(2\), as measured[^\n]*/.exec(SPEC);
+    assert.ok(scope, 'G3.7 proof 2 no longer carries its "Scope of (2), as measured" blockquote — '
+      + 'this lint derives the document\'s numerals from that paragraph and it is gone');
+    const grab = (re, what) => {
+      const m = re.exec(scope[0]);
+      assert.ok(m, `G3.7 proof 2's scope blockquote no longer states ${what} in a form this lint can `
+        + `read (${re}). It must publish the measured numeral, not a prose gesture at it.`);
+      return m[1];
+    };
+    const pubRate = +grab(/\*\*([\d.]+) % of flips/, 'the violation rate');
+    const pubRel = +grab(/at most ([\d.]+) % of the bag\*\*/, 'the worst relative drop');
+    const pubWorst = +grab(/worst absolute drop \*\*(\d+)\*\*/, 'the worst absolute drop');
+    const pubViol = +grab(/— (\d+) of [\d\s]+ —/, 'the violation COUNT');
+    const pubPairs = +grab(/— \d+ of ([\d\s]+) —/, 'the flip-pair count').toString().replace(/\s/g, '');
+    assert.equal(pubRate, +(rate * 100).toFixed(3),
+      `G3.7 proof 2 publishes ${pubRate} % of flips; the sweep it cites measures `
+      + `${(rate * 100).toFixed(3)} %. Re-publish the blockquote (SPEC-CORRECTIONS V3-2).`);
+    assert.equal(pubRel, +(worstRel * 100).toFixed(2),
+      `G3.7 proof 2 publishes "at most ${pubRel} % of the bag"; measured ${(worstRel * 100).toFixed(2)} %.`);
+    assert.equal(pubWorst, worst,
+      `G3.7 proof 2 publishes a worst absolute drop of ${pubWorst}; measured ${worst}.`);
+    assert.equal(pubViol, violations, `G3.7 proof 2 publishes ${pubViol} violations; measured ${violations}.`);
+    assert.equal(pubPairs, pairs, `G3.7 proof 2 publishes ${pubPairs} flips; measured ${pairs}.`);
+    /* the FROZEN four-target counterexample is the smallest exhibit, not the worst one — the
+       blockquote said it carried the worst drop (22) and named its pre-verify-2 pair (483 → 467).
+       Both halves are pinned against §3's own assertions, which run in this same file. */
+    assert.match(scope[0], /drops \*\*16\*\*, `476 → 460`/,
+      'the scope blockquote no longer states the frozen four-target drop the PINNED test above '
+      + 'asserts (476 → 460, drop 16) — it is a different order from the worst one, and conflating '
+      + 'the two is exactly what verify round 3 corrected');
   });
 });
 
@@ -541,7 +618,17 @@ describe('J9 · the model is the shipped machine (this file is not a private eco
     assert.equal(g.walkBanks, round(g.loose), 'the getaway walk charged a fee');
     const before = g.bagged;
     const out = state.walk(save, { now: step(25000) });
-    assert.equal(out.bagged, round(before + getawayBank(g.loose)), 'WALK banked something other than the full pile');
+    /* === econ lane, verify round 3 (VR3-GETAWAY; cross-lane, recorded in notes/repair-econ.md) ===
+       The claim this arm makes — the getaway walk charges no FEE — is unchanged and is asserted on
+       the field that carries it: `baseBagged`, the pile before the end-of-job bonus. What changed is
+       that a getaway WALK now also takes the COMPLETION, because CRACK at the stake-free 50 rung
+       could reach the same pile by throwing the vault and was paid ×1.10 for it (`econ.exitBonusRate`).
+       Both assertions are new; neither replaces a weaker one. `bestWalk` is unaffected either way —
+       it prices bare orders, and the bonus is a constant multiplier applied to BOTH exits, so it
+       cannot move the crack-vs-walk comparison the sweeps above make. === */
+    assert.equal(out.baseBagged, round(before + getawayBank(g.loose)), 'WALK banked something other than the full pile');
+    assert.equal(out.bonusRate, COMPLETION, 'a getaway WALK takes the completion — its one unanswered target is the vault');
+    assert.equal(out.bagged, round(out.baseBagged * (1 + COMPLETION)), 'and the debrief prints the pile with it applied');
     assert.ok(state.targetsLeft(save) >= 1, 'the vault did not stay due');
   });
 });

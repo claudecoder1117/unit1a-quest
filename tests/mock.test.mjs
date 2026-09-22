@@ -606,3 +606,168 @@ test('r1: an open Mock renders its own resume card first (no section table, no p
   assert.ok(resumeAt > 0 && secsAt > resumeAt, 'the resume / expired branch returns before the section table is built');
   assert.ok(rules.includes('· in progress'), 'the open run keeps ITS ordinal in the heading');
 });
+
+/* ================================================================================================
+   S3 — THE RANK RATCHET, the Mock's third of it (REPAIR-DECISION §S3.1(b), §S3.4 item 4).
+
+   `mock.applyMockCall` is one of the three writers of `save.player.rank` (`state.applyTarget` and
+   `state.endJob` are the other two). All three used to hand `call.ratingDetail` no floor, so the
+   rank was recomputed from the window every time — and a student who masters their makes empties
+   the informative window, so improving DEMOTED them: measured 9.536 / Called 5 at q̂ 0.90 down to
+   5.000 / Called 2 at q̂ 0.95. Rank gates the 95 rung and the guard multiplier, which are tools, and
+   this layer never removes a tool you own. The floor is `ratingDetail`'s `{rank}` option.
+
+   The case below is the one the shared finding's own fix (`held = !measured`) does NOT cover: the
+   window is MEASURED (n = 1, one bad Mock call) and the floor still binds. Measured here:
+   rating 4.376, bare `rankFor` 1, held rank 5, `held === true`.
+
+   NEGATIVE CONTROL (run before the fix, with `mock.js:562`'s third argument removed):
+     AssertionError: a Mock DEMOTED the student: 5 → 1
+       actual 1, expected 5      — tests/mock.test.mjs, this test
+   ================================================================================================ */
+
+const CALL = await import('../site/js/job/call.js');
+const { CAPS: JOB_CAPS_T } = await import('../site/data/job.js');
+
+/** A rating window of `CAPS.calls` NON-informative slots — where a genuinely mastered player lives. */
+function blankWindow(now) {
+  return Array.from({ length: JOB_CAPS_T.calls }, (_, i) =>
+    CALL.callEntry({ p: 0.85, ok: true, w: 0, skill: null, at: now - (JOB_CAPS_T.calls - i) * 60_000 }));
+}
+
+/** A paper `mockCallEligible` accepts: 20 items, all attempted, sat for 25 minutes. */
+function satPaper({ pred, score, at, seed = 's3-1', of = 20 }) {
+  return {
+    kind: 'mock', status: 'done', n: of, seed, retry: false, pred, score,
+    items: Array.from({ length: of }, (_, i) => ({ n: i + 1, credit: 0, parts: [{ id: 'a', type: 'text', credit: 0, kind: 'wrong', ok: false }] })),
+    startedAt: at - 25 * 60_000, submittedAt: at,
+  };
+}
+
+/**
+ * The PRIOR sittings a paper's weight is read from (verify r1, `mock.mockPriorMean`). Two papers at
+ * 60 and 80 put ŝ at 0.70, comfortably inside `INFORMATIVE_BAND`, so the paper under test is weighed
+ * at `MOCK_CALL_W`. Without them ŝ is null, the call is unweighed and it moves no rating at all —
+ * which is the point of the repair, and is pinned in tests/job-week.test.mjs.
+ */
+function priorSittings(at) {
+  return [60, 80].map((score, i) => satPaper({ pred: score, score, at: at - (2 - i) * 86_400_000, seed: `s3-hist-${i}` }));
+}
+
+test('S3: a Mock never demotes the rank — the held rank is ratingDetail\'s FLOOR, and it binds on a MEASURED window', () => {
+  const now = Date.parse('2026-09-17T09:00:00');
+  const s = save0();
+  s.runs = priorSittings(now);
+  s.player.rating = { calls: blankWindow(now), value: 5, n: 0 };
+  s.player.rank = 5;                                     // what state.endJob left on the save
+
+  const bare = CALL.ratingDetail(s.player.rating.calls, JOB_CAPS_T.calls);
+  assert.equal(bare.n, 0, 'the window starts with no measurement in it');
+  assert.equal(bare.rank, 2, 'and the bare recomputation of an empty window is Called 2');
+
+  const r = M.applyMockCall(s, satPaper({ pred: 10, score: 90, at: now }), { now });
+  assert.ok(r, 'the paper was eligible and scored a call');
+
+  // the RATING falls, and it is allowed to: it is a measurement of calibration, not a ladder
+  assert.ok(s.player.rating.value < 5, `the rating fell to ${s.player.rating.value}`);
+  assert.equal(s.player.rating.n, 1, 'and the window is now MEASURED — this is not the n = 0 corner');
+  assert.equal(CALL.rankFor(s.player.rating.value), 1, 'the bare recomputation would print Called 1');
+
+  // the RANK does not fall
+  assert.equal(s.player.rank, 5, `a Mock DEMOTED the student: 5 → ${s.player.rank}`);
+  assert.equal(r.rank, 5, 'and the record it hands back says the same');
+  const held = CALL.ratingDetail(s.player.rating.calls, JOB_CAPS_T.calls, { rank: 5 });
+  assert.equal(held.held, true, 'a binding floor reports `held` — measured or not (S3.3)');
+  assert.equal(held.measured, true, 'which is exactly the case `held = !measured` does not reach');
+
+  // it is a FLOOR, not a freeze: a Mock may still RAISE the rank
+  const up = save0();
+  up.runs = priorSittings(now);
+  up.player.rating = { calls: [], value: 5, n: 0 };
+  up.player.rank = 1;
+  const r2 = M.applyMockCall(up, satPaper({ pred: 88, score: 88, at: now, seed: 's3-2' }), { now });
+  assert.ok(r2, 'the second paper scored too');
+  assert.ok(up.player.rank >= 2, `a perfect forecast could not lift rank 1 (${up.player.rank})`);
+  assert.equal(up.player.rank, CALL.rankFor(up.player.rating.value), 'a non-binding floor is transparent');
+});
+
+/* ================================================================================================
+   VERIFY r1 — THE WEIGHT, through the WHOLE shipped path (startRun → fill → submitRun), not through
+   `applyMockCall` on a hand-built fixture. `tests/job-week.test.mjs` pins the law and the bound; this
+   pins the WIRING: that `submitRun` hands the save to `mockPriorMean`, and that a history of papers
+   the student threw weighs the next forecast at exactly nothing.
+   ================================================================================================ */
+test('verify r1: three thrown papers through submitRun move the rating by nothing, and the fourth is still unweighed', () => {
+  const t0 = Date.parse('2026-09-17T09:00:00');
+  const DAY = 86_400_000;
+  const s = save0();
+  const rank0 = s.player.rank;
+  const wrong = () => 'nope';                 // every box filled, every box wrong: the effort gate PASSES
+
+  for (let d = 0; d < 4; d++) {
+    const { run } = takeRun(s, { how: wrong, pred: 0, now: t0 + d * DAY });
+    assert.equal(run.status, 'done');
+    assert.equal(run.score, 0, `paper ${d + 1} scored ${run.score} — this arm needs a thrown paper`);
+    assert.ok(run.call, `paper ${d + 1} earned no call at all — this arm is about the WEIGHT, not the gate`);
+    assert.equal(run.call.w, 0, `paper ${d + 1} was WEIGHED (w = ${run.call.w})`);
+    assert.equal(run.call.credit, 10, 'the forecast was exact and the credit says so — it just bought nothing');
+    assert.equal(run.call.p, null, 'so the slot it took is a blank one');
+  }
+  assert.equal(M.mockPriorMean(s, { submittedAt: t0 + 9 * DAY }), 0, 'ŝ after four thrown papers is 0');
+  assert.equal(M.mockCallWeight(M.mockPriorMean(s, { submittedAt: t0 + 9 * DAY })), 0, 'and 0 weighs nothing');
+  assert.equal(s.player.rating.n, 0, 'not one measurement in the window');
+  assert.equal(s.player.rating.value, 5, 'the rating never left 5.000');
+  assert.equal(s.player.rank, rank0, `and the rank never left Called ${rank0}`);
+});
+
+test('verify r1: a real history weighs the next paper at MOCK_CALL_W, through the same path', () => {
+  const t0 = Date.parse('2026-09-17T09:00:00');
+  const DAY = 86_400_000;
+  const s = save0();
+  /* every other ITEM answered correctly and the rest answered wrong — a 50 that is real work, and a
+     fresh counter per paper so both sittings score the same 50 */
+  const half = () => {
+    const seen = new Map();
+    return (item, part, built) => {
+      if (!seen.has(item)) seen.set(item, seen.size);
+      return seen.get(item) % 2 === 0 ? correctRaw(built.raw, part) : 'nope';
+    };
+  };
+
+  const first = takeRun(s, { how: half(), pred: 50, now: t0 }).run;
+  assert.equal(first.score, 50, 'half the paper right is a score inside the informative band');
+  assert.equal(first.call.w, 0, 'and the FIRST paper is still unweighed — nothing came before it');
+  assert.equal(s.player.rating.value, 5, 'so it moved the rating by nothing');
+
+  const sHat = M.mockPriorMean(s, { submittedAt: t0 + DAY });
+  assert.equal(sHat, 0.5, 'ŝ is now the 50 that paper scored');
+  const second = takeRun(s, { how: half(), pred: 50, now: t0 + DAY }).run;
+  assert.equal(second.score, 50);
+  assert.equal(second.call.w, M.MOCK_CALL_W, 'and THIS one is weighed, by the paper that came before it');
+  assert.equal(second.call.credit, 10, 'an exact forecast still earns the credit ceiling');
+  assert.equal(s.player.rating.n, 1, 'one measurement in the window');
+  assert.equal(s.player.rating.value, 5 + (2 * M.MOCK_CALL_SLOT_MAX) / 50, 'worth exactly one capped slot: 5.10');
+});
+
+test('verify r1: the top of the band is closed too — a student who always scores 100 is not forecasting', () => {
+  const t0 = Date.parse('2026-09-17T09:00:00');
+  const DAY = 86_400_000;
+  const s = save0();
+  takeRun(s, { how: allCorrect, pred: 100, now: t0 });
+  const second = takeRun(s, { how: allCorrect, pred: 100, now: t0 + DAY }).run;
+  assert.equal(second.score, 100);
+  assert.equal(M.mockPriorMean(s, { submittedAt: t0 + 2 * DAY }), 1, 'ŝ = 1.00');
+  assert.equal(second.call.w, 0, 'ŝ = 1 is outside INFORMATIVE_BAND — the same law that retires a mastered make');
+  assert.equal(s.player.rating.value, 5, 'so a perfect run of papers cannot farm the rating either');
+});
+
+test('S3: every call.ratingDetail in screens/mock.js passes the rank floor (the grep pin §S3.4 item 4)', async () => {
+  const { readFileSync } = await import('node:fs');
+  const { stripCommentsAndStrings } = await import('./_helpers.mjs');
+  const src = stripCommentsAndStrings(readFileSync(new URL('../site/js/screens/mock.js', import.meta.url), 'utf8'));
+  const calls = [...src.matchAll(/ratingDetail\(((?:[^()]|\([^()]*\))*)\)/g)];
+  assert.ok(calls.length >= 1, 'screens/mock.js no longer calls ratingDetail — this pin has gone stale');
+  for (const c of calls) {
+    assert.match(c[1], /\brank:\s*\S/, `a ratingDetail call in mock.js omits the rank floor: ratingDetail(${c[1]})`);
+  }
+});

@@ -61,6 +61,9 @@ import {
   COPY as JOB_COPY, ANIMATION as JOB_ANIMATION, SHAPES as JOB_SHAPES,
   GUARD as JOB_GUARD, AUTO_BAG as JOB_AUTO_BAG, PHASE_MEANS_DEFAULT as JOB_PHASE_MEANS,
   WING_IDS as JOB_WING_IDS,
+  /* verify r2 (split-honesty): the debrief's decision ceiling is printed on the counter's own
+     basis, which needs the two optional extras and the brief-window option count by name. */
+  DECISIONS as JOB_DECISIONS,
 } from '../../data/job.js';
 
 /* ================================================================== constants */
@@ -966,6 +969,15 @@ function mountCardRun(host, { kind, id, seed }) {
     const submittedAt = Date.now();
     const sum = summarizeRun(results);
     const outcome = { jump: null, dailyXp: 0 };
+    /* ── THE SIZE PROVENANCE IS THE PAGE'S, NOT THE TERMINAL'S (verify r2, ledger-invariance) ─────
+       Read HERE, before `finishPage(s)` nulls `inProgress`. A job that WALKS at the getaway hands
+       the rest of its drafted queue back to `#/run/page` (`state.endJob`: `else delete
+       s.inProgress.game`), and this screen is then the writer of that page's row — so without this
+       line the row for a 10-of-21 page carried no `partial` key and bought **Flawless Page**, which
+       the identical job played to the end is refused. One game decision, one study trophy: see
+       `pageSizeExtra`. `null` for every page the board never drafted (no `composed` on the
+       snapshot), so a plain Today's Page writes the row it has always written, key for key. */
+    const size = kind === 'page' ? pageSizeExtra(before, queue, results) : null;
 
     const save = update((s) => {
       if (kind === 'page') finishPage(s);
@@ -988,7 +1000,9 @@ function mountCardRun(host, { kind, id, seed }) {
       pushRun(s, makeRunRecord({
         kind, id: runRecordId(kind, run), seed: run.seed, seedTag: run.seedTag,
         startedAt, submittedAt, results,
-        extra: kind === 'jump' ? { placed: !!outcome.jump?.passed, score: results.filter((r) => r.cleared && r.firstTry).length, scoreMax: queue.length } : {},
+        extra: kind === 'jump'
+          ? { placed: !!outcome.jump?.passed, score: results.filter((r) => r.cleared && r.firstTry).length, scoreMax: queue.length }
+          : (size ?? {}),
       }));
       checkDailyGoal(s, todayISO(new Date(submittedAt)));
       logForecast(s, { today: todayISO(new Date(submittedAt)) });
@@ -1579,8 +1593,9 @@ const JOB_TITLES = Object.freeze({
  *
  *   `honestCall(0.75) === argmaxCall(0.75) === 70` — the two ladders AGREE at the worked line's
  *   `q̂`, so the rating-consistent pair reproduces it exactly (`credit(.70,.75) − credit(.85,.75)
- *   = 0.3`, in the rating units the sentence itself names). The carry pair reproduces the rung and
- *   then misprices it: its own cost is 0.05 loot, not 0.3 rating.
+ *   = 0.3`, in the rating-CREDIT units the sentence names since finding 40 relabelled its unit word
+ *   — the ladder and the number are untouched). The carry pair reproduces the rung and then
+ *   misprices it: its own cost is 0.05 loot, not 0.3 credit.
  *
  * Inside G3.1's published disagreement bands the mixed pair breaks. At `q̂ = 0.885` (band 2, *money
  * 95, rank 85*) it named 95 — the CARRY argmax — and charged the difference in RATING credit, where
@@ -1591,10 +1606,22 @@ const JOB_TITLES = Object.freeze({
  *
  * So the line runs on ONE ladder: `call.regretOf({..., ladder: 'rating'})` — `best = honestCall(q̂)`,
  * the maximiser of the expected credit the sentence prices, which is also the rating delta printed
- * three lines above it. `COPY.regret2`'s `EV-max` is that maximiser (the call ladder is strictly
- * proper, so it is the honest rung). The carry argmax keeps its own published home: Settings, where
- * both ladders and both disagreement bands are printed side by side (G3.1) — evidence the student
- * reads BEFORE the call, which is where a money-vs-rank choice belongs (Global law 6).
+ * three lines above it. The carry argmax keeps its own published home: Settings, where both ladders
+ * and both disagreement bands are printed side by side (G3.1) — evidence the student reads BEFORE
+ * the call, which is where a money-vs-rank choice belongs (Global law 6).
+ *
+ * ── VERIFY r3 (call-propriety) — AND THE WORD MOVED WITH IT ───────────────────────────────────────
+ * Choosing the ladder fixed the arithmetic inside the line and left the CONTRADICTION BETWEEN TWO
+ * SCREENS: `settings.js:533` prints `evMaxBands()` under *"The EV-max rung, by true clear rate"*,
+ * which is `argmaxCall`, while `COPY.regret2` printed `honestCall(q̂)` under the same two words. At
+ * q̂ = 8/9 — reachable, `of = 9` — Settings says 95 and the debrief said *"EV-max was 85. cost 0.1
+ * credit"*, so a student who had done exactly what the table told them was charged for it by name.
+ * Naming the rung is therefore not enough: the LINE has to say which ladder it is speaking for
+ * whenever the two differ, and they differ on exactly `CALL_DISAGREEMENT_BANDS`. `jobRegret` prints
+ * `COPY.regret2` (with the word) where the ladders agree — every q̂ outside the bands, G5 #2's
+ * published worked line included — and `COPY.regret2Split` (both rungs, Settings' own words, no
+ * "EV-max") inside them. `tests/run-lane-v3.test.mjs` §1 walks q̂ across both surfaces and asserts
+ * the word can never name two rungs again.
  */
 export const DEBRIEF_CALL_LADDER = Object.freeze({ best: 'rating', cost: 'rating' });
 
@@ -1672,7 +1699,7 @@ export function realisedOrderOf(debrief, opts = {}) {
     const d = num(c.d, 0);
     let mult = 0;
     if (rho > 0) {
-      mult = (rho * m * W) > 0 ? d / (rho * m * W) : 0;
+      mult = jobEcon.realisedMult(d, { rho, chain, call: c.call, loose });   // `d/(ρ·m·W)`, cover inverted (econ lane, verify r1)
     } else {
       const lost = Math.abs(d);
       mult = (m * P) > 0 ? lost / (m * P) : 0;
@@ -1733,19 +1760,128 @@ export function inferDecisions(debrief, opts = {}) {
   return { decisions: hits[0], unique: hits.length === 1, candidates: hits.length, target };
 }
 
+/* ------------------------------------------------- the q̂ the seal cut, recovered at the debrief */
+
+/** `cards[id].skills` out of whatever card index the caller holds (`byId`, in practice). */
+const skillsOfCard = (cards, id) => {
+  const c = cards && typeof cards === 'object' ? cards[id] : null;
+  return Array.isArray(c?.skills) ? c.skills : [];
+};
+
+/**
+ * The stamp of the sitting THIS target wrote on its own make, or 0 when it wrote none.
+ *
+ * A job beat grades exactly one target, so the only card-history row on the target's make that can
+ * fall in `(from, to]` — the previous target's settle, this target's settle — is this target's own.
+ * `screens/card.js` writes it (`rec.history.push({at: now, …})`, card.js:922/1001) BEFORE
+ * `state.applyTarget` prices the beat, so it is at or before `to`; a VARIANT target writes
+ * `save.variants` and no card history at all, and then there is no row in the window and this
+ * returns 0, which is the correct answer for it (nothing of its own to cut away).
+ */
+function ownSittingAt(save, skill, cards, from, to) {
+  const recs = isObj(save?.cards) ? save.cards : null;
+  if (!recs || typeof skill !== 'string' || !skill) return 0;
+  let cut = 0;
+  for (const id of Object.keys(recs)) {
+    if (!skillsOfCard(cards, id).includes(skill)) continue;
+    const hist = recs[id]?.history;
+    if (!Array.isArray(hist)) continue;
+    for (const hRow of hist) {
+      const at = Array.isArray(hRow) ? num(hRow[0], 0) : num(hRow?.at, 0);   // packed or plain (store.js:604)
+      if (at > from && at <= to && at > cut) cut = at;
+    }
+  }
+  return cut;
+}
+
+/**
+ * **THE DEBRIEF'S q̂ IS THE ONE THE SEAL CUT, NOT THE LIVE RATE (verify r1, call-propriety).**
+ *
+ * `call.qHatDetail` defaults its history cut to `save.inProgress.game.locked.at` — the instant the
+ * call was sealed — precisely so that the weight a call carries cannot be a function of that call's
+ * own outcome. The debrief runs AFTER `endJob` has cleared `inProgress`, so `sealedCallOf` found no
+ * seal, the read came back UNCUT, and the regret line was computed on a q̂ that already contained
+ * the sitting it was judging. Measured over every reachable 10-sitting state: on 6 of 42 reachable
+ * (state × outcome) pairs the debrief named a DIFFERENT rung as EV-max than the one that was
+ * honest at the seal — and the direction is hindsight, a miss pushing q̂ down so the line says *you
+ * over-called*. That is the same selection-on-outcome defect the S1 repair closed in the scorer,
+ * and this was the one surface left that tells the student what "honest" meant.
+ *
+ * THE RECOVERY, in order of how much it has to assume:
+ *   1. `c.qHat` — the seal itself, if the save ever carries it. `realisedOrderOf` already prefers
+ *      it; `state.cleanCall` does not keep it today (a request to store it beside `w` is in
+ *      notes/repair-run.md → Requests, and this function needs no change when it lands).
+ *   2. the history cut this target's own sitting implies (`ownSittingAt`) — exact, because a beat
+ *      grades one target and the sitting is written before the beat is priced.
+ *   3. no stamp on the call at all → `null`. **Never a live read.** A line that cannot be proved
+ *      to be the honest call at the seal is not printed.
+ *
+ * @param {object} save           the save AFTER `endJob`
+ * @param {object[]} calls        `debrief.calls`, in play order
+ * @param {number} i              which call
+ * @param {{cards?: any, startedAt?: number}} [opts]  `startedAt` is the job's own start stamp
+ *                                (`before.startedAt`), the lower bound for the FIRST target
+ * @returns {number|null}
+ */
+export function sealedQHatOf(save, calls, i, opts = {}) {
+  const list = Array.isArray(calls) ? calls : [];
+  const c = list[i];
+  if (!isObj(c) || typeof c.skill !== 'string' || !c.skill) return null;
+  if (Number.isFinite(c.qHat)) return c.qHat;
+  const at = num(c.at, 0);
+  if (!(at > 0)) return null;
+  const cards = opts.cards ?? cardById;
+  const from = i > 0 ? num(list[i - 1]?.at, 0) : num(opts.startedAt, 0);
+  const own = ownSittingAt(save, c.skill, cards, from, at);
+  /* ── THE SEAL IS PUT BACK, NOT ARGUED AROUND ──────────────────────────────────────────────────
+     `qHatDetail` reads exactly two things off a save — `save.cards` and
+     `save.inProgress.game.locked` — and its cut DEFAULTS to that seal. So rather than hand it an
+     explicit `before` (which `tests/job-call.test.mjs` S1 rightly forbids anywhere under `site/js`:
+     an explicit cut is how a staking caller opts OUT of the seal, and an endogenous weight makes
+     lying pay), the debrief hands it a save with the seal this target actually had. `cards` is
+     carried by reference, so this costs one object.
+     The stamp is the sitting this target wrote — strictly `<` drops exactly it — or `at + 1` when
+     it wrote none (a VARIANT target), which is everything the target could see. */
+  const sealedSave = { ...save, inProgress: { game: { locked: { call: c.call ?? null, n: i + 1, at: own > 0 ? own : at + 1 } } } };
+  return jobCall.qHatFor(sealedSave, c.skill, { cards });
+}
+
 /**
  * Both regret lines for one job, computed from the realised order — G5 #2.
  *
  *   bagpush : `econ.regretLine(order).line`   verbatim, through `COPY.regret`
- *   call    : `COPY.regret2` on the envelope with the largest rating cost, with `EV-max` and that
- *             cost both taken from `call.regretOf` on ONE ladder (see `DEBRIEF_CALL_LADDER`)
+ *   call    : on the envelope with the largest rating cost, with the rung and that cost both taken
+ *             from `call.regretOf` on ONE ladder (see `DEBRIEF_CALL_LADDER`) — through
+ *             `COPY.regret2` where the two ladders agree, and `COPY.regret2Split` where they do not
+ *
+ * ── VERIFY r3 (call-propriety) — WHICH OF THE TWO SENTENCES, AND WHY THERE ARE TWO ────────────────
+ * `COPY.regret2` says *"EV-max was 85"*. `screens/settings.js:533` prints `call.evMaxBands()` under
+ * the heading *"The EV-max rung, by true clear rate"* — and that is the CARRY argmax, while this
+ * line names the maximiser of the credit it prices (`honestCall`). Outside G3.1's two disagreement
+ * bands those are the SAME rung at every q̂, so one word names one thing and the published sentence
+ * is true. Inside them they are two rungs, and the debrief was printing one of them under the
+ * other's name: at a reachable q̂ = 8/9 Settings' table says 95 and the debrief said *"EV-max was
+ * 85. cost 0.1 credit"* — the table's reader was told their own call was the mistake, in the two
+ * bands G3.1 calls *"the only place in the game where the player must choose what they are playing
+ * for"*. So in the bands the line names BOTH rungs, in Settings' own words, and drops the word:
+ * *"envelope 6: you called 70. the money said 95, the rating said 85. cost 1.3 credit against 85."*
+ * `split` is true on exactly those envelopes. Both rungs come from `call.regretOf` — the carry one
+ * through `ladder: 'carry'`, never `argmaxCall` by hand, which is the r3 law this screen keeps.
  *
  * Either line is `''` when there is nothing to teach — played optimally, the debrief prints none.
  * @returns {{order, bagpush: object, call: {line: string, envelope: number|null, called: number|null,
- *            evMax: number|null, cost: number, q: number|null}}}
+ *            evMax: number|null, money: number|null, split: boolean, cost: number, q: number|null}}}
  */
 export function jobRegret(debrief, opts = {}) {
-  const order = isObj(opts.order) ? opts.order : realisedOrderOf(debrief, opts);
+  /* THE q̂ IS THE SEALED ONE (verify r1 — see `sealedQHatOf`). An explicit `qHatOf` still wins, so a
+     test may drive the line at a chosen q̂; a caller that hands over the SAVE gets the seal, never
+     the live rate. A caller that hands over neither gets `c.qHat` or nothing — never a live read. */
+  const calls = Array.isArray(debrief?.calls) ? debrief.calls : [];
+  const reader = typeof opts.qHatOf === 'function'
+    ? opts.qHatOf
+    : (isObj(opts.save) ? (c, i) => sealedQHatOf(opts.save, calls, i, opts) : null);
+  const o = reader ? { ...opts, qHatOf: reader } : opts;
+  const order = isObj(opts.order) ? opts.order : realisedOrderOf(debrief, o);
   const bagpush = jobEcon.regretLine(order);
 
   let worst = null;
@@ -1761,13 +1897,118 @@ export function jobRegret(debrief, opts = {}) {
     if (!worst || cost > worst.cost) worst = { envelope: i + 1, called, evMax: best, cost, q };
   });
 
-  const line = worst && Math.round(worst.cost * 10) / 10 > 0
-    ? JOB_COPY.regret2({ envelope: worst.envelope, called: worst.called, evMax: worst.evMax, cost: (Math.round(worst.cost * 10) / 10).toFixed(1) })
-    : '';
-  return { order, bagpush, call: { line, ...(worst ?? { envelope: null, called: null, evMax: null, cost: 0, q: null }) } };
+  /* The money's rung at the SAME q̂, so the sentence can tell the student which word it is using.
+     `regretOf({ladder:'carry'}).best` IS `argmaxCall(q̂)` — taken through the module's own pair, so
+     this screen still hand-rolls neither half of either ladder (r3). */
+  const shown = worst != null && Math.round(worst.cost * 10) / 10 > 0;
+  const money = shown ? jobCall.regretOf({ call: worst.called, qHat: worst.q, ladder: 'carry' }).best : null;
+  const split = shown && money !== worst.evMax;
+  const cost = worst ? (Math.round(worst.cost * 10) / 10).toFixed(1) : '0.0';
+  const line = !shown ? ''
+    : split
+      ? JOB_COPY.regret2Split({ envelope: worst.envelope, called: worst.called, money, rank: worst.evMax, cost })
+      : JOB_COPY.regret2({ envelope: worst.envelope, called: worst.called, evMax: worst.evMax, cost });
+  return {
+    order,
+    bagpush,
+    call: { line, split, money, ...(worst ?? { envelope: null, called: null, evMax: null, cost: 0, q: null }) },
+  };
 }
 
 /* ------------------------------------------------------------------ the before-snapshot */
+
+/**
+ * **How many items `composePage` dealt for the page this job drafted out of** — 0 when unknowable.
+ *
+ * `job/board.js composeBundles` partitions `page.composePage(save, opts)` (page.js:870) and
+ * `state.startJob` keeps THAT page's meta on `inProgress.meta` while putting only the DRAFTED
+ * subset in `inProgress.queue`. `meta.counts` is `composePage`'s own per-role tally of the ordered
+ * queue (page.js `roleCounts`), so its sum is the composed page's length, already computed, with
+ * nothing to recompose and no second answer possible.
+ */
+export function composedCountOf(ip) {
+  const counts = isObj(ip?.meta?.counts) ? ip.meta.counts : null;
+  if (!counts) return 0;
+  let n = 0;
+  for (const v of Object.values(counts)) n += Math.max(0, num(v, 0));
+  return n;
+}
+
+/**
+ * **How many of that page's items this run was DEALT** — the other half of `composedCountOf`, in the
+ * same unit: distinct items, counted once each.
+ *
+ * ── verify r2 (ledger-invariance) — `partial` COMPARED ANSWERS TO ITEMS ──────────────────────────
+ * `commitJobRun` took this number from `results.length`, which is one entry per ANSWERED queue
+ * entry. `page.requeueReview` splices a SECOND COPY of every missed review into the queue, so a miss
+ * added an answer without adding one card of coverage — while `composed` is `composePage`'s count of
+ * DISTINCT items. The comparison was therefore between two different units, and it moved the wrong
+ * way: **the more the student missed, the more of the page the row claimed they had finished.**
+ * Measured over 4 shapes × 3 answer policies × 40 corpus saves (480 completed jobs), 29 rows were
+ * stamped `partial: false` — *"this WAS a whole Page"* — while covering 10 distinct items of 18, or
+ * 12 of 21. No trophy was mis-awarded only because the same misses made `items.every(isClean)`
+ * false; the field itself was already dishonest and the next predicate to read it would inherit it.
+ *
+ * A re-answer is not coverage, so it is not counted here. A requeued copy is the ONLY queue entry
+ * that carries `requeued > 0` (`page.js requeueReview`: `{ ...it, done: false, result: null,
+ * requeued: (it.requeued ?? 0) + 1 }`), and `composePage` composes none — so "the entries the page
+ * dealt into this run" is exactly "the entries with no requeue stamp", which is the same unit
+ * `meta.counts` sums.
+ *
+ * @param {object|object[]} ip  `inProgress`, or a queue array
+ */
+export function draftedCountOf(ip) {
+  const q = Array.isArray(ip) ? ip : (Array.isArray(ip?.queue) ? ip.queue : []);
+  let n = 0;
+  for (const it of q) if (isObj(it) && !(num(it.requeued, 0) > 0)) n += 1;
+  return n;
+}
+
+/** `draftedCountOf` over the queue, falling back to the distinct ids of an answer list. */
+function draftedCount(queue, results) {
+  if (Array.isArray(queue) && queue.length) return draftedCountOf(queue);
+  const list = Array.isArray(results) ? results : [];
+  const ids = new Set();
+  let anon = 0;
+  for (const r of list) { if (r?.id == null) anon += 1; else ids.add(r.id); }
+  return ids.size + anon;
+}
+
+/**
+ * **THE PAGE'S SIZE PROVENANCE — stamped on the PAGE, not on the terminal that happens to close it.**
+ *
+ * ── verify r2 (ledger-invariance), BLOCKER: a game decision changed `save.trophies` ──────────────
+ * `state.endJob` is `if (complete) finishPage(s); else delete s.inProgress.game;`, so a WALK at the
+ * getaway leaves the SAME drafted queue live as a plain Today's Page, one target short.
+ * `run.js:1419` puts a **Today's Page** button on the debrief exactly when `job.left > 0` — exactly
+ * when a walk happened — and the flat `finish()` then closed that page. `commitJobRun` refuses a job
+ * that is not `complete`, so the row was written by the flat writer, which stamped no `partial` key
+ * at all, and `data/trophies.js:203` gates **Flawless Page** on `r.partial !== true`:
+ *
+ *     ARM 1  push/crack to the end   row partial=true   trophies: chain-8 …            no flawless-page
+ *     ARM 2  WALK, then #/run/page   row partial=—      trophies: chain-8 … flawless-page
+ *
+ * — same corpus save, same ten drafted targets, same CLEAN answers, same 11-item composed page, same
+ * XP and the same `cards`. One **game decision** was worth one study trophy, and it was worth it for
+ * abandoning the job one target early: COMPOSED-GAME.md:15 says Ledger A *"is never staked, never
+ * lost, never multiplied by a game decision"* and :984 *"Streak, trophies, XP, levels | unchanged"*.
+ *
+ * The fix is not another gate on the job terminal — it is to put the fact on the thing it is about.
+ * A page the board drafted CARRIES its own composed count (`captureJobBefore` → `composedCountOf`,
+ * in `inProgress.meta.before`, which survives a walk and a reload), so both writers can read the
+ * same two numbers off the same page and write the same row. `null` means the page carries no
+ * composed count — i.e. the game never drafted it — and the flat row is then left exactly as it was.
+ *
+ * @param {object|null} before  the page's before-snapshot (`pageBefore` / `captureJobBefore`)
+ * @param {object[]|object} queue  the page's queue as it stands at the terminal
+ * @returns {{drafted: number, composed: number, partial: boolean}|null}
+ */
+export function pageSizeExtra(before, queue, results = null) {
+  const composed = num(before?.composed, 0);
+  if (!(composed > 0)) return null;
+  const drafted = draftedCount(Array.isArray(queue) ? queue : queue?.queue, results);
+  return { drafted, composed, partial: drafted < composed };
+}
 
 /**
  * The before-snapshot a job's debrief needs, written where a Page's already lives
@@ -1794,6 +2035,13 @@ export function captureJobBefore(save, queue = null) {
        `inProgress`, so `seed` / `seedTag` are unrecoverable unless they were snapshotted here. */
     if (stored.seed == null && ip?.seed != null) stored.seed = ip.seed;
     if (stored.seedTag == null && ip?.seedTag != null) stored.seedTag = ip.seedTag;
+    /* verify r1 — THE SIZE OF THE PAGE THAT WAS COMPOSED, for the run record's `partial` flag (see
+       `composedCountOf` and `commitJobRun`). Patched onto an older snapshot too, and readable at
+       every point of a live job, because `inProgress.meta` IS the composed page's meta. */
+    if (!(num(stored.composed, 0) > 0)) {
+      const n = composedCountOf(ip);
+      if (n > 0) stored.composed = n;
+    }
     return stored;
   }
   const items = Array.isArray(queue) ? queue : (Array.isArray(ip?.queue) ? ip.queue : []);
@@ -1817,6 +2065,9 @@ export function captureJobBefore(save, queue = null) {
        on its record; a job's are `inProgress`'s, and `inProgress` does not survive the job. */
     seed: ip?.seed ?? null,
     seedTag: ip?.seedTag ?? null,
+    /* verify r1 — how many items `composePage` DEALT for this save, beside how many the job drafted
+       out of them. See `composedCountOf`. */
+    composed: composedCountOf(ip),
   };
   if (ip && isObj(ip)) ip.meta = { ...(isObj(ip.meta) ? ip.meta : null), before: snap };
   return snap;
@@ -1855,14 +2106,31 @@ function jobWallMs(before, now = Date.now()) {
 /**
  * Has this job's page already been recorded? Two guards, because either one can be the only one
  * available: the SAVE is authoritative across a reload (`runs[]` is what the trophy predicates and
- * `#/stats` read), and the in-memory `before` snapshot covers the case where the page carried no
- * start stamp to key on (an old save mid-job when this landed).
+ * `#/stats` read), and the in-memory `before` snapshot short-circuits a re-entry inside one render.
+ *
+ * **r3 finding 63 (ledger-invariance).** The key is the identity the row is WRITTEN with, never the
+ * snapshot's `startedAt` alone. `screens/job.js` renders the debrief with `before: jobBefore ??
+ * undefined` — the branch `holdForDebrief`'s `console.warn` path leaves live — and on it
+ * `jobSummaryContext` builds a FRESH fallback snapshot per call: no `startedAt`, and a new object
+ * every render, so the old form's `if (!(startedAt > 0)) return false` returned before the `runs[]`
+ * scan ran and the flag was stamped on an object that was thrown away. Three renders of one debrief
+ * wrote three page records, and `page.pageIndexFor` counts page runs to seed the NEXT page, so the
+ * duplicate changed what the student was dealt next. `stamp` is the job's own terminal clock
+ * (`state.endJob` writes `game.ledger.debriefAt`), which is stable across re-renders and is what a
+ * caller with no snapshot at all can still recompute — so it is the second half of the key.
+ *
+ * @param {object} save
+ * @param {number} key         `startedAt || stamp` — what the row's own `startedAt` carries
+ * @param {object|null} before the in-memory snapshot, when there is one
+ * @param {number} [stamp]     the MACHINE's terminal stamp only; never a render clock, or two
+ *                             different pages committed at one fixture clock would collide
  */
-function jobRunRecorded(save, startedAt, before) {
+function jobRunRecorded(save, key, before, stamp = 0) {
   if (isObj(before) && before.runRecorded === true) return true;
-  if (!(startedAt > 0)) return false;
+  if (!(key > 0) && !(stamp > 0)) return false;
   const runs = Array.isArray(save?.runs) ? save.runs : [];
-  return runs.some((r) => isObj(r) && r.kind === 'page' && num(r.startedAt, 0) === startedAt);
+  return runs.some((r) => isObj(r) && r.kind === 'page'
+    && ((key > 0 && num(r.startedAt, 0) === key) || (stamp > 0 && num(r.submittedAt, 0) === stamp)));
 }
 
 /**
@@ -1912,31 +2180,72 @@ export function commitJobRun(save, debrief, opts = {}) {
   const results = Array.isArray(opts.results) ? opts.results : pageResults(queue);
   if (!results.length) return null;                             // nothing was answered: nothing to record
   const startedAt = num(before?.startedAt, 0) || num(opts.startedAt, 0);
-  if (jobRunRecorded(save, startedAt, before)) return null;     // a re-render is not a second page
-  /* THE JOB'S OWN TERMINAL CLOCK, not this render's. `endJob` stamps `game.ledger.debriefAt = now`
-     (the instant it closed the page) and `game.log`'s last entry carries the `day` the screen handed
-     it — so the record, the daily goal and the forecast point are all filed under the day the job
-     was PLAYED, even when the debrief is re-read after midnight or rebuilt from a stored snapshot.
-     `debrief.at` takes precedence for when `state.debriefOf` starts carrying it (notes/run-fix.md
-     Request 1); `Date.now()` is the last resort, and only for a save with no game ledger at all. */
-  const log = Array.isArray(save?.game?.log) ? save.game.log : [];
-  const last = log[log.length - 1];
-  const submittedAt = num(debrief.at, 0) || num(save?.game?.ledger?.debriefAt, 0)
-    || num(opts.now, 0) || Date.now();
-  const today = (isObj(last) && typeof last.day === 'string' && last.day)
-    ? last.day : todayISO(new Date(submittedAt));
+  /* THE JOB'S OWN TERMINAL CLOCK, not this render's — and it is computed BEFORE the once-per-page
+     guard, because it is half of that guard's key (r3 finding 63; see `jobRunRecorded`). `endJob`
+     stamps `game.ledger.debriefAt = now` (the instant it closed the page) and `game.log`'s last
+     entry carries the `day` the screen handed it — so the record, the daily goal and the forecast
+     point are all filed under the day the job was PLAYED, even when the debrief is re-read after
+     midnight or rebuilt from a stored snapshot. `debrief.at` takes precedence for when
+     `state.debriefOf` starts carrying it (notes/run-fix.md Request 1). `stamp` is kept apart from
+     `submittedAt`: only the machine's own stamp may serve as an identity, never `opts.now` or
+     `Date.now()`, or two genuinely different pages committed at one fixture clock would collide. */
+  const stamp = num(debrief.at, 0) || num(save?.game?.ledger?.debriefAt, 0);
+  const submittedAt = stamp || num(opts.now, 0) || Date.now();
+  /* ── NO LEDGER A WRITE MAY BE DATED FROM LEDGER B (verify r1, ledger-invariance) ──────────────
+     `today` used to be `save.game.log[-1].day` — `endJob`'s `opts.day`, which `screens/job.js`
+     captures ONCE at mount (`const today = todayISO()`, job.js:345) and never re-reads. A job
+     mounted at 23:50 and finished at 00:1x therefore filed BOTH follow-up writes under YESTERDAY:
+     `logForecast` OVERWRITES the entry for the day it is handed (readiness.js:262-268), so the
+     job destroyed the r already logged for the previous day and logged none for the real one, and
+     `readinessDelta` then computed the next session's printed delta against that corrupted
+     baseline. A PWA left open on the board overnight did the same to the whole next evening. The
+     block was not even internally consistent: `submittedAt` said the 17th while the forecast point
+     beside it said the 16th.
+     `submittedAt` is `game.ledger.debriefAt`, the instant `endJob` closed the page — the machine's
+     own clock, the same one the flat `finish()` reads (`todayISO(new Date(submittedAt))`, l.993).
+     So the two routes now derive the day by the identical expression, which is what COMPOSED-GAME
+     proof 11 claims when it says the two produce byte-identical `forecastLog`. The job's mount-day
+     keeps its home in `game.log` — that is Ledger B, and nothing here reads it. */
+  const today = todayISO(new Date(submittedAt));
+  /* A re-render is not a second page — on EVERY branch, snapshot or no snapshot. */
+  const runKey = startedAt || stamp || submittedAt;
+  if (jobRunRecorded(save, runKey, before, stamp)) return null;
 
   /* Marked BEFORE the write, not after: `update()` notifies every store subscriber, and a
      subscriber that re-renders the debrief would re-enter this function mid-push. The `runs[]` scan
-     catches that re-entry on its own whenever the page carried a start stamp — this flag is what
-     catches it when it did not. */
+     catches that re-entry on its own; this flag is the cheaper first answer when there IS a
+     snapshot to carry it. */
   if (isObj(before)) before.runRecorded = true;
+  /* ── THE ROW SAYS HOW MUCH OF THE PAGE IT IS (verify r1, ledger-invariance) ────────────────────
+     A job drafts 3 of the board's 5 contracts, so its queue is a strict subset of the page
+     `composePage` dealt: measured over 60 corpus saves, 7-10 targets against 16-24 page items,
+     mean 45 %. The row this function writes is `kind: 'page'` with `status: 'done'`, and
+     `data/trophies.js:194` awards **Flawless Page** — *"Finish a whole Page with every item clean"*
+     — to any such row whose items are all clean, with no size floor. So seven clean answers on the
+     game route bought the trophy that twenty clean answers buy on the study route, and the trophy's
+     own sentence was false of what had been finished. The record could not say otherwise, because
+     it was measured only against itself.
+     `composed` is `composePage`'s own count for this very page (`composedCountOf`, snapshotted at
+     job start) and `drafted` is what the job dealt out of it, so `partial` is a comparison between
+     two numbers the save carries rather than a policy. A job that deals the WHOLE page is not
+     partial and still earns everything the flat route earns, which is the repair's real claim.
+     With no snapshot there is no composed count to compare against and the row cannot prove it
+     covered a whole page, so it says `partial: true` rather than claim the stronger thing.
+     `data/trophies.js` gates `flawless-page` on `r.partial !== true` (notes/repair-run.md →
+     Requests: a one-line addition to a file this lane does not own, per BUILD-POLICY §2).
+     VERIFY r2: both halves now come out of `pageSizeExtra`, which the flat `finish()` reads off the
+     SAME page — so the terminal that closes a drafted page no longer changes what the row says —
+     and `drafted` is counted in `composed`'s own unit rather than in answers. See that function. */
+  const size = pageSizeExtra(before, queue, results)
+    ?? { drafted: draftedCount(queue, results), composed: 0, partial: true };
   let out = null;
   const write = (s) => {
     out = pushRun(s, makeRunRecord({
       kind: 'page', id: null,
       seed: before?.seed ?? null, seedTag: before?.seedTag ?? null,
-      startedAt: startedAt || submittedAt, submittedAt, results,
+      /* the row is keyed on exactly what the guard above scanned for */
+      startedAt: runKey, submittedAt, results,
+      extra: size,
     }));
     checkDailyGoal(s, today);
     logForecast(s, { today });
@@ -2066,6 +2375,28 @@ export function sessionSplit(job, save = null, opts = {}) {
   };
 }
 
+/**
+ * **THE RANK WORD — ONE EXPRESSION, FOR THE WHOLE DEBRIEF (verify r1, player-feel).**
+ *
+ * `call.rankNameFor(rating)` is the bare band lookup, and after REPAIR-DECISION S3 the band no
+ * longer names the rank a save holds: `applyTarget` floors `p.rank` on the rank already held
+ * (`job/state.js:1184`), because rank gates the 95 call and `guardMult` — tools, and *"this layer
+ * never removes a tool you own"*. The ratchet landed on `screens/stats.js:263` and
+ * `screens/settings.js:649` and missed the take block, so ONE debrief printed TWO ranks for one
+ * rating: the walk line and the `Rating` fact said `Called 1` at the top while `.sum-job-rating`
+ * said `Called 2` at the bottom. It is the modal case rather than a corner — `store.fresh()` ships
+ * `player.rank = 2` and `rating.value = 5.00`, so the first job that moves the rating one hundredth
+ * below 5.00 lands a NEW student on exactly that screen, demoted at the top and held at the bottom.
+ *
+ * Both surfaces now call this, so a third can only be wrong by not calling it. The rating DELTA
+ * beside it is untouched: the rating falls as the material is mastered — that is the deflation G2
+ * wants — and only the rank word is floored. `rankFor(rating)` is the default for a save carrying
+ * no `player.rank` at all, which is the same answer the ladder would have given it.
+ */
+function heldRankName(save, rating) {
+  return jobCall.rankOf(num(save?.player?.rank, jobCall.rankFor(num(rating, 5)))).name;
+}
+
 /** The take: the bag drop, the fee line, `COPY.walk`, the rating delta, the split, the decision count. */
 function jobTakeBlock(job, ctx) {
   const wrap = h('div.sum-job-take', { role: 'group', 'aria-label': 'The take' });
@@ -2076,10 +2407,51 @@ function jobTakeBlock(job, ctx) {
   // the pre-first-call snapshot, not `endJob`'s own read — see `captureJobBefore`
   const ratingBefore = num(ctx.before?.rating, num(job.ratingBefore, ratingAfter));
   const rDelta = ratingAfter - ratingBefore;
-  const rank = jobCall.rankNameFor(ratingAfter);
+  const rank = heldRankName(ctx.save, ratingAfter);
   const shape = job.shape ?? 'JOB';
   const published = jobEcon.decisionCount(JOB_SHAPES[shape] ? shape : 'JOB');
   const perItem = num(job.perItem, 0);
+  /* ── TWO NUMERALS, ONE BASIS (verify r2, split-honesty) ───────────────────────────────────────
+     This line used to print the MEASURED count beside `${published.mandatory} mandatory /
+     ${published.full} full use`, and the two ceilings are not on the same basis as each other, let
+     alone as the count:
+       · `state.debriefOf` (`js/job/state.js:1997`) charges **one** decision per brief window —
+         `+ g.briefs.length` — whatever the student did inside it.
+       · `econ.decisionCount` (`js/job/econ.js:1334`) charges **five**: `briefs` in the mandatory
+         column plus `(DECISIONS.briefOptionsMax − 1) * briefs` in the full column.
+     The `mandatory` columns therefore agree exactly — `job-split.test.mjs` §5 asserts
+     `debrief.decisions === published.mandatory` per shape on the default path — and the `full`
+     column does not and cannot: driven through the shipped machine with EVERY brief option taken,
+     a clean full-use JOB-10 prints 25 (2.5 per item) against a published 35 (3.5), and the counter
+     reaches 35 only by adding targets to the denominator (2 swaps + 2 misses → 35 over FOURTEEN
+     graded items). Exhaustive over the reachable space — 4 shapes × swap on/off × 5 miss patterns
+     × 8 saves — the maximum `perItem` this counter can print is RUN 3.00, JOB 2.67, JOB12 2.57,
+     VAULT 2.89: the published 3.5 is unreachable on the JOB-10 the document prices, and the line
+     that is supposed to BE the mix-invariant honesty check was the one printing a measured 2.5
+     beside a ceiling its own counter cannot produce, with no word saying the two were different
+     quantities.
+     So the ceiling is printed on the counter's own basis, and G1's option-counted column is named
+     as the different quantity it is instead of being passed off as the same one. Neither numeral is
+     invented here: both come out of `data/job.js` through `econ.decisionCount`.
+
+     THE COUNTER'S OWN FULL-USE COLUMN IS `mandatory + COMMIT`, and it is exactly reached. Measured
+     through the shipped machine on a job of the shape's own target count that takes EVERY brief
+     option (scratchpad `decisions.mjs`):
+
+       RUN   default 15 · full use 16      JOB   default 24 · full use 25
+       VAULT default 17 · full use 18      JOB12 default 28 · full use 29
+
+     i.e. `published.mandatory` and `published.mandatory + DECISIONS.commitFull`, per shape, on the
+     nose. On THIS counter using every option inside a window is worth nothing, because a window is
+     one decision whether it is used or skipped — that is the whole of the basis gap, and the line
+     now says so rather than implying an eleven-decision headroom that does not exist.
+     G1's other full-column extra, `DECISIONS.backchecksFull`, is deliberately NOT added: a Backcheck
+     can only be spent after a miss, and a miss queues a Rematch — a target the shape does not have.
+     So the two spends always arrive with two extra CALL/BAG-PUSH pairs and land outside the shape's
+     own column on either basis (this is also why G1's 35 over ten graded items is unreachable in one
+     sitting: with the spends it is 39 over fourteen). A job that spends them prints MORE than the
+     full-use column, which is honest — it answered more targets than the shape deals. */
+  const fullHere = published.mandatory + JOB_DECISIONS.commitFull;
   const split = sessionSplit(job, ctx.save, { wall: ctx.wallMs });   // J8 — the split line (see below)
 
   /* The numerals the drop cascades into. Each glyph is its own span so the fall staggers by column —
@@ -2113,9 +2485,21 @@ function jobTakeBlock(job, ctx) {
       fact('Split', pct1(split.measured),
         `${mmss(job.tGame)} deciding / ${mmss(job.tAnswer)} thinking · ${pct1(split.split)} with this screen · ${
           split.idleMeasured ? `${split.idle} ms idle` : 'idle not measured'}`),
-      fact('Decisions', String(job.decisions), `${perItem.toFixed(1)} per item · ${published.mandatory} mandatory / ${published.full} full use`),
+      fact('Decisions', String(job.decisions),
+        `${perItem.toFixed(1)} per item · ${published.mandatory} mandatory / ${fullHere} full use, counting a brief window once`
+        + ` · G1’s ${published.full} counts its ${JOB_DECISIONS.briefOptionsMax} options and ${JOB_DECISIONS.backchecksFull} Backchecks`),
       fact('Posted', String(jobEcon.round(num(job.posted, 0))), `${num(job.targets, 0)} of ${num(job.of, 0)} targets`),
     ),
+    /* ── THE DEFLATION SENTENCE SITS BESIDE THE FIGURE IT IS ABOUT (verify r1, player-feel) ──────
+       *"posted falls as you master the material. That is the point."* used to be the last line of
+       the LEDGER block, 95 px above `Tomorrow's board: … worth 952 if you took them all` — a
+       take-everything backlog pool 2.3× the `Posted 419` it is actually about. Round 3 renamed the
+       backlog figure so the two no longer share a word; the verify round measured that renaming a
+       number does not fix a sentence standing next to it, because reading order is the claim. So
+       the sentence moves to the one place on the debrief where `posted` means what the sentence
+       means: directly under this block's own `Posted` fact, the drafted job's, on tonight's basis.
+       `tomorrowLine` is untouched — its exact shape is pinned by run r1 §3 and run r3 §2. */
+    h('p.sum-job-deflation.muted.fs-1', JOB_COPY.deflation()),
   );
   return wrap;
 }
@@ -2146,9 +2530,13 @@ function jobLedgerBlock(job, ctx) {
   const o = isObj(ctx.jobOpts) ? ctx.jobOpts : {};
   const guardWing = o.guard?.wing ?? job.entry?.guard ?? null;
   const decisions = Array.isArray(o.decisions) ? o.decisions : inferDecisions(job, { items: o.items ?? [], guardWing }).decisions;
+  /* NO `qHatOf` HERE ANY MORE (verify r1). The screen used to hand `jobRegret` a LIVE `qHatFor`
+     read, taken after `endJob` had cleared `inProgress` — so the cut that keeps the rating ladder
+     proper was gone and the line judged a call on a q̂ that contained its own outcome. The save and
+     the job's start stamp are handed over instead, and `sealedQHatOf` recovers the cut. */
   const regret = jobRegret(job, {
     decisions, items: o.items ?? [], guardWing,
-    qHatOf: (c) => (c?.skill ? jobCall.qHatFor(save, c.skill, { cards: cardById }) : null),
+    save, cards: cardById, startedAt: num(ctx.before?.startedAt, 0),
   });
 
   const lines = h('ul.sum-regret', { style: { listStyle: 'none', margin: '0', padding: '0', display: 'grid', gap: '4px' } });
@@ -2196,10 +2584,17 @@ function jobLedgerBlock(job, ctx) {
   const newlySealed = jobIndex.sealedOf(save).filter((t) => !wasSealed.has(t));
   for (const tag of newlySealed.slice(0, 3)) wrap.append(h('p.sum-index-sealed.mono.fs-1', JOB_COPY.sealed({ tag })));
 
+  /* S3.1(d): the line leads with the HELD rank, because after the ratchet that is the number the
+     save carries and the window can no longer reproduce it; the rating and the informative count
+     follow as the evidence behind it. verify r1 — it names the rank through the SAME expression
+     the take block uses (`heldRankName`), so the two lines on one screen cannot disagree, and a
+     save carrying no `player.rank` gets one answer rather than two. */
   const n = num(save?.player?.rating?.n, 0);
-  wrap.append(h('p.sum-job-rating.mono.muted.fs-1', JOB_COPY.ratingLine({ rating: num(job.ratingAfter, 5).toFixed(2), n, N: jobCall.WINDOW_N })));
+  const rankName = heldRankName(save, num(job.ratingAfter, 5));
+  wrap.append(h('p.sum-job-rating.mono.muted.fs-1', JOB_COPY.ratingLine({
+    rank: rankName, rating: num(job.ratingAfter, 5).toFixed(2), n, N: jobCall.WINDOW_N,
+  })));
   if (num(job.left, 0) > 0) wrap.append(h('p.sum-job-left', JOB_COPY.leftOnPage({ left: num(job.left, 0) })));
-  wrap.append(h('p.sum-job-deflation.muted.fs-1', JOB_COPY.deflation()));
   return wrap;
 }
 

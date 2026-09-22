@@ -395,6 +395,47 @@ function route() {
   bus.emit('route', current);
 }
 
+/**
+ * **A LINK TO THE ROUTE YOU ARE ALREADY ON HAS TO ACT** (verify round 3, player-feel — BLOCKER).
+ *
+ * The router above was `window.addEventListener('hashchange', route)` and nothing else. An anchor
+ * whose href resolves to the URL the browser is already at fires NO `hashchange` — so every
+ * "again" control in the app was inert, because each one is rendered by the screen it points at:
+ *
+ *   · `screens/run.js` debrief · `Another board` → `#/run/job`, rendered at `#/run/job`
+ *     (COMPOSED-GAME.md:786 publishes it: *"the debrief's primary button is `Home`, and `Another
+ *     board` is the secondary"*). Measured in chromium on `qa/fixtures/audit/midweek.json`: press
+ *     it and `phase` is still `debrief`, `.job-contracts` absent, `.job-primary` absent — while a
+ *     manual reload of the identical URL posts a board, so the ROUTE was always right.
+ *   · `Another page` → `#/run/page`, rendered at `#/run/page`, on the flat path.
+ *   · `againLabel(kind)` → `#/run/:kind/:id`, rendered at `#/run/:kind/:id`.
+ *
+ * `screens/onboard.js:624` already carried the workaround in a comment — *"`&intro=1` only makes
+ * the hash differ … so the ← anchor fires a hashchange"*. That is the hazard, handled once, here,
+ * for every screen instead of per link: the anchor is the control the student sees, so the router
+ * listens to the ACTIVATION as well as to the hash. Nothing else changes — a link to a different
+ * hash is left entirely to the browser (the `hashchange` above routes it, one history entry, back
+ * button intact), and a same-route press adds no history entry at all, which is what re-posting a
+ * board should do.
+ *
+ * Deliberately narrow, so this can never eat a click that means something else: primary button, no
+ * modifier, not already handled by a screen (`defaultPrevented`), no `target`/`download`, an
+ * in-page `#…` href only, and only when it resolves to the WHOLE current URL — query string
+ * included, so `#/run/job?new=1` still goes through the hash the ordinary way.
+ * Measured by `tests/_run-again.mjs`, asserted by `tests/run-lane-v3.test.mjs` §3.
+ */
+export function sameRouteClick(ev) {
+  if (ev.defaultPrevented || ev.button !== 0 || ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey) return;
+  const t = ev.target;
+  const a = t && typeof t.closest === 'function' ? t.closest('a[href]') : null;
+  if (!a || a.target || a.hasAttribute('download')) return;
+  const href = a.getAttribute('href');
+  if (!href || href[0] !== '#' || href === '#') return;          // in-app hash links only
+  if (a.href !== location.href) return;                          // a different route: hashchange has it
+  ev.preventDefault();
+  route();
+}
+
 /* ---------------- boot ---------------- */
 function boot() {
   for (const p of PATTERNS) routes[p] = placeholder(p);
@@ -411,6 +452,7 @@ function boot() {
   $('theme-toggle')?.addEventListener('click', toggleTheme);
   const ver = document.querySelector('meta[name="build"]'); if (ver && APP_VERSION !== 'dev') ver.setAttribute('content', APP_VERSION);
   window.addEventListener('hashchange', route);
+  document.addEventListener('click', sameRouteClick);                  // verify r3: see `sameRouteClick`
   route();
   // Wave-1 integrator wiring (notes/T03.md → Requests): warm the grader registry once at boot so the
   // lazily imported T04/T05 graders have settled before the first submit. Deliberately NOT a static

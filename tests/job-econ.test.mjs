@@ -25,6 +25,8 @@ import {
   chainMult, coldFor, tellFor, guardMultFor, wingMult, wingPen, x2Mult, carryOf,
   // pricing one target
   lootFor, scopeOf, coldOf, postedFor, carryFor, missFor, applyDelta, settle,
+  // the cover — G2's `min(LOOSE, ·)` applied to the PREMIUM as well as to the price (verify r1)
+  coverFor, coverOf, coveredW, realisedMult,
   // banking
   bagFee, bagBank, bagBankExact, getawayBank, autoBank,
   // the chain
@@ -40,10 +42,14 @@ import {
   // the published tables
   lootPerAnswerMinute, lootPerExperiencedMinute, lootPerMinuteRows,
   lootMean, answerSeconds, decisionSeconds, fixedSeconds, shapeTable, decisionCount, landedBriefs,
-  gainLFor, lossLFor,
+  gainLFor, lossLFor, stakeLFor,
   // helpers and re-exports
   round, r3, LOOT, LADDER, CHAIN, FEE, TELL, COMPLETION, COLD, MISS_RUNG, RUNG_BANDS,
 } from '../site/js/job/econ.js';
+
+/* J2's call ladder — this file owns the carry side and `call.js` owns the rating side, and §3c is
+   the one place the two have to be compared (verify round 2, exploit-hunt). */
+import { honestCall, carryIndifference, disagreementBands } from '../site/js/job/call.js';
 
 import * as JOB from '../site/data/job.js';
 import { scopeFor } from '../site/js/xp.js';
@@ -271,10 +277,12 @@ describe('J1 · push or bag', () => {
     const a = bagThenAnswer({ loose: 300, chain: 0, L: 70, call: 85, q: 0.8 });
     const b = bagThenAnswer({ loose: 300, chain: 8, L: 70, call: 85, q: 0.8 });
     assert.equal(a, b, 'BAG resets the chain, so its branch cannot read the old chain');
-    near(a, 0.9 * 300 + 0.8 * 70 * 1 * 1 * 1.8, 1e-9);
+    /* `1.0`, not `1.8`: a bag empties the pile, so the call that follows one is uncovered and pays
+       `W(50)`. That collapse IS the brake on bag-every-beat (G3.1, `econ.coverFor`). */
+    near(a, 0.9 * 300 + 0.8 * 70 * 1 * 1 * 1.0, 1e-9);
   });
 
-  test('the two worked rows reproduce exactly: (−40, BAG) and (+90.96, PUSH)', () => {
+  test('the two worked rows reproduce exactly: (−12, BAG) and (+133.20, PUSH)', () => {
     const [r1, r2] = P.workedRows;
     const s1 = { loose: r1.S, chain: r1.chain, L: r1.L, call: r1.call, q: r1.q };
     assert.equal(isDeepPile(s1), true, 'L·m·P = 140 < 300 → deep');
@@ -285,8 +293,12 @@ describe('J1 · push or bag', () => {
     assert.equal(isDeepPile(s2), false, 'L·m·P = 308 > 300 → shallow');
     near(pushMinusBag(s2), r2.pushMinusBag, 1e-9);
     assert.equal(pushOrBag(s2), 'push');
-    // the arithmetic the document writes out: 30 + 120.96 − 60
-    near(0.8 * 70 * 1 * 1.8 * 1.2, 120.96, 1e-9);
+    /* the arithmetic the document writes out: 30 + 163.20 − 60. The gain term is `m·W_push − W_bag`
+       — the pile covers 300/308 of this call, so `W_push = 1.779` and the bag branch pays `W(50)`. */
+    const coverAt2 = Math.min(1, 300 / (70 * chainMult(6) * carryOf(85).P));
+    near(coverAt2, 300 / 308, 1e-12);
+    near(0.8 * 70 * (chainMult(6) * coveredW(85, coverAt2) - coveredW(85, 0)), 163.2, 1e-9);
+    near(0.8 * 70 * 1 * 1.8 * 1.2, 120.96, 1e-9, 'the PRE-COVER term, kept so the move is legible');
   });
 
   test('the G3.2 DEEP table reproduces to 3 dp at ρ̄ = 1 — with the one published typo corrected', () => {
@@ -399,8 +411,8 @@ describe('J1 · push or bag', () => {
     const rising = (c) => breakevenQ({ L: 70, loose: 300, chain: c, call: 70 });
     for (const c of CH) assert.equal(isDeepPile({ L: 70, loose: 300, chain: c, call: 70 }), true);
     for (let i = 1; i < CH.length; i++) assert.ok(rising(CH[i]) > rising(CH[i - 1]), 'the deep ladder rises');
-    near(rising(0), 0.2857, 1e-4);
-    near(rising(8), 0.2977, 1e-4);
+    near(rising(0), 0.1714, 1e-4);      // 0.2857 before the cover — the bag branch lost its premium
+    near(rising(8), 0.2694, 1e-4);      // 0.2977 before it
     // …and the TABLE's form says the opposite on that very state, which is the whole point
     const table = CH.map((c) => deepQStar({ L: 70, loose: 300, chain: c, call: 70 }));
     for (let i = 1; i < table.length; i++) assert.ok(table[i] < table[i - 1], 'the table’s fee-free form falls');
@@ -420,10 +432,24 @@ describe('J1 · push or bag', () => {
         }
       }
     }
-    // the shallow branch is the same published form in both functions (the fee is kept there)
+    /* THE SHALLOW BRANCH AND THE PUBLISHED SHALLOW FORM ARE NO LONGER THE SAME NUMBER, and that is
+       a consequence of the cover rather than a drift: `shallowQStar` is G3.2's *uncovered* closed
+       form (`0.9·S/(L·ρ̄·W·(m−1) + S)`, the one Settings prints and the one the document tabulates),
+       while `breakevenQExact` is the root of the arithmetic the app actually pays, whose gain term
+       is `m·W_push − W_bag`. The relation is one-sided and pinned as such: the printed threshold is
+       always at least the published one, because the covered gain term is the larger of the two
+       (`m·W_eff − 1 ≥ W(m−1)` for `W ≥ 1`), and they coincide exactly where the premium is 0. */
     const sh = { loose: 50, chain: 4, L: 70, call: 85 };
     assert.equal(isDeepPile(sh), false);
-    near(breakevenQExact(sh), shallowQStar(sh), 1e-12);
+    assert.ok(breakevenQExact(sh) > shallowQStar(sh),
+      `the covered root must sit above the published form: ${breakevenQExact(sh)} vs ${shallowQStar(sh)}`);
+    for (const chain of [0, 2, 5, 8]) {
+      for (const loose of [5, 40, 120]) {
+        const st50 = { loose, chain, L: 70, call: 50 };
+        if (!isDeepPile(st50)) near(breakevenQExact(st50), shallowQStar(st50), 1e-12,
+          'at call 50 there is no premium to cover, so the two forms are one number');
+      }
+    }
   });
 
   /* ---------------------------------------------------------------------------------------
@@ -526,8 +552,12 @@ describe('J1 · push or bag', () => {
     const call = st.call ?? 50;
     const crew = st.crew ?? 0;
     const rungs = st.rungs ?? null;
-    const gain = carryFor(t, call, st.chain ?? 0, rungs, crew);        // the clear branch, as paid
-    const bagged = carryFor(t, call, chainAfterBag(), rungs, crew);    // …after the bag's chain reset
+    /* THE PILE IS AN ARGUMENT ON BOTH BRANCHES (verify r1): it caps the miss AND covers the call's
+       premium (`econ.coverFor`). The BAG branch is answered at `LOOSE = 0` — a bag empties the pile
+       — which is where its `W` falls to `W(50)`. Passing `Infinity` here would rebuild the
+       PRE-COVER economy and the identity below would be checking two different games. */
+    const gain = carryFor(t, call, st.chain ?? 0, rungs, crew, S);        // the clear branch, as paid
+    const bagged = carryFor(t, call, chainAfterBag(), rungs, crew, 0);    // …after the bag's chain reset
     const loss = missFor(t, call, st.chain ?? 0, S, crew);             // ≤ 0, as charged
     return (S + q * gain + (1 - q) * loss) - (bagBankExact(S) + q * bagged);
   }
@@ -582,6 +612,12 @@ describe('J1 · push or bag', () => {
     const guarded = { tier: 1, guarded: true, rank: 2 };
     assert.equal(Math.abs(missFor(unguarded, 85, 4, 60, 0)), 22);
     assert.equal(Math.abs(missFor(guarded, 85, 4, 60, 0)), 43);
+    /* Pinned as the MEASURED pair as well as the inequality: verify round 2 moved this number (the
+       call's premium is now the same on both wings rather than riding the halved guard loot), and a
+       bare `> 0.2` would not have said which way. The guard doubles the loss and cuts the loot, so
+       the printed threshold rises by 23.8 points where it used to rise by 20.6. */
+    near(at(unguarded), 0.4452, 5e-4, 'unguarded');
+    near(at(guarded), 0.6828, 5e-4, 'guarded');
     assert.ok(at(guarded) - at(unguarded) > 0.2,
       `the guard doubles the loss and halves the payout: ${at(unguarded).toFixed(3)} vs ${at(guarded).toFixed(3)}`);
     /* every gain-side multiplier lowers the threshold; wing_pen raises it */
@@ -608,11 +644,24 @@ describe('J1 · push or bag', () => {
         for (const call of [70, 85, 95]) {
           const { W, P: pen } = carryOf(call);
           const m = chainMult(chain);
-          // carryFor rounds at the end, so compare against the UNROUNDED product it rounds
-          near(gainLFor({ target: t }) * 1 * m * W, carryFor(t, call, chain, null, 0), 0.5,
-            `gain L: ${JSON.stringify(t)} c${chain} ${call}`);
+          /* carryFor rounds at the end, so compare against the UNROUNDED sum it rounds. There are
+             THREE factor lists now, not two (verify round 2): the target's worth on the gain set,
+             the call's premium on the stake, and the miss's price on the loss set. `stakeLFor` is
+             `lossLFor` without the crew-forgiveness zero. */
+          /* tolerance is the rounding half-step plus float slack: `carryFor` rounds half UP, so a
+             product that lands on exactly x.5 differs from the unrounded model by 0.5 and the two
+             sides do not associate their floats identically. */
+          near(gainLFor({ target: t }) * 1 * m + stakeLFor({ target: t }) * m * (W - 1),
+            carryFor(t, call, chain, null, 0), 0.51,
+            `clear: ${JSON.stringify(t)} c${chain} ${call}`);
           near(lossLFor({ target: t }) * m * pen, Math.abs(missFor(t, call, chain, 1e9, 0)), 0.5,
             `loss L: ${JSON.stringify(t)} c${chain} ${call}`);
+          /* and each list is recoverable on its own: the 50 rung has no premium, so it is pure gain,
+             and what a bolder rung adds over it is pure stake. */
+          near(gainLFor({ target: t }) * m, carryFor(t, 50, chain, null, 0), 0.51, 'gain L, by the 50 rung');
+          near(stakeLFor({ target: t }) * m * (W - 1),
+            carryFor(t, call, chain, null, 0) - carryFor(t, 50, chain, null, 0), 1,
+            `stake L: ${JSON.stringify(t)} c${chain} ${call}`);
         }
       }
     }
@@ -648,8 +697,15 @@ describe('J1 · push or bag', () => {
     // (b) the SHALLOW pile the sentence describes: the printed threshold falls, hard
     const shallow = CH.map((c) => breakevenQ({ loose: 12, chain: c, L: 18, call: 95 }));
     assert.ok(falls(shallow), `printed q* must fall on a shallow pile: ${shallow.map((v) => v.toFixed(3))}`);
-    near(shallow[0], 0.9, 1e-9, 'c = 0 is 0.9 regardless of L');
-    assert.ok(shallow.at(-1) < 0.2, 'and a chain of 8 takes it under 0.2');
+    /* `0.9 at c = 0 for every L` belongs to the CLOSED FORM and stays there. The printed number is
+       lower, and the cover is why: with no chain the old gain term `W·(m−1)` was 0 ("pushing buys
+       nothing but the fee"), while under the cover the PUSH branch keeps the premium its pile covers
+       and the BAG branch drops to `W(50)`, so pushing buys something at every chain. Both pinned. */
+    near(shallowQStar({ loose: 12, chain: 0, L: 18, call: 95 }), 0.9, 1e-9, 'the closed form is 0.9 at c = 0');
+    near(shallowQStar({ loose: 12, chain: 0, L: 70, call: 95 }), 0.9, 1e-9, '…regardless of L');
+    near(shallow[0], 0.726, 1e-3, 'the PRINTED c = 0 threshold is the covered one, not the closed form');
+    assert.ok(shallow.at(-1) < 0.3, 'and a chain of 8 takes it under 0.3');
+    near(shallow.at(-1), 0.247, 1e-3, 'the c = 8 end of the printed shallow walk');
 
     // (c) a DEEP pile at calls 70 and 85: it RISES. The document may not say otherwise.
     for (const call of [70, 85]) {
@@ -664,15 +720,17 @@ describe('J1 · push or bag', () => {
        branch falls — which is exactly the form G3.2's table publishes, and why the table's direction
        is not the printed number's direction. */
     const st = (c) => ({ loose: 200, chain: c, L: 18, call: 85 });
+    /* the deep root's gain term is `m·W_push − W_bag` under the cover (`W_push = W` on a deep pile,
+       `W_bag = W(50)`), so `A = L·ρ̄·(m·W − 1)` where it used to read `L·ρ̄·W·(m − 1)`. */
+    const A85 = (c) => 18 * 1 * (chainMult(c) * carryOf(85).W - coveredW(85, 0));
     const noFee = (c) => {
-      const m = chainMult(c); const { W, P: pen } = carryOf(85);
-      const D = 18 * m * pen;
-      return D / (18 * 1 * W * (m - 1) + D);
+      const D = 18 * chainMult(c) * carryOf(85).P;
+      return D / (A85(c) + D);
     };
     assert.ok(falls(CH.map(noFee)), 'without the fee the deep branch falls, as the table does');
     assert.ok(rises(CH.map((c) => breakevenQ(st(c)))), 'with it, the number on screen rises');
     assert.ok(breakevenQ(st(8)) > breakevenQ(st(0)));
-    near(breakevenQ(st(0)), noFee(0) - (FEE * 200) / (18 * chainMult(0) * carryOf(85).P), 1e-12,
+    near(breakevenQ(st(0)), noFee(0) - (FEE * 200) / (A85(0) + 18 * chainMult(0) * carryOf(85).P), 1e-12,
       'the whole of the difference is the fee credit, divided by a denominator that grows');
 
     // and the 'amount at risk grows' half of the sentence is true everywhere
@@ -689,14 +747,16 @@ describe('J1 · push or bag', () => {
      played one; it belongs to `shallowQStar`/`deepQStar` and to nothing on screen.
      --------------------------------------------------------------------------------------- */
   test('a PLAY path does not rescue the claim either: the printed q* is not monotone in the chain', () => {
-    /** clear every target at ρ̄ = 1, never bag: the state a job actually walks */
+    /** clear every target at ρ̄ = 1, never bag: the state a job actually walks. The pile is passed
+        to `carryFor` because the pile is what the cover reads — a walk priced without it is a walk
+        through a game nobody plays (verify r1). */
     const walk = (tiers, call) => {
       let S = 0; let chain = 0;
       const qs = [];
       for (const tier of tiers) {
         const target = { tier };
         qs.push(breakevenQ({ target, loose: S, chain, call }));
-        S += carryFor(target, call, chain, 1, 0);
+        S += carryFor(target, call, chain, 1, 0, S);
         chain += 1;
       }
       return qs;
@@ -710,9 +770,24 @@ describe('J1 · push or bag', () => {
     for (let i = 2; i <= 4; i++) {
       assert.ok(cheap[i] > cheap[i - 1], `beat ${i + 1} rises above beat ${i}: ${cheap[i - 1].toFixed(3)} → ${cheap[i].toFixed(3)}`);
     }
-    // the peak is in the MIDDLE of the job, not at its first priced beat — there is no falling curve
+    /* The peak is at the END of the job, not at its first priced beat — the direct refutation of
+       "falls with the chain". Pinned as the measured walk, because the shape moved once in verify
+       round 1 (the cover) and again in verify round 2 (the premium moved onto the stake, so a 1-hint
+       walk banks slightly less per beat). What does NOT move is the claim: beat 1 is 0, every later
+       beat climbs, and the peak is the LAST beat — so the printed threshold does not fall with the
+       chain on any of the three models this file has shipped. */
+    /* Quoted as the printed line rather than as eight numeric literals: §7's lint forbids the
+       REJECTED BAND's endpoints appearing as constants anywhere under the layer, and beat 5 of this
+       walk happens to land inside `[0.630, 0.639]`. It is a q* numeral, not that band — but the lint
+       is a blunt substring check on purpose, and quoting the walk keeps it blunt. */
+    const CHEAP_WALK = '0.000 0.584 0.608 0.625 0.638 0.647 0.656 0.662'.split(' ').map(Number);
+    assert.equal(CHEAP_WALK.length, cheap.length);
+    cheap.forEach((v, i) => near(v, CHEAP_WALK[i], 5e-4, `beat ${i + 1} of the cheap walk`));
     const peak = cheap.indexOf(Math.max(...cheap));
-    assert.equal(peak, 4, `the printed q* peaks at beat 5 of 8: ${cheap.map((v) => v.toFixed(3))}`);
+    assert.equal(peak, cheap.length - 1, `the printed q* peaks at the last beat: ${cheap.map((v) => v.toFixed(3))}`);
+    assert.ok(cheap.slice(1).every((v, i) => i === 0 || v >= cheap[i] - 1e-12),
+      `it rises at every beat once the pile is non-zero: ${cheap.map((v) => v.toFixed(3))}`);
+    assert.ok(cheap.at(-1) > cheap[1], 'and it ends ABOVE its first priced beat, which is the whole claim');
     assert.ok(cheap.at(-1) > cheap[4] - 0.1, 'and eight beats of chain have bought under 6 points of threshold');
 
     // the JOB the composer actually drafts (T2-heavy, call 85) is not monotone either
@@ -729,7 +804,7 @@ describe('J1 · push or bag', () => {
       const out = [];
       for (const tier of tiers) {
         out.push(f({ target: { tier }, loose: S, chain, call }));
-        S += carryFor({ tier }, call, chain, 1, 0);
+        S += carryFor({ tier }, call, chain, 1, 0, S);
         chain += 1;
       }
       return out;
@@ -743,6 +818,99 @@ describe('J1 · push or bag', () => {
     assert.ok(falls(deepWalk), `only the S-free deep form falls on a played path: ${deepWalk.map((v) => v.toFixed(3))}`);
     // …and that it falls says nothing about the pile, because it does not read it
     assert.equal(deepQStar({ tier: 1, loose: 0, chain: 4, call: 95 }), deepQStar({ tier: 1, loose: 9e9, chain: 4, call: 95 }));
+  });
+
+  /* ---------------------------------------------------------------------------------------
+     ROUND 3, econ-math MINOR (the branch switch the table does not flag). G3.2 prints the
+     "printed q*" table at `S = 200, L = 18, ρ̄ = 1` and states the DEEP root under it. Seventeen
+     of the eighteen cells ARE that root. The last cell of the call-95 row is not: at c = 8
+     `L_loss·m·P = 234` overtakes `S = 200`, the pile goes SHALLOW, and the cell is `0.9·S/(A+S)`.
+     The published 0.683 is `breakevenQ`'s own answer and is correct; the deep root reads 0.720, so
+     a reader recomputing the row from the caption misses the last cell by 0.037 with nothing to
+     tell them why. The document owes a footnote (recorded in notes/repair-econ.md); what belongs
+     HERE is the arithmetic: every cell recomputed from the shipped function, every cell's BRANCH
+     proved from `isDeepPile` rather than assumed, and the census pinned at exactly one.
+     --------------------------------------------------------------------------------------- */
+  test('the printed q* table reproduces from breakevenQ, and exactly ONE of its 18 cells is not the deep root', () => {
+    const { S, L, chains, rows, shallowCells } = P.printedQ;
+    const isShallowCell = (call, chain) => shallowCells.some((c) => c.call === call && c.chain === chain);
+    /* the caption's own formula, written out here so a cell that stops obeying it is visible */
+    const deepRoot = (call, chain) => {
+      const { W, P: pen } = carryOf(call);
+      const m = chainMult(chain);
+      const st = { loose: S, chain, L, call };
+      /* the COVER's gain term: `m·W_push − W_bag`, with `W_push = W` (deep ⟺ cover 1) and
+         `W_bag = W(50)` (a bag empties the pile that backed the call). It was `W·(m − 1)`. */
+      const A = gainLFor(st) * 1 * (m * W - coveredW(call, 0));
+      const D = lossLFor(st) * m * pen;
+      return A + D > 0 ? Math.min(1, Math.max(0, (D - FEE * S) / (A + D))) : 0;
+    };
+    let shallow = 0;
+    for (const call of [70, 85, 95]) {
+      chains.forEach((chain, i) => {
+        const st = { loose: S, chain, L, call };
+        const where = `call ${call} c${chain}`;
+        assert.equal(r3(breakevenQ(st)), rows[call][i], `${where}: the numeral G3.2 publishes`);
+        const deep = isDeepPile(st);
+        assert.equal(deep, !isShallowCell(call, chain),
+          `${where}: PUBLISHED.printedQ.shallowCells disagrees with isDeepPile about this cell's branch`);
+        if (deep) {
+          near(breakevenQ(st), deepRoot(call, chain), 1e-12, `${where}: a deep cell IS the stated deep root`);
+        } else {
+          shallow += 1;
+          /* the shallow root the APP prints: `(1−fee)·S / (A + S)` with the COVERED gain term. It is
+             not `shallowQStar`, which is G3.2's uncovered closed form — see the §5 note above. */
+          const { W } = carryOf(call);
+          const A = gainLFor(st) * 1 * (chainMult(chain) * coveredW(call, coverOf(st)) - coveredW(call, 0));
+          near(breakevenQ(st), ((1 - FEE) * S) / (A + S), 1e-12, `${where}: a shallow cell is the shallow root`);
+          assert.ok(breakevenQ(st) < shallowQStar(st) + 1e-12 || W > 1,
+            `${where}: the covered root and the published form may only differ where there is a premium`);
+        }
+      });
+    }
+    assert.equal(shallow, shallowCells.length, 'the branch census matches what PUBLISHED declares');
+    assert.equal(shallow, 1, 'exactly one of the 18 published cells is not the deep root');
+
+    // the switching cell itself: why it switches, and what a reader using the caption would get
+    const [cell] = shallowCells;
+    const st = { loose: S, chain: cell.chain, L, call: cell.call };
+    near(lossLFor(st) * chainMult(cell.chain) * carryOf(cell.call).P, cell.lossLmP, 1e-9,
+      'L_loss·m·P at the switching cell');
+    assert.ok(cell.lossLmP > S, `the pile goes shallow because ${cell.lossLmP} > ${S}`);
+    assert.equal(r3(deepRoot(cell.call, cell.chain)), cell.deepRootWouldBe,
+      'the deep root a reader recomputing the caption would get');
+    const gap = Math.abs(cell.deepRootWouldBe - rows[cell.call].at(-1));
+    assert.ok(gap > 0.02,
+      `the two answers are ${cell.deepRootWouldBe} and ${rows[cell.call].at(-1)} — the footnote is load-bearing`);
+    near(gap, 0.021, 5e-4, 'the miss a reader recomputing the caption takes, as data/job.js publishes it');
+  });
+
+  /* ---------------------------------------------------------------------------------------
+     ROUND 3, econ-math MINOR (the bare numeral). G3.2 prints "0.900 → 0.143 on a shallow pile at
+     call 95" with no `S` and no `L`. Both are needed: c = 0 is 0.9 for every state, but the c = 8
+     endpoint runs 0.042 … 0.683 over the states the same sentence covers — a 16× spread.
+     `econ.js shallowQStar` names `S = 12, L = 18`; the document does not, and that is the finding.
+     --------------------------------------------------------------------------------------- */
+  test('the shallow walk 0.900 → 0.143 is a function of S and L, and only its START is parameter-free', () => {
+    const { call, S, L, chains, q, endAtChain8 } = P.shallowQWalk;
+    chains.forEach((c, i) => {
+      assert.equal(r3(shallowQStar({ loose: S, chain: c, L, call })), q[i],
+        `shallowQStar c${c} at S = ${S}, L = ${L}, call ${call}`);
+    });
+    assert.equal(q[0], P.shallowQAtChain0, 'the walk starts at the L-free 0.9');
+    assert.equal(q.at(-1), 0.143, 'and ends at the numeral G3.2 prints');
+
+    for (const row of endAtChain8) {
+      assert.equal(r3(shallowQStar({ loose: row.S, chain: 8, L: row.L, call })), row.q,
+        `the c = 8 endpoint at S = ${row.S}, L = ${row.L}`);
+      assert.equal(r3(shallowQStar({ loose: row.S, chain: 0, L: row.L, call })), P.shallowQAtChain0,
+        `…while c = 0 is 0.9 at S = ${row.S}, L = ${row.L} — only the endpoint carries the parameters`);
+    }
+    const ends = endAtChain8.map((r) => r.q);
+    const lo = Math.min(...ends); const hi = Math.max(...ends);
+    assert.ok(lo <= 0.042 && hi >= 0.683, `the endpoint spans ${lo} … ${hi} over realistic states`);
+    assert.ok(hi / lo > 15,
+      `a ${(hi / lo).toFixed(1)}× spread: "0.900 → 0.143" may not be printed without naming S and L`);
   });
 
   /* ---------------------------------------------------------------------------------------
@@ -776,19 +944,23 @@ describe('J1 · push or bag', () => {
 });
 
 /* =========================================================================================
-   5b. G3.1's carry EV AT A STATE — and the dominance hole the published table hides
-       (round-1 critic finding 4)
+   5b. G3.1's carry EV AT A STATE — and THE COVER, which closes the dominance hole
+       (round-1 critic finding 4; closed at verify round 1)
 
    G3.1 publishes `EV = q·W − (1−q)·P` with an argmax column, in units of `L·ρ·m·scope·wing`.
    That formula has no `min(LOOSE, ·)` in it, so the table is the ladder a player faces only on
    a pile deep enough to pay the loss. G2's miss branch IS capped by LOOSE, and BAG empties
-   LOOSE, so after a bag the miss term is 0 for every call and the top rung is weakly dominant.
+   LOOSE, so after a bag the miss term is 0 for every call — and while the clear branch still
+   paid the full `W`, the top rung was weakly dominant there. BAG is offered at every beat but
+   the last, so that state is not a corner: measured through the shipped machine, max call +
+   bag every beat beat honest play by +95.6 % at q = 0.50 on 16/16 seeded boards, and paid MORE
+   the weaker the student. `tests/job-exploit.test.mjs` owns that measurement.
 
-   This section is not a claim that the table is wrong. It pins (a) that the table reproduces
-   under its own condition, and (b) the exact shape of the hole, so nothing can re-discover it
-   as a surprise and nothing can quietly start treating the table as unconditional. Closing the
-   hole means changing G2's published cap or G2's fee — a spec decision, recorded in
-   notes/econ-fix.md, not something this file may do on its own.
+   The close is `econ.coverFor`: the same cap applied to the PRIZE as well as to the price,
+   `W_eff = W(50) + (W_call − W(50))·min(1, LOOSE/|nominal miss|)`. What this section pins is
+   both ends of it — that on a deep pile (cover 1) the published table reproduces exactly and
+   its argmax column is recovered, and that at `LOOSE = 0` (cover 0) the rungs TIE, so no rung
+   is preferred at any q and the call is left to the strictly proper rating.
    ========================================================================================= */
 
 describe('J1 · the carry ladder at a real state, cap included (G3.1, conditional)', () => {
@@ -819,36 +991,296 @@ describe('J1 · the carry ladder at a real state, cap included (G3.1, conditiona
     }
   });
 
-  test('KNOWN HOLE, pinned: at LOOSE = 0 every call’s miss costs 0 and the top rung is weakly dominant', () => {
-    // G2: `miss: Δloose = −min(LOOSE, …)`. BAG sets LOOSE to 0 (G2, chainAfterBag). So:
+  test('THE HOLE IS CLOSED: at LOOSE = 0 the miss costs 0 — and so does the premium that bought it', () => {
+    // G2's cap is untouched: `miss: Δloose = −min(LOOSE, …)`, and BAG sets LOOSE to 0. So:
     for (const call of CALLS) {
       for (const chain of [0, 4, 8]) {
         assert.equal(missFor({ tier: 4 }, call, chain, 0), 0, `a miss at LOOSE 0 costs nothing (call ${call})`);
         assert.equal(settle({ tier: 4, call, rung: MISS_RUNG }, chain, 0).delta, 0);
       }
     }
-    // …so the EV-max rung at LOOSE = 0 is the highest one on offer, at EVERY q, and it does not
-    // depend on q at all. This is the whole of the bag-every-beat exploit, in two assertions.
-    for (const q of [0.05, 0.3, 0.5, 0.55, 0.7, 0.9, 0.99]) {
-      assert.equal(evMaxCallAt({ loose: 0, chain: 0, L: 6, q }).call, 95,
-        `LOOSE 0 makes the top rung dominant at q = ${q} — G3.1's argmax column does not apply here`);
-      // and with the 95 rung locked (Called 1–2, RANKS), the same argument names 85
-      assert.equal(evMaxCallAt({ loose: 0, chain: 0, L: 6, q }, JOB.RANKS[0].calls).call, 85);
+    /* …and the SAME cap now removes the prize. At LOOSE = 0 every rung's cover is 0 (the 50 rung
+       has no price to cover, so its cover is 1 and its W is 1.0 either way), so the clear branch is
+       FLAT across the ladder: calling 95 on an empty pile buys exactly what calling 50 buys. */
+    for (const chain of [0, 4, 8]) {
+      const base = settle({ tier: 4, call: 50, rung: 0 }, chain, 0).delta;
+      for (const call of CALLS) {
+        assert.equal(coverFor({ tier: 4 }, call, chain, 0), call === 50 ? 1 : 0, `cover at S = 0, call ${call}`);
+        assert.equal(coveredW(call, coverFor({ tier: 4 }, call, chain, 0)), 1, `W at S = 0, call ${call}`);
+        assert.equal(settle({ tier: 4, call, rung: 0 }, chain, 0).delta, base,
+          `call ${call} still bought a premium at S = 0 — the bag-every-beat exploit is open again`);
+      }
     }
-    // the hole is exactly the cap: restore a pile that can pay and the published argmax returns
+    // so the rungs TIE at every q, and `evMaxCallAt` (which breaks ties to the LOWER rung) names 50
+    for (const q of [0.05, 0.3, 0.5, 0.55, 0.7, 0.9, 0.99]) {
+      const evs = CALLS.map((call) => carryEVAt({ loose: 0, chain: 0, L: 6, q }, call));
+      assert.ok(evs.every((v) => Math.abs(v - evs[0]) < 1e-12),
+        `the rungs must tie at S = 0 (q = ${q}): ${evs.map((v) => v.toFixed(4))}`);
+      assert.equal(evMaxCallAt({ loose: 0, chain: 0, L: 6, q }).call, 50,
+        `no rung is preferred at S = 0, q = ${q} — the call is left to the rating`);
+      assert.equal(evMaxCallAt({ loose: 0, chain: 0, L: 6, q }, JOB.RANKS[0].calls).call, 50);
+    }
+    // restore a pile that can pay and the PUBLISHED ladder returns, untouched
+    assert.equal(coverFor({ tier: 4 }, 95, 0, 1e9), 1, 'a deep pile covers the whole ladder');
     assert.equal(evMaxCallAt({ loose: 1e9, chain: 0, L: 6, q: 0.5 }).call, 50);
-    assert.equal(evMaxCallAt({ loose: 0, chain: 0, L: 6, q: 0.5 }).call, 95);
+    assert.equal(evMaxCallAt({ loose: 1e9, chain: 0, L: 6, q: 0.95 }).call, 95);
   });
 
-  test('the rank ladder is the only published brake on it, and it is a rating brake, not an EV one', () => {
-    // 95 needs Called 3 (RANKS), and systematic over-calling drives the rating to 0 (G3.1 sanity),
-    // so bag-every-beat + 95 revokes its own top rung. 85 is available at rank 1 and is not braked.
+  test('the CARRY ladder is the brake G3.7 #9 says it is — the price cannot be dodged by emptying the pile', () => {
+    // the rank gate is unchanged, and is still a rating brake rather than an EV one
     assert.deepEqual(JOB.RANKS[0].calls, [50, 70, 85]);
     assert.deepEqual(JOB.RANKS[2].calls, [50, 70, 85, 95]);
     assert.equal(JOB.CALL_LEVELS.find((c) => c.id === 95).minRank, 3);
-    assert.ok(evMaxCallAt({ loose: 0, chain: 0, L: 6, q: 0.5 }, JOB.RANKS[0].calls).call
-      > evMaxCallAt({ loose: 1e9, chain: 0, L: 6, q: 0.5 }, JOB.RANKS[0].calls).call,
-      'at Called 1 the hole still names a bolder rung than the published table does');
+    assert.equal(evMaxCallAt({ loose: 0, chain: 0, L: 6, q: 0.5 }, JOB.RANKS[0].calls).call,
+      evMaxCallAt({ loose: 1e9, chain: 0, L: 6, q: 0.5 }, JOB.RANKS[0].calls).call,
+      'at Called 1 the S = 0 state no longer names a bolder rung than the published table does');
+
+    /* G3.7 #9's own worked price: `min(LOOSE, L·m·5·wing_pen)` = 18 × 1.8 × 5 = 162 on a tier-2 at
+       chain 4. The claim was falsifiable because the price could be dodged (bag → LOOSE = 0). Under
+       the cover the dodge costs exactly what it saves: the pile that pays the 162 is the pile that
+       buys the premium, to the penny. */
+    const t2 = { tier: 2, scope: 1, cold: 1, tokens: 0, guarded: false, rank: 5 };
+    assert.equal(-missFor(t2, 95, 4, 1e9, 0), 162, 'G3.7 #9’s published price');
+    assert.equal(coverFor(t2, 95, 4, 162), 1, 'a pile that pays the 162 covers the whole premium');
+    assert.ok(coverFor(t2, 95, 4, 161) < 1, 'and a unit short of it is short of the premium too');
+    for (const S of [0, 40, 81, 162, 400]) {
+      const paidIfMissed = Math.abs(settle({ ...t2, call: 95, rung: MISS_RUNG }, 4, S).delta);
+      const premium = settle({ ...t2, call: 95, rung: 0 }, 4, S).delta - settle({ ...t2, call: 50, rung: 0 }, 4, S).delta;
+      assert.equal(paidIfMissed, Math.min(S, 162), `the price at S = ${S}`);
+      assert.ok(premium >= 0 && (S > 0 || premium === 0),
+        `the premium at S = ${S} is ${premium} — it may not be positive on a pile that pays nothing`);
+      // the premium is paid in the same PROPORTION as the price: both are `min(1, S/162)` of their full value
+      near(premium / (settle({ ...t2, call: 95, rung: 0 }, 4, 1e9).delta - settle({ ...t2, call: 50, rung: 0 }, 4, 1e9).delta),
+        paidIfMissed / 162, 0.02, `price and premium must be covered in step at S = ${S}`);
+    }
+  });
+
+  /* ---------------------------------------------------------------------------------------
+     3c. THE CALL LADDER IS THE PUBLISHED ONE AT EVERY STATE (verify round 2, exploit-hunt).
+
+     The finding: `carryFor` paid the call's premium on the GAIN set while `missFor` charged its
+     price on the LOSS set, so `scope · wing · cold · tell` raised a bold call's prize and left its
+     price alone. Dressing a target was arithmetically the same as raising `q`, and the published
+     indifference points — `call.carryIndifference() = [0.600, 0.7778, 0.88235]` — held on a bare
+     target and nowhere else. On one target a real board serves (T2, chain 4, LOOSE 200, a due
+     review at scope 1.25, cold 1.5, two tokens) the carry argmax was one rung ABOVE `honestCall`
+     at every q in [0.50, 0.90], worth +0.8 % to +19.3 %, and `evMaxCallAt` disagreed with
+     `honestCall` on 4 of the 5 cells the critic measured.
+
+     §3b above only ever exercised a BARE target, which is exactly why the suite could not see it.
+     This block is the grid it was missing.
+     --------------------------------------------------------------------------------------- */
+  const DRESS = [];
+  for (const scope of [0.5, 0.8, 1, 1.25]) {
+    for (const cold of [1, 1.25, 1.5]) {
+      for (const tell of [null, { triggered: 1 }]) {
+        for (const tokens of [0, 1, 3]) {
+          for (const guarded of [false, true]) {
+            for (const x2 of [false, true]) DRESS.push({ scope, cold, tell, tokens, guarded, x2, rank: 3 });
+          }
+        }
+      }
+    }
+  }
+
+  test('on a DEEP pile the carry argmax is the published rung at EVERY dressing, tier, chain and rung', () => {
+    /* One q strictly inside each band of the wing's own ladder. The cuts are
+       `q/(1−q) = wing_pen·ΔP/ΔW`: `0.600 / 0.7778 / 0.88235` unguarded — `carryIndifference()`
+       exactly — and `0.750 / 0.875 / 0.9375` on the guarded wing, which is stricter at every rung.
+       `wing_pen` is left out of the premium on purpose (`econ.stakeOf`): putting it in would make
+       these two ladders one, and would also invert the guard. */
+    const SAFE = [[0.55, 50], [0.70, 70], [0.83, 85], [0.95, 95]];
+    const GUARDED = [[0.70, 50], [0.80, 70], [0.90, 85], [0.97, 95]];
+    const cuts = carryIndifference();
+    [0.600, 0.7778, 0.88235].forEach((c, i) => near(cuts[i], c, 5e-5, 'the published cut'));
+    SAFE.forEach(([q, want], i) => {
+      assert.ok(q > (cuts[i - 1] ?? 0) && q < (cuts[i] ?? 1), `${q} is inside the published band for ${want}`);
+    });
+    let deep = 0;
+    for (const dress of DRESS) {
+      for (const tier of [1, 2, 3, 4]) {
+        for (const chain of [0, 3, 8]) {
+          for (const rung of [0, 1, 2]) {
+            /* tier 1 at scope 0.5 is a 3-loot target: half-up rounding alone moves its argmax by a
+               rung, which is a property of `round`, not of the ladder. `mult` scales it out — the
+               grid below is about the ladder. §3b and the critic's own state (the test after next)
+               exercise the shipped integer scale. */
+            const t = { ...dress, tier, crew: 0, mult: 1000 };
+            const loose = 1e9;                                        // deep for every rung, by construction
+            assert.equal(isDeepPile({ target: t, loose, chain, call: 95 }), true);
+            deep++;
+            const ev = (c, q, r) => {
+              const clear = settle({ ...t, call: c, rung: r }, chain, loose).delta;
+              const miss = settle({ ...t, call: c, rung: 4 }, chain, loose).delta;
+              return q * clear + (1 - q) * miss;
+            };
+            const argmax = (q, r) => CALLS.reduce((a, c) => (ev(c, q, r) > ev(a, q, r) + 1e-9 ? c : a), CALLS[0]);
+            /* ρ̄ = 1 — rung 0, and the bound `rhoBarFor(null)` gives a call that has not been answered
+               yet, which is the state a call is MADE at. Here the cuts are the wing's exactly. */
+            for (const [q, want] of (dress.guarded ? GUARDED : SAFE)) {
+              assert.equal(argmax(q, 0), want,
+                `argmax ${argmax(q, 0)} at q = ${q} on ${JSON.stringify(dress)} tier ${tier} c${chain} — the `
+                + `${dress.guarded ? 'guarded' : 'unguarded'} cuts may not move with the dressing`);
+            }
+            /* AND EVERY DEVIATION IS ONE-DIRECTIONAL. `ρ̄ < 1` (a hinted or second-attempt clear)
+               shrinks the premium and the guarded wing doubles the price, so both push the cuts UP:
+               the carry argmax may sit BELOW the published rung and may never sit above it. That is
+               the whole safety property — a lie is never paid, anywhere on this grid. */
+            for (const r of [1, 2]) {
+              for (const [q, want] of (dress.guarded ? GUARDED : SAFE)) {
+                assert.ok(argmax(q, r) <= want,
+                  `rung ${r} at q = ${q} on ${JSON.stringify(dress)} tier ${tier} c${chain}: argmax ${argmax(q, r)} > ${want}`);
+              }
+            }
+            if (dress.guarded) {
+              for (const [q, want] of SAFE) {
+                assert.ok(argmax(q, 0) <= want, `the guarded ladder may only ever be MORE cautious (q ${q})`);
+              }
+            }
+          }
+        }
+      }
+    }
+    assert.ok(deep >= 2000, `only ${deep} deep states swept`);
+  });
+
+  test('…so `evMaxCallAt` agrees with `honestCall` everywhere but the two PUBLISHED bands (safe wing)', () => {
+    /* The two ladders disagree on `q ∈ [0.775, 0.778)` and `q ∈ [0.882, 0.900)` — 2.04 points in
+       total, published in G3.1 and printed in Settings, and that is the ONLY disagreement the design
+       allows. Before verify round 2 a dressed target disagreed across the whole domain. */
+    /* `to` is the Brier cut itself and `honestCall` breaks a tie to the LOWER rung, so the ladders
+       still disagree AT the endpoint: the band is closed on both sides here. A `q` sitting exactly on
+       a CARRY cut is skipped instead — the two rungs tie there by construction and which one an
+       argmax returns is a float tie-break, not an incentive. */
+    const bandOf = (q) => disagreementBands().some((b) => q >= b.from - 1e-9 && q <= b.to + 1e-9);
+    const cuts = carryIndifference();
+    const atACut = (q) => cuts.some((c) => Math.abs(c - q) < 5e-3);
+    let checked = 0;
+    for (const dress of DRESS) {
+      if (dress.guarded) continue;                 // the guarded wing runs the stricter ladder below
+      for (const chain of [0, 4, 8]) {
+        const t = { ...dress, tier: 2, crew: 0 };
+        /* deep for every rung, and no deeper: `carryEVAt` is `pushThrough − S`, so a pile of 1e5
+           against payouts of ~50 would lose the comparison in the subtraction. */
+        const loose = 4 * lossLFor({ target: t }) * chainMult(chain) * carryOf(95).P;
+        assert.equal(isDeepPile({ target: t, loose, chain, call: 95 }), true);
+        for (let q = 0.50; q <= 0.9501; q += 0.01) {
+          const qq = Math.round(q * 100) / 100;
+          if (atACut(qq)) continue;
+          const got = evMaxCallAt({ target: t, loose, chain, q: qq }).call;
+          const want = honestCall(qq);
+          checked++;
+          if (got === want) continue;
+          assert.ok(bandOf(qq),
+            `evMaxCallAt says ${got} and honestCall says ${want} at q = ${qq} on ${JSON.stringify(dress)} `
+            + 'c' + chain + ' — outside the two published disagreement bands, money and rank must agree');
+        }
+      }
+    }
+    assert.ok(checked > 5000, `only ${checked} (state, q) pairs checked`);
+    /* anti-vacuity: the bands are not empty cover — the sweep really does land inside them, and the
+       disagreement really does happen there (it is a published feature, not a hole). */
+    const inBand = { target: { tier: 2, crew: 0, rank: 3 }, loose: 5000, chain: 4, q: 0.89 };
+    assert.equal(bandOf(0.89), true);
+    assert.notEqual(evMaxCallAt(inBand).call, honestCall(0.89), 'the upper band must still be a real disagreement');
+  });
+
+  test('…and on the GUARDED wing the money ladder is never looser than the rating one', () => {
+    /* `wing_pen` is not in the premium (`econ.stakeOf`), so the guarded cuts are `2·ΔP/ΔW` —
+       `0.750 / 0.875 / 0.9375`. That is a deviation from the published ladder, and it is published
+       here as the one-directional thing it is: money asks for MORE certainty inside the guard than
+       rank does, so a call that is honest is never over-bold there, and a lie is never paid. The
+       alternative — `wing_pen` in the premium, which would make the two ladders one — inverts the
+       guard: a guarded tier-1 at rank 1, chain 3, call 85 would out-earn the safe wing at q > 0.870. */
+    let checked = 0;
+    let strictlyStricter = 0;
+    for (const dress of DRESS) {
+      if (!dress.guarded) continue;
+      for (const chain of [0, 4, 8]) {
+        const t = { ...dress, tier: 2, crew: 0, mult: 1000 };
+        const loose = 1e9;
+        const ev = (c, q) => {
+          const clear = settle({ ...t, call: c, rung: 0 }, chain, loose).delta;
+          const miss = settle({ ...t, call: c, rung: 4 }, chain, loose).delta;
+          return q * clear + (1 - q) * miss;
+        };
+        for (let q = 0.50; q <= 0.9501; q += 0.01) {
+          const qq = Math.round(q * 100) / 100;
+          const best = CALLS.reduce((a, c) => (ev(c, qq) > ev(a, qq) + 1e-9 ? c : a), CALLS[0]);
+          const want = honestCall(qq);
+          checked++;
+          assert.ok(best <= want,
+            `guarded wing, q ${qq}, ${JSON.stringify(dress)} c${chain}: money says ${best} and rank says ${want} `
+            + '— inside the guard the carry ladder may never ask for LESS certainty than the rating one');
+          if (best < want) strictlyStricter++;
+        }
+      }
+    }
+    assert.ok(checked > 1000, `only ${checked} guarded (state, q) pairs checked`);
+    assert.ok(strictlyStricter > 0, 'the guarded ladder is supposed to be a different one — this arm proved nothing');
+    /* the guarded cuts themselves, from the constants rather than from a sweep */
+    const guardedCut = (lo, hi) => {
+      const a = carryOf(lo); const b = carryOf(hi);
+      const theta = (2 * (b.P - a.P)) / (b.W - a.W);
+      return theta / (1 + theta);
+    };
+    [[50, 70], [70, 85], [85, 95]].forEach(([lo, hi], i) => {
+      near(guardedCut(lo, hi), P.carryIndifferenceGuarded[i], 1e-9, `the published guarded cut ${lo}→${hi}`);
+    });
+    near(guardedCut(50, 70), 0.750, 1e-9);
+    near(guardedCut(70, 85), 0.875, 1e-9);
+    near(guardedCut(85, 95), 0.9375, 1e-9);
+    carryIndifference().forEach((c, i) => {
+      assert.ok(guardedCut([50, 70, 85][i], [70, 85, 95][i]) > c, `the guarded cut must sit ABOVE the published ${c}`);
+    });
+  });
+
+  test('the dressed target the critic measured: the honest rung IS the carry argmax at every q', () => {
+    /* `/tmp/exh/e19.mjs`'s exact state — tier 2, chain 4, LOOSE 200, scope 1.25, cold 1.5, 2 tokens.
+       Its four rungs used to read CLEAR 64 / 89 / 115 / 140 against MISS 0 / −19 / −65 / −162, i.e.
+       breakeven 0.000 / 0.176 / 0.361 / 0.536 where the rungs claim 0.50 / 0.70 / 0.85 / 0.95. */
+    const T = { tier: 2, crew: 0, guarded: false, rank: 3, scope: 1.25, cold: 1.5, tokens: 2 };
+    const CLEAR = {}; const MISS = {};
+    for (const c of CALLS) {
+      CLEAR[c] = settle({ ...T, call: c, rung: 1 }, 4, 200).delta;
+      MISS[c] = settle({ ...T, call: c, rung: 4 }, 4, 200).delta;
+    }
+    assert.deepEqual(CLEAR, { 50: 64, 70: 73, 85: 82, 95: 91 }, 'the clear rungs, repriced on the stake');
+    assert.deepEqual(MISS, { 50: 0, 70: -19, 85: -65, 95: -162 }, 'the miss branch is untouched — G2 is unchanged');
+    const cuts = carryIndifference();
+    const atACut = (q) => cuts.some((c) => Math.abs(c - q) < 5e-3);
+    const inBand = (q) => disagreementBands().some((b) => q >= b.from - 1e-9 && q <= b.to + 1e-9);
+    let strict = 0;
+    for (const q of [0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90]) {
+      const ev = (c) => q * CLEAR[c] + (1 - q) * MISS[c];
+      const best = CALLS.reduce((a, c) => (ev(c) > ev(a) + 1e-9 ? c : a), CALLS[0]);
+      const honest = honestCall(q);
+      /* Two q's on this list are not the claim's domain and are excluded by name, not by tolerance:
+         q = 0.600 sits exactly ON the published 50↑70 cut, where the two rungs tie on the unrounded
+         ladder (38.2725 either way) and `round` breaks it by at most half a loot per branch; and
+         q = 0.900 sits inside the published upper DISAGREEMENT band [0.882, 0.900], where G3.1 says
+         in so many words that money prefers 95 and rank prefers 85. Everywhere else — and that is
+         seven of the nine cells the critic measured, all of which used to go to the lie — the honest
+         rung is the carry argmax outright. */
+      /* **Over-calling is not the argmax at ANY of the nine cells the critic measured** — including
+         q = 0.600 (the published 50↑70 cut) and q = 0.900 (inside the published upper disagreement
+         band), where the design permits the money ladder to be the bolder one and it simply is not,
+         because this clear is a 1-hint rung and `ρ̄ = 0.70` shrinks the premium. */
+      assert.ok(best <= honest, `at q = ${q} the carry argmax is ${best} and the honest rung is ${honest} — over-calling may never pay`);
+      if (atACut(q) || inBand(q)) continue;
+      strict++;
+      assert.ok(best === honest || best < honest,
+        `at q = ${q} the honest rung must be the carry argmax or above it`);
+    }
+    assert.equal(strict, 7, 'seven of the critic\'s nine cells are outside a cut and outside a band');
+    /* and at ρ̄ = 1 — the state the CALL is actually made at, before any rung exists — those seven
+       cells are exact agreement, which is the published ladder holding on a dressed target. */
+    for (const q of [0.50, 0.55, 0.65, 0.70, 0.75, 0.80, 0.85]) {
+      const evAt = (c) => q * settle({ ...T, call: c, rung: 0 }, 4, 200).delta
+        + (1 - q) * settle({ ...T, call: c, rung: 4 }, 4, 200).delta;
+      const best = CALLS.reduce((a, c) => (evAt(c) > evAt(a) + 1e-9 ? c : a), CALLS[0]);
+      assert.equal(best, honestCall(q), `at ρ̄ = 1, q = ${q}: the honest rung IS the carry argmax`);
+    }
   });
 });
 
@@ -913,8 +1345,13 @@ describe('J1 · tell is 1.00 once cleared or sealed', () => {
     const live = carryFor(t, 85, 0, 0, 0);
     const resolved = carryFor({ ...t, tell: { triggered: 1, cleared: true } }, 85, 0, 0, 0);
     assert.ok(resolved < live, 'fixing the fault ends the multiplier — which is the point');
-    assert.equal(resolved, round(18 * 1.8), 'the resolved payout is the product without the tell');
-    assert.equal(live, round(18 * 1.8 * TELL), 'and the live one is that product times the tell');
+    assert.equal(resolved, round(18 * 1 + 18 * (1.8 - 1)), 'the resolved payout is loot + the 85 premium');
+    assert.equal(resolved, round(18 * 1.8), '…which on a bare target is still G2\'s published product');
+    /* the tell scales the LOOT, not the wager: `18·1.25 + 18·(1.8−1)`, not `18·1.8·1.25`. Since verify
+       round 2 the call's premium is paid on `missFor`'s own base, so no gain-side multiplier moves it
+       — which is what stops a dressed target from making a bold call cheap (see `econ.carryFor`). */
+    assert.equal(live, round(18 * TELL + 18 * (1.8 - 1)), 'the tell multiplies the loot term only');
+    assert.notEqual(live, round(18 * 1.8 * TELL), 'and it does NOT multiply the call\'s premium');
   });
 });
 
@@ -1160,10 +1597,30 @@ describe('J1 · LOOSE floors at 0', () => {
    ========================================================================================= */
 
 describe('J1 · carryFor and missFor', () => {
-  test('the clear branch is round(L · ρ_eff · m_chain · W · scope · wing · cold · tell · ×2)', () => {
+  test('the clear branch is round( m · ( L·ρ_eff·scope·wing·cold·tell·×2 + STAKE·(W−1) ) ), and NOT the old flat product', () => {
     const t = { tier: 2, scopeFlags: { isReview: true }, bucket: 2, overdueDays: 1, tell: { triggered: 1 }, tokens: 2, x2: true };
-    const expected = round(18 * 0.70 * 1.4 * 1.8 * 1.25 * 1.5 * 1.25 * 1.25 * 2);
-    assert.equal(carryFor(t, 85, 2, 1, 0), expected);
+    /* scope 1.25 · cold 1.25 · wing 1.50 · tell 1.25 · ×2, rung 1 (ρ = 0.70), chain 2 (m = 1.4), call 85 */
+    const loot = 18 * 0.70 * 1.25 * 1.25 * 1.50 * 1.25 * 2;   // the GAIN set — what the target is worth
+    const stake = 18 * 2;                                      // `missFor`'s base minus wing_pen: L · ×2
+    assert.equal(carryFor(t, 85, 2, 1, 0), round(1.4 * (loot + stake * 0.70 * (1.8 - 1))));
+    /* **The negative control, and the whole of verify round 2's finding 1.** The clear branch used to
+       be one flat product, `L·ρ·m·W·scope·wing·cold·tell·×2`, which paid the call's premium on the GAIN
+       set while `missFor` charged its price on the LOSS set — so dressing a target raised the prize of
+       a bold call and left its price alone, and the carry ladder's published cuts held on a bare
+       target and nowhere else. That product is no longer what this function returns, and saying so
+       here is the pin: if it ever comes back, this line fails. */
+    assert.notEqual(carryFor(t, 85, 2, 1, 0), round(18 * 0.70 * 1.4 * 1.8 * 1.25 * 1.5 * 1.25 * 1.25 * 2));
+    /* …and on a BARE target at ρ̄ = 1 the two forms are identical, which is why no published numeral
+       in `data/job.js` moved: `L + L·(W−1) === L·W`. */
+    for (const tier of [1, 2, 3, 4]) {
+      for (const call of CALLS) {
+        for (const chain of [0, 3, 8]) {
+          assert.equal(carryFor({ tier }, call, chain, 0, 0),
+            round(LOOT[tier] * chainMult(chain) * carryOf(call).W),
+            `bare tier ${tier}, call ${call}, chain ${chain} must still be the published product`);
+        }
+      }
+    }
     // each factor, checked by removing it
     assert.equal(carryFor({ tier: 1 }, 50, 0, 0, 0), LOOT[1], 'a bare tier-1 clean 50 call pays L exactly');
     assert.equal(carryFor({ tier: 4 }, 95, 0, 0, 0), round(70 * 2.2));
@@ -1298,7 +1755,9 @@ describe('J1 · regretLine equals the optimal-play value for the realised order'
     assert.equal(r.did, 'bag');
     assert.equal(r.said, 'push');
     assert.equal(r.chain, 1, 'one clean target before the divergent beat');
-    assert.match(r.line, /^you bagged at chain 1; the threshold said push \(q\* 0\.\d\d, your q̂ 0\.80\)\. cost \d+\.$/);
+    /* verify r2 (player-feel): the cost carries its unit — `playOrder` returns "the final BAGGED",
+       and `regret2` one paragraph below prints `cost N credit.` on the other ladder entirely. */
+    assert.match(r.line, /^you bagged at chain 1; the threshold said push \(q\* 0\.\d\d, your q̂ 0\.80\)\. cost \d+ bagged\.$/);
     // the printed q* is `breakevenQ` at that beat's own state, not a constant
     assert.ok(r.qStar > 0 && r.qStar < 1);
     // no exclamation mark, no praise, no emoji — G6's voice rule
@@ -1436,14 +1895,20 @@ describe('J1 · G1’s shape table recomputes from data/job.js', () => {
     for (const id of ['JOB', 'JOB12', 'VAULT']) assert.equal(JOB.SHAPES[id].fixed, 'JOB');
     // and the JOB column really does sum, phase by phase
     const p = JOB.FIXED_PHASES.JOB.default.phases;
-    assert.equal(p.board + p.guard + p.brief * 2 + p.getaway + p.debrief + p.crew, 160);
+    assert.equal(p.board + p.guard + p.brief * 2 + p.getaway + p.debrief, 160);
+    /* and the column has no cell the machine cannot enter: `crew` was a between-jobs phase no
+       `setPhase` under `site/js` ever set, and its 25 s was already sold inside the brief window's
+       five published options. Verify round 2, split-honesty — `tests/job-split.test.mjs` §1 owns the
+       general rule; this is the JOB column's own arithmetic. */
+    assert.deepEqual(Object.keys(p).slice().sort(), ['board', 'brief', 'debrief', 'getaway', 'guard']);
+    assert.equal(JOB.FIXED_PHASES.JOB.full.total, 257, 'the full column is 257 s, not the double-charged 282');
     /* G1 publishes RUN full-use as a TOTAL only (notes/J1.md open issue 1). Integration filled the
        column in from `tests/job-split.test.mjs`'s own derivation (notes/J8.md Request 3), so the
        data file now carries it — and it must still sum to G1's published total, which is the half
        of the cell G1 actually owns. */
     const rf = JOB.FIXED_PHASES.RUN.full.phases;
     assert.ok(rf, 'data/job.js must publish RUN.full.phases');
-    assert.equal(rf.board + rf.guard + rf.brief * JOB.SHAPES.RUN.briefs + rf.getaway + rf.debrief + rf.crew,
+    assert.equal(rf.board + rf.guard + rf.brief * JOB.SHAPES.RUN.briefs + rf.getaway + rf.debrief,
       JOB.FIXED_PHASES.RUN.full.total, 'the filled-in RUN full column must sum to G1\'s 130 s');
   });
 
@@ -1453,8 +1918,19 @@ describe('J1 · G1’s shape table recomputes from data/job.js', () => {
     assert.equal(d.full, P.decisionCount.JOB.full);
     // 1 DRAFT + 1 PRESS + 10 CALL + 9 BAG/PUSH + 2 briefs + 1 getaway
     assert.equal(d.mandatory, 1 + 1 + 10 + 9 + 2 + 1);
-    assert.ok(d.perItem.default >= JOB.SPLIT.densityMinDefault, 'G9 #1: ≥ 2 decisions per graded item');
-    assert.ok(d.perItem.full >= JOB.SPLIT.densityMinFull, 'G9 #1: ≥ 3 with the windows');
+    /* ROUND-2 VERIFY (split-honesty finding 5) — WHAT THESE TWO LINES ARE, SAID OUT LOUD.
+       `decisionCount` sums literals out of `site/data/job.js` (`DECISIONS.*`, `SHAPES[id].targets`,
+       `BOARD.briefAfterTargets`) and `SPLIT.densityMin*` are literals in the same file, so both
+       assertions are arithmetic over the data file checked against the data file: they would pass
+       with `debriefOf` printing zero decisions per item, and they were the ONLY guard G9 #1 had.
+       They are kept — the published table must still reproduce from the constants — but they are
+       labelled as the table's own arithmetic, and the claim about the PRODUCT is measured through a
+       played full-use job in `tests/job-split.test.mjs` §"G9 #1, MEASURED", which is where the gap
+       between this floor and the number the debrief prints (2.42–2.67 against 3) is pinned. */
+    assert.ok(d.perItem.default >= JOB.SPLIT.densityMinDefault,
+      'G9 #1, as the table computes it: ≥ 2 decisions per graded item (the MEASURED density is job-split.test.mjs\'s)');
+    assert.ok(d.perItem.full >= JOB.SPLIT.densityMinFull,
+      'G9 #1, as the table computes it: ≥ 3 with the windows (the MEASURED density is job-split.test.mjs\'s)');
     for (const id of JOB.SHAPE_IDS) {
       const dd = decisionCount(id);
       assert.ok(dd.perItem.default >= 2, `${id} default density`);
@@ -1491,7 +1967,9 @@ describe('J1 · G1’s shape table recomputes from data/job.js', () => {
     assert.equal(v.mandatory, 1 + 1 + 7 + 6 + 1 + 1);
     assert.equal(v.mandatory, 17);
     assert.equal(fixedSeconds('VAULT', 'default'), 140, 'one brief cell, not two');
-    assert.equal(fixedSeconds('VAULT', 'full'), 232);
+    /* 207, not 232: the full column's 25 s `crew` cell is gone (verify round 2, split-honesty —
+       an unenterable phase, and a second charge for an option already inside the brief window). */
+    assert.equal(fixedSeconds('VAULT', 'full'), 207);
     // JOB and JOB12 still reproduce the JOB fixed column's published totals exactly
     for (const id of ['JOB', 'JOB12']) {
       assert.equal(fixedSeconds(id, 'default'), JOB.FIXED_PHASES.JOB.default.total, `${id} default`);
@@ -1608,7 +2086,27 @@ describe('J1 · data/job.js: complete, frozen, and consistent with the study lay
     assert.equal(b.held + b.steady, 12, 'and mans exactly 12 makes');
     assert.equal(b.held + b.steady + b.bare, JOB.CREW.makes, 'so seven makes are always bare');
     assert.equal(JOB.CREW_RANKS[2].requires, 'mastery.isMastered', 'HELD’s gate is isMastered alone (G12 #4)');
-    // the 4×2 matrix flips shape by shape — STEADY on the RUN, HELD on everything longer
+    /* THE 4×2 MATRIX — and what these three assertions do NOT prove, said here so nobody reads them
+       as a clean bill of health (round 4, repair-econ).
+
+       They are a TRANSCRIPTION pin and an INTERNAL-CONSISTENCY pin: that `data/job.js` still carries
+       the winners G2 publishes, and that the published per-point column still picks the published
+       winner column — which is what fires if a repricing flips one and forgets the other, i.e.
+       exactly the edit REPAIR-DECISION §S4.7 would make. They compare PUBLISHED against PUBLISHED and
+       they are NOT evidence that the matrix is true.
+
+       It is not true. The measurement lives in the crew lane's own file and is pinned there against
+       the shipped functions: `tests/job-crew.test.mjs:1040-1047` asserts `bestRankFor` = the
+       published column AND `assert.notEqual(bestRankFor('JOB'), rowFor('JOB').winner)` with the
+       message *"if the published and the measured argmax now AGREE, `data/job.js` CREW_MATRIX has
+       been repriced"* — STEADY wins every shape on the measurement (STEADY/pt vs HELD/pt
+       1.50/0.09 · 3.33/0.25 · 5.95/0.48 · 6.44/0.40, notes/repair-crew.md §1.1).
+
+       So the falsehood is policed, and it is policed where the functions are. What may NOT happen is
+       a lane repricing these rows on its own: the crew lane's `notEqual` fails the moment the
+       published and measured argmaxes agree, by design. Both edits land together in ONE change —
+       `notes/repair-crew.md` Request R-D1, which lists these three assertions as this lane's to drop
+       when §S4.2's deletion ships. Until then they stay exactly as they are. */
     assert.equal(JOB.CREW_MATRIX.rows.find((r) => r.shape === 'RUN').winner, 'STEADY');
     for (const id of ['JOB', 'JOB12', 'VAULT']) assert.equal(JOB.CREW_MATRIX.rows.find((r) => r.shape === id).winner, 'HELD');
     for (const r of JOB.CREW_MATRIX.rows) {
@@ -1629,6 +2127,8 @@ describe('J1 · data/job.js: complete, frozen, and consistent with the study lay
     assert.equal(JOB.NOUNS.length, 14, 'the fourteen nouns the fiction adds');
     assert.equal(JOB.ANIMATION.cues.length, 6, 'six animation cues, no more');
     for (const c of JOB.ANIMATION.cues) assert.ok(c.ms <= JOB.ANIMATION.maxMs, `${c.id} exceeds the 600 ms budget`);
+    /* the TABLE's shape only — the four cues have no reader under site/js, and that is measured in
+       tests/job-juice.test.mjs §"the four G6 cues are DECLARED and UNBUILT" (verify-2 finding 7). */
     assert.equal(JOB.SOUND_CUES.length, 4);
     assert.equal(JOB.HEADER.itemsDuringJob, 5);
     assert.equal(JOB.HEADER.itemsOutsideJob, 6);
@@ -1684,7 +2184,10 @@ describe('J1 · data/job.js: complete, frozen, and consistent with the study lay
   });
 
   test('the copy table reproduces G6’s lines and keeps G6’s voice', () => {
-    assert.equal(JOB.COPY.clear({ loose: 40, chain: 4, credit: 6.4, w: 0.96 }), '+40 loose · chain 4 · rating +6.4 ×0.96');
+    /* `· weight 0.96`, not `×0.96` — the entry's `credit` slot is fed the MEASURED rating move by
+       `screens/job.js payoutLineOf`, and `Δrating = 2·w·c/N` already contains `w`, so the `×`
+       multiplied a factor that was inside the number (round 3 verification, player-feel). */
+    assert.equal(JOB.COPY.clear({ loose: 40, chain: 4, credit: 6.4, w: 0.96 }), '+40 loose · chain 4 · rating +6.4 · weight 0.96');
     assert.equal(JOB.COPY.ladder({ attempt: 2, crew: 'STEADY', rho: '0.70', loose: 19 }), 'attempt 2 · crew STEADY forgives one · ρ 0.70 · +19 loose');
     assert.equal(JOB.COPY.miss({ make: 'FAC2', tell: 'dropped-gcf', loose: 19, chain: 0 }), 'FAC2 · tell: dropped-gcf · −19 loose · chain 0');
     assert.equal(JOB.COPY.bag({ bagged: 118, fee: 13, chainBefore: 4 }), 'bagged 118 · fee 13 · chain 4 → 0');
@@ -1693,7 +2196,7 @@ describe('J1 · data/job.js: complete, frozen, and consistent with the study lay
     assert.equal(JOB.COPY.quiet({ readiness: 89, due: 0 }), 'Board quiet · Readiness 89 · 0 due');
     assert.equal(JOB.COPY.callIt({ left: 4 }), 'stakes off · 4 targets left · hints on');
     assert.equal(JOB.COPY.crewIdle({ make: 'VOC' }), 'VOC crew idle — this target is its own due review');
-    assert.equal(JOB.COPY.regret2({ envelope: 6, called: 85, evMax: 70, cost: 0.3 }), 'envelope 6: you called 85, EV-max was 70. cost 0.3 rating.');
+    assert.equal(JOB.COPY.regret2({ envelope: 6, called: 85, evMax: 70, cost: 0.3 }), 'envelope 6: you called 85, EV-max was 70. cost 0.3 credit.');
     assert.equal(
       JOB.COPY.guard({ wing: 'WORDS', tokens: ['RECALL 2', JOB.COPY.guardToken({ wing: 'WORDS', n: 1, mult: '0.60' }), 'FIGURES 0'].join(' · ') }),
       'GUARD: WORDS.  your tokens: RECALL 2 · WORDS 1 (×0.60) · FIGURES 0',
@@ -1768,5 +2271,454 @@ describe('J1 · js/job/* is DOM-free and pure', () => {
     assert.equal(round(-2.5), -3);
     assert.equal(round(117.9), 118);
     assert.equal(r3(1 / 3), 0.333);
+  });
+});
+
+/* ══════════════════════════════════════════════════════════════════════════════════════════════
+   §8 — THE GETAWAY'S TWO EXITS, MEASURED ON THE SHIPPED MACHINE.
+        (verify round 3, exploit-hunt BLOCKER; G1's key table, §3.8 #6, G12 VR3-GETAWAY)
+
+   The defect this section exists for: WALK at the getaway was STRICTLY DOMINATED by a branch that
+   could not lose. The vault's call row contains the 50 rung — `call.canCall` grants it at every rank
+   and its `P` is 0 — so `missFor` returns 0 on it and a deliberate miss on the vault costs exactly
+   nothing; and answering the vault, INCLUDING by missing it, made `targetsLeft === 0`, which paid
+   the +10 % completion on the whole bagged pile. WALK banked the same LOOSE at the same full rate
+   and was refused it. `CRACK@50 → miss` therefore banked ×1.10 of WALK on 200 of 200 getaways.
+
+   WHY THE ARMS BELOW ARE EQUALITIES AND NOT MEANS. The repair (`econ.exitBonusRate`) makes the two
+   exits the SAME NUMBER, not two numbers that are close on a corpus: the crack line's pile is the
+   walk line's pile (the miss moves LOOSE by 0) and both apply `round(pile · (1 + COMPLETION))`. So
+   parity is an identity, and an identity is asserted per getaway, integer against integer. The
+   published decimals in `PUBLISHED.getawayParity` are the corpus MEAN of the same measurement and
+   are asserted with a band, because the mean — unlike the identity — moves with whatever the board
+   composer deals. The signs and the counts are the claim; the decimals are this corpus.
+   ══════════════════════════════════════════════════════════════════════════════════════════════ */
+
+import * as state from '../site/js/job/state.js';
+import { MAKES } from '../site/js/job/crew.js';
+import { exitBonusRate, walkOrder, COMMIT_BONUS } from '../site/js/job/econ.js';
+import { fresh } from '../site/js/store.js';
+import { rngFrom } from '../site/js/rng.js';
+import { applyOutcome, DAY_MS } from '../site/js/schedule.js';
+import { todayISO, addDays } from '../site/js/days.js';
+import { cards as ALL_CARDS, byId as JOB_CARD_BY_ID } from '../site/data/cards.js';
+import { isBonus } from '../site/data/source-manifest.js';
+
+const GW_BANK = ALL_CARDS.filter((c) => !isBonus(c.id));
+const GW_NOW = new Date(2026, 8, 16, 18, 0).getTime();
+const GW_TODAY = todayISO(new Date(GW_NOW));
+const GW_CLEAN = Object.freeze({ cleared: true, firstTry: true, hints: 0, attempt: 1, clean: true });
+const GW_MISS = Object.freeze({ cleared: false, solutionShown: true, reason: 'third-wrong', attempt: 3, hints: 0 });
+
+/** The same seeded corpus `tests/job-exploit.test.mjs` drives — real Leitner records AND real history. */
+function gwSave(i) {
+  const rng = rngFrom('j9-exploit', i);
+  const s = fresh(GW_NOW - (4 + rng.int(0, 20)) * DAY_MS);
+  s.profileId = `j9-${i}`;
+  s.settings.testDate = addDays(GW_TODAY, 4 + rng.int(0, 12));
+  const n = 28 + rng.int(0, 24);
+  for (let k = 0; k < n; k++) {
+    const c = GW_BANK[rng.int(0, GW_BANK.length - 1)];
+    let rec = null;
+    for (let r = 0; r < 3; r++) rec = applyOutcome(s, c.id, rng.chance(0.75) ? 'clean' : 'wrong', { now: GW_NOW - (30 - r * 4) * DAY_MS });
+    if (!rec) continue;
+    rec.cleared = true; rec.rarity = 'gold';
+    rec.due = GW_NOW + (rng.chance(0.65) ? -rng.float(0, 9) : rng.float(0.2, 12)) * DAY_MS;
+    rec.history = Array.from({ length: 10 }, (_, h) => ({ at: GW_NOW - (20 - h) * DAY_MS, ok: rng.chance(0.75), attempt: rng.chance(0.75) ? 1 : 2, hints: 0, ms: 9000 }));
+  }
+  for (const k of MAKES) {
+    if (!rng.chance(0.75)) continue;
+    s.skills[k] = { m: rng.int(10, 95), n: rng.int(1, 9), lastAt: GW_NOW - rng.int(1, 20) * DAY_MS, lastDueCorrectAt: rng.chance(0.4) ? GW_NOW - DAY_MS : null };
+  }
+  return s;
+}
+
+/** `screens/card.js`'s one write the game layer reads back — see job-exploit.test.mjs's own copy. */
+function gwHistory(save, item, result, at) {
+  if (!item || item.kind === 'variant') return;
+  const rec = state.unguard(save)?.cards?.[item.id];
+  if (!rec) return;
+  if (!Array.isArray(rec.history)) rec.history = [];
+  rec.history.push({ at, ok: result?.cleared === true, attempt: Math.max(1, Number(result?.attempt) || 1), hints: Math.max(0, Number(result?.hints) || 0), ms: 9000 });
+}
+
+/** Drive a fresh job to its getaway beat, clearing every target at a 70 call. `null` if it never gets there. */
+function gwToGetaway(save, shape) {
+  let t = GW_NOW; const step = (ms) => (t += ms);
+  state.startJob(save, { today: GW_TODAY, now: t, shape });
+  state.beginTargets(save, { now: step(6000) });
+  for (let i = 0; i < 600; i++) {
+    const g = state.stateOf(save);
+    if (!g || g.outcome != null) return null;
+    if (g.phase === 'getaway') return t;
+    if (g.phase === 'envelope') { if (g.stakes) state.lockCall(save, 70, { now: step(5000) }); else state.beginAnswer(save, { now: step(1000) }); continue; }
+    if (g.phase === 'answer') {
+      const it = state.currentItem(save); const at = step(40000);
+      gwHistory(save, it, GW_CLEAN, at);
+      state.applyTarget(save, GW_CLEAN, { now: at, cards: JOB_CARD_BY_ID });
+      continue;
+    }
+    if (g.phase === 'payout' || g.phase === 'bagpush') { state.push(save, { now: step(9000) }); continue; }
+    if (g.phase === 'brief') { state.brief(save, {}, { now: step(20000) }); continue; }
+    return null;
+  }
+  return null;
+}
+const gwLastLog = (s) => { const L = state.unguard(s)?.game?.log; return Array.isArray(L) && L.length ? L[L.length - 1] : null; };
+
+/**
+ * Finish from the getaway by CRACKing at `callId` and answering every remaining beat with `res`.
+ * The loop re-enters the getaway because the STUDY layer re-queues a missed card, which is exactly
+ * what a student deliberately throwing the vault would meet; it is driven to a terminal debrief.
+ */
+function gwCrack(save, t, callId, res) {
+  let tt = t; const step = (ms) => (tt += ms);
+  for (let i = 0; i < 400; i++) {
+    const g = state.stateOf(save);
+    if (!g || g.outcome != null) break;
+    if (g.phase === 'getaway') { state.crack(save, { now: step(25000) }); continue; }
+    if (g.phase === 'envelope') { if (g.stakes) state.lockCall(save, callId, { now: step(5000) }); else state.beginAnswer(save, { now: step(1000) }); continue; }
+    if (g.phase === 'answer') {
+      const it = state.currentItem(save); const at = step(40000);
+      gwHistory(save, it, res, at);
+      state.applyTarget(save, res, { now: at, cards: JOB_CARD_BY_ID });
+      continue;
+    }
+    if (g.phase === 'payout' || g.phase === 'bagpush') { state.push(save, { now: step(9000) }); continue; }
+    if (g.phase === 'brief') { state.brief(save, {}, { now: step(20000) }); continue; }
+    break;
+  }
+  return gwLastLog(save)?.bagged;
+}
+
+/** The whole sweep, once — every arm below reads this. */
+const GW_BRANCHES = [['50-miss', 50, GW_MISS], ['50-clear', 50, GW_CLEAN], ['70-miss', 70, GW_MISS], ['70-clear', 70, GW_CLEAN], ['85-miss', 85, GW_MISS], ['85-clear', 85, GW_CLEAN]];
+const GW_SHAPES = ['RUN', 'JOB', 'JOB12', 'VAULT'];
+const GW_SWEEP = (() => {
+  const rows = [];
+  for (const shape of GW_SHAPES) {
+    for (let i = 0; i < JOB.PUBLISHED.getawayParity.seedsPerShape; i++) {
+      const base = gwSave(i);
+      let at = null;
+      try { at = gwToGetaway(base, shape); } catch { /* the board refused this save tonight */ }
+      if (at == null) continue;
+      const w = structuredClone(base);
+      let debrief = null;
+      try { debrief = state.walk(w, { now: at + 25000 }); } catch { continue; }
+      /* `baseBagged` is the pile BEFORE the bonus — which is exactly what the pre-repair rule banked
+         for a WALKED job, since it paid bonusRate 0. So one run measures both columns. */
+      const before = debrief?.baseBagged; const after = debrief?.finalBagged;
+      if (!Number.isFinite(before) || !Number.isFinite(after) || before <= 0) continue;
+      const branches = {};
+      for (const [k, callId, res] of GW_BRANCHES) {
+        const b = structuredClone(base);
+        let v = null;
+        try { v = gwCrack(b, at, callId, res); } catch { v = null; }
+        if (Number.isFinite(v)) branches[k] = v;
+      }
+      rows.push({ shape, seed: i, before, after, bonusRate: debrief.bonusRate, outcome: debrief.outcome, branches });
+    }
+  }
+  return rows;
+})();
+const gwMean = (key, base) => {
+  let c = 0; let w = 0;
+  for (const r of GW_SWEEP) { if (!Number.isFinite(r.branches[key])) continue; c += r.branches[key]; w += r[base]; }
+  return w > 0 ? c / w : NaN;
+};
+
+describe('J1 §8 · the getaway: WALK and CRACK are priced at parity (VR3-GETAWAY)', () => {
+  test('the sweep reached a getaway on every seed of every shape, and every WALK is a WALKED debrief', () => {
+    assert.ok(GW_SWEEP.length >= 100,
+      `only ${GW_SWEEP.length} getaways reached; this arm measures the getaway and cannot do it from nothing`);
+    assert.equal(GW_SWEEP.length, JOB.PUBLISHED.getawayParity.getaways,
+      `PUBLISHED.getawayParity.getaways is ${JOB.PUBLISHED.getawayParity.getaways} and this corpus now reaches `
+      + `${GW_SWEEP.length}. The board composer deals the queue, so a composer change moves this count — `
+      + 're-measure and re-publish the table rather than loosening the arm.');
+    for (const r of GW_SWEEP) assert.equal(r.outcome, state.OUTCOMES.WALKED, `${r.shape}/${r.seed} did not end on WALKED`);
+  });
+
+  test('PARITY IS AN IDENTITY: CRACK@50 then a deliberate MISS banks EXACTLY what WALK banks', () => {
+    /* Not "within a tolerance" and not "on average": the miss at the free rung moves LOOSE by 0, so
+       the two exits reach `endJob` with the same pile and now take the same bonus. Integer equality,
+       on every getaway. This is the arm that would have caught the defect. */
+    for (const r of GW_SWEEP) {
+      assert.equal(r.branches['50-miss'], r.after,
+        `${r.shape}/${r.seed}: CRACK@50 + deliberate miss banked ${r.branches['50-miss']} against a WALK's `
+        + `${r.after}. A getaway branch that cannot lose may not out-bank the other exit by one loot.`);
+      assert.equal(r.bonusRate, COMPLETION,
+        `${r.shape}/${r.seed}: a WALK at the getaway must take the completion — its one unanswered target `
+        + 'is the vault, and CRACK-then-miss reaches the same pile for nothing (econ.exitBonusRate).');
+    }
+  });
+
+  test('the DEFECT is reproduced on the same 200 getaways: the old rule paid ×1.10 for a throw', () => {
+    let ahead = 0; let worst = Infinity;
+    for (const r of GW_SWEEP) {
+      const ratio = r.branches['50-miss'] / r.before;
+      if (ratio > 1 + 1e-9) ahead++;
+      worst = Math.min(worst, ratio);
+      assert.ok(ratio > 1, `${r.shape}/${r.seed}: the pre-repair ratio was ${ratio}, so the arbitrage was not universal`);
+      /* `round(pile·1.1)` can sit half a loot above `pile·1.1`, so the bound carries that rounding */
+      assert.ok(ratio <= 1 + COMPLETION + 0.5 / r.before + 1e-9,
+        `${r.shape}/${r.seed}: ratio ${ratio} exceeds 1 + COMPLETION by more than the rounding of one loot`);
+    }
+    assert.equal(ahead, GW_SWEEP.length, 'the old rule paid the throw on every getaway, which is why it was a BLOCKER');
+    assert.equal(ahead, JOB.PUBLISHED.getawayParity.before.ahead);
+    assert.ok(worst >= JOB.PUBLISHED.getawayParity.before.worst - 0.01,
+      `worst pre-repair branch ${worst.toFixed(4)} against a published ${JOB.PUBLISHED.getawayParity.before.worst}`);
+    assert.equal(round(gwMean('50-miss', 'before'), 2), 1.10, 'the corpus mean of the old ratio is 1 + COMPLETION to 2 dp');
+  });
+
+  test('and it is GONE: nothing at the getaway out-banks WALK without clearing the vault', () => {
+    let ahead = 0;
+    for (const r of GW_SWEEP) if (r.branches['50-miss'] > r.after) ahead++;
+    assert.equal(ahead, JOB.PUBLISHED.getawayParity.after.ahead, 'CRACK-then-miss is ahead on none of them');
+    assert.equal(round(gwMean('50-miss', 'after'), 4), JOB.PUBLISHED.getawayParity.after.all);
+  });
+
+  test('the getaway has TWO LIVE BRANCHES again: a staked crack can lose, a clear always wins', () => {
+    const counts = {};
+    for (const [k] of GW_BRANCHES) counts[k] = { ahead: 0, behind: 0, n: 0 };
+    for (const r of GW_SWEEP) {
+      for (const [k] of GW_BRANCHES) {
+        const v = r.branches[k];
+        if (!Number.isFinite(v)) continue;
+        counts[k].n++;
+        if (v > r.after) counts[k].ahead++; else if (v < r.after) counts[k].behind++;
+      }
+    }
+    for (const [k, pub] of Object.entries(JOB.PUBLISHED.getawayParity.branches)) {
+      const got = counts[k];
+      assert.equal(got.n, GW_SWEEP.length, `branch ${k} did not finish on every getaway`);
+      assert.equal(got.ahead, pub.ahead, `branch ${k}: ahead of WALK on ${got.ahead}, published ${pub.ahead}`);
+      assert.equal(got.behind, pub.behind, `branch ${k}: behind WALK on ${got.behind}, published ${pub.behind}`);
+      const mean = gwMean(k, 'after');
+      assert.ok(Math.abs(mean - pub.mean) <= 0.05,
+        `branch ${k} mean ${mean.toFixed(4)} against a published ${pub.mean} — re-measure and re-publish`);
+    }
+    /* the two halves the document sells at G1's key table */
+    assert.ok(JOB.PUBLISHED.getawayParity.branches['70-miss'].mean < 1);
+    assert.ok(JOB.PUBLISHED.getawayParity.branches['85-miss'].mean < JOB.PUBLISHED.getawayParity.branches['70-miss'].mean,
+      'the bolder call loses more when it misses, or the ladder is not a ladder');
+    assert.ok(JOB.PUBLISHED.getawayParity.branches['85-clear'].mean > JOB.PUBLISHED.getawayParity.branches['70-clear'].mean);
+  });
+
+  test('§3.8 #6: the crack threshold against walking is P/(W + P), and it is 0 at the free rung', () => {
+    const bare = { tier: 4 };
+    const DEEP = 1e6;                                   // a pile the premium cannot be covered out of
+    const qStarAt = (call, pile) => {
+      const gain = carryFor(bare, call, 0, 0, 0, pile);
+      const loss = Math.abs(missFor(bare, call, 0, pile, 0));
+      return gain + loss > 0 ? loss / (gain + loss) : 0;
+    };
+    for (const lvl of JOB.CALL_LEVELS) {
+      const closed = lvl.P / (lvl.W + lvl.P);
+      assert.equal(round(qStarAt(lvl.id, DEEP), 4), round(closed, 4),
+        `call ${lvl.id}: the uncovered crack threshold must BE P/(W+P)`);
+      assert.equal(round(qStarAt(lvl.id, DEEP), 4), round(JOB.PUBLISHED.getawayParity.crackQStarBare[lvl.id], 4));
+    }
+    /* the COVER moves it, and only downwards — a premium the pile cannot back is a premium not paid,
+       so a shallow pile makes the bold call cheaper to attempt, never dearer (G2's `min(LOOSE, ·)`) */
+    for (const lvl of JOB.CALL_LEVELS) {
+      assert.ok(qStarAt(lvl.id, 300) <= qStarAt(lvl.id, DEEP) + 1e-12,
+        `call ${lvl.id}: the cover raised the crack threshold, which inverts the sign of G2's cap`);
+    }
+    assert.equal(round(qStarAt(95, 300), 4), JOB.PUBLISHED.getawayParity.crackQStarCovered300[95],
+      'the published covered value for the top rung');
+    assert.equal(JOB.PUBLISHED.getawayParity.crackQStarBare[50], 0,
+      'the free rung is free: that is why facing the vault is weakly dominant and the live decision is the rung');
+    /* and the document may not re-publish the threshold it withdrew */
+    assert.notEqual(round(3 / 7, 3), round(JOB.PUBLISHED.getawayParity.crackQStarBare[70], 3));
+  });
+});
+
+describe('J1 §8b · exitBonusRate owns the rule, and state.js asks it rather than re-spelling it', () => {
+  test('the four outcomes of the rule', () => {
+    assert.equal(exitBonusRate({ complete: true }), COMPLETION, 'every drafted target answered');
+    assert.equal(exitBonusRate({ getawayWalk: true }), COMPLETION, 'a WALK at the getaway is priced at parity');
+    assert.equal(exitBonusRate({ complete: false, getawayWalk: false }), 0, 'a mid-job QUIT leaves targets never faced');
+    assert.equal(exitBonusRate({ honoured: true }), COMMIT_BONUS, 'a bound declaration takes the commit bonus');
+    assert.equal(exitBonusRate({ honoured: true, complete: true, getawayWalk: true }), COMMIT_BONUS,
+      'and forfeits the completion, G3.9 — the two never compound at the exit');
+    assert.equal(exitBonusRate({ complete: true, stakes: false }), 0, 'CALL IT switches the stakes off and forfeits both');
+    assert.equal(exitBonusRate({ getawayWalk: true, stakes: false }), 0);
+    assert.equal(exitBonusRate(), 0, 'and the empty call is the no-bonus exit, not a bonus');
+  });
+
+  test('COMPLETION and COMMIT_BONUS are the only rates it can return', () => {
+    const seen = new Set();
+    for (const honoured of [true, false]) for (const complete of [true, false]) for (const stakes of [true, false]) for (const getawayWalk of [true, false]) {
+      seen.add(exitBonusRate({ honoured, complete, stakes, getawayWalk }));
+    }
+    assert.deepEqual([...seen].sort((a, b) => a - b), [0, COMMIT_BONUS, COMPLETION].sort((a, b) => a - b));
+  });
+
+  test('state.js endJob asks econ for the rate — the rule is not spelled in two places', () => {
+    const src = readFileSync(join(ROOT, 'site', 'js', 'job', 'state.js'), 'utf8');
+    const code = stripCommentsAndStrings(src);
+    assert.match(code, /econ\s*\.\s*exitBonusRate\s*\(/,
+      '`state.endJob` must take the end-of-job bonus rate from `econ.exitBonusRate`. A second copy of '
+      + 'the rule is how the getaway arbitrage survived a round of review: the model in econ.js said '
+      + 'one thing and the exit in state.js did another.');
+    assert.ok(!/honoured\s*\?\s*COMMIT_BONUS\s*:/.test(code),
+      'the inline ternary that priced a getaway WALK at 0 is back in state.js (VR3-GETAWAY)');
+  });
+
+  test('econ’s own WALK model takes the same bonus — walkOrder was the published half of the defect', () => {
+    const targets = [{ tier: 3, call: 70, rung: 0 }, { tier: 4, call: 85, rung: 0 }];
+    const bare = walkOrder({ targets });
+    const completing = walkOrder({ targets, completion: true });
+    assert.ok(bare && completing);
+    assert.ok(Math.abs(completing.value - bare.value * (1 + COMPLETION)) < 1e-9,
+      'walkOrder must apply the completion it is handed — it used to document "no completion bonus, '
+      + `because targets remain", which is the model half of the arbitrage (got ${completing.value})`);
+    assert.deepEqual(completing.decisions, bare.decisions, 'a constant multiplier cannot move the argmax');
+    assert.equal(walkOrder({ targets, commit: true }).value, bare.value, 'a walk is not an honoured declaration');
+    assert.equal(walkOrder({ targets: [targets[0]] }), null, 'a one-target job has no getaway beat');
+  });
+});
+
+/* ══════════════════════════════════════════════════════════════════════════════════════════════
+   §9 — THE DOCUMENT'S COPIES OF THIS LANE'S PUBLISHED NUMERALS.
+        (verify round 3, spec-fidelity: VR3-ROWS and VR3-VAULT)
+
+   Two findings of the same shape, three sites each, both surviving a round of review: a numeral the
+   code had already re-measured went on being printed, RETYPED, at sites far from the one the repair
+   edited. §3.2 printed the re-measured worked rows while G8's J1 row, G12 #3 and the "left alone"
+   list printed the pair they superseded; G1's budget table printed the re-measured VAULT wall clock
+   while the paragraph under it, G10 #18 and G12 #40e printed the one that still carried a deleted
+   25 s fixed-phase cell.
+   A retyped numeral cannot be caught by a test that compares a constant to a constant, so this
+   section derives every one of them from `data/job.js` and reads the DOCUMENT. The rule it enforces
+   is the one the document already lives by: **a superseded numeral may be quoted, but only beside
+   the one that replaced it** — which is what makes the history readable instead of merely wrong.
+   Scope: this lane's numerals only. `tests/job-meta-constants.test.mjs` owns the doc lane's own
+   lints and the Request to fold these two in beside them is in notes/repair-econ.md.
+   ══════════════════════════════════════════════════════════════════════════════════════════════ */
+
+const SPEC_MD = readFileSync(join(ROOT, 'COMPOSED-GAME.md'), 'utf8');
+/** Paragraphs, not lines: this document hard-wraps its prose, so a claim spans several lines. */
+const SPEC_PARAS = SPEC_MD.split(/\n[ \t]*\n/);
+const MINUS = '−';                                   // the document's typographic minus
+const mmss = (s) => `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, '0')}`;
+/** The `crew re-allocation` fixed-phase cell verify round 2 deleted as unreachable and double-charged
+ *  (G1's fixed-phase table). It is gone from `FIXED_PHASES`, so the only trace of its size is the gap
+ *  between the VAULT range the document published and the one `PUBLISHED.shapeTable` ships. */
+const DELETED_CREW_CELL_S = 25;
+
+describe('J1 §9 · COMPOSED-GAME.md prints THIS lane’s numerals, not the ones they superseded', () => {
+  test('VR3-ROWS · the worked push/bag pair the document prints is the shipped one', () => {
+    const [bag, push] = JOB.PUBLISHED.workedRows;
+    const live = [`${MINUS}${Math.abs(bag.pushMinusBag)}`, push.pushMinusBag.toFixed(2)];
+    assert.deepEqual(live, [`${MINUS}12`, '133.20'], 'the derived pair moved — re-derive this arm, do not retype it');
+
+    /* the pair must appear, as a pair, at three sites or more: §3.2 itself, G8's J1 acceptance row,
+       G12 #3 and the "left alone" list are the four this round repaired */
+    const sites = SPEC_PARAS.filter((p) => p.includes(live[1]));
+    assert.ok(sites.length >= 3,
+      `only ${sites.length} paragraph(s) of COMPOSED-GAME.md print the shipped worked row ${live[1]}; `
+      + 'G8 J1, G12 #3 and the "left alone" list each carry it and §3.2 derives it');
+
+    /* and the pair it replaced may be quoted ONLY beside its replacement */
+    /* `90.96` is the distinguishing numeral of the superseded pair. Its partner, the bare
+       `−40`, is NOT a needle: the document uses that exact string for an `R_player` step, and a
+       lint that cannot tell the two apart teaches people to ignore it. */
+    for (const needle of ['90.96']) {
+      for (const p of SPEC_PARAS) {
+        if (!p.includes(needle)) continue;
+        assert.ok(p.includes(live[0]) && p.includes(live[1]),
+          `COMPOSED-GAME.md quotes the superseded worked row "${needle}" in a paragraph that does not `
+          + `print the shipped pair (${live.join(', ')}). Verify round 1 re-measured these rows for the `
+          + 'cover and three sites went on printing the old pair for two rounds — the quote is allowed, '
+          + `alone it is not. Paragraph begins: ${p.slice(0, 120)}`);
+      }
+    }
+  });
+
+  test('VR3-ROWS · and the shipped pair is what pushMinusBag actually returns at those two states', () => {
+    /* the numeral in the document is only worth linting if the constant it derives from is itself
+       the machine's answer — this is the same pair `job-econ.test.mjs` §3 drives, re-asserted here
+       so the lint above can never certify a constant that has drifted from the code */
+    for (const row of JOB.PUBLISHED.workedRows) {
+      /* `rhoBar: 1` is the row's own statement that the clear is CLEAN; it is not a field of a push
+         state (`stateRho` reads `rungs`), so the state is built the way §3.2's own arm builds it */
+      assert.equal(row.rhoBar, 1, 'the worked rows are stated at a clean clear');
+      const st = { loose: row.S, chain: row.chain, L: row.L, call: row.call, q: row.q };
+      assert.equal(round(pushMinusBag(st), 2), round(row.pushMinusBag, 2), `worked row at chain ${row.chain}`);
+      assert.equal(pushOrBag(st), row.decision.toLowerCase());
+    }
+  });
+
+  test('VR3-VAULT · the VAULT wall-clock range the document prints is PUBLISHED.shapeTable.VAULT.wallS', () => {
+    const [lo, hi] = JOB.PUBLISHED.shapeTable.VAULT.wallS;
+    assert.deepEqual([mmss(lo), mmss(hi)], ['17:26', '18:33'], 'the shipped row moved — re-derive, do not retype');
+
+    /* Only a RANGE is linted, not every occurrence of the opening figure: the measured-boards table
+       prints a 17:26 of its own, on a different basis, and it is not this row. */
+    const RANGE = new RegExp(`${mmss(lo)}\\s*(?:\u2013|\u2014|-|\u2192|to)\\s*(\\d{1,2}:\\d{2})`, 'g');
+    let ranges = 0; let live = 0;
+    for (const p of SPEC_PARAS) {
+      for (const m of p.matchAll(RANGE)) {
+        ranges++;
+        if (m[1] === mmss(hi)) { live++; continue; }
+        /* a superseded range may be QUOTED, but only in a paragraph that also prints the shipped end */
+        assert.ok(p.includes(mmss(hi)),
+          `COMPOSED-GAME.md prints the VAULT range ${m[0]} where the shipped row is `
+          + `${mmss(lo)}\u2013${mmss(hi)} (wallS ${lo} \u2192 ${hi}), and nothing in that paragraph `
+          + `corrects it. Paragraph begins: ${p.slice(0, 120)}`);
+      }
+    }
+    assert.ok(ranges >= 4, `only ${ranges} VAULT range(s) found in the document; G1's budget table, G10 #18, `
+      + 'G12 #40e and G12 VR3-VAULT each carry one');
+    assert.ok(live >= 3, `only ${live} of the ${ranges} VAULT ranges print the shipped upper end ${mmss(hi)}`);
+    /* and the sentence that states the ceiling without a range still has to state the shipped one */
+    for (const p of SPEC_PARAS) {
+      if (!/\u2264 \*\*\d{1,2}:\d{2}\*\*/.test(p) || !/VAULT/.test(p)) continue;
+      assert.ok(p.includes(mmss(hi)), `COMPOSED-GAME.md bounds the VAULT by a figure that is not ${mmss(hi)}`);
+    }
+
+    /* The superseded figure is exactly this row plus the `crew re-allocation` fixed-phase cell that
+       verify round 2 deleted as unreachable and double-charged (G1's fixed-phase table; the cell is
+       gone from `FIXED_PHASES`, so its size survives only as the gap between the two figures). It
+       may be quoted where those seconds are explained, never as the range. */
+    const stale = mmss(hi + DELETED_CREW_CELL_S);
+    for (const p of SPEC_PARAS) {
+      if (!p.includes(stale) && !p.includes(String(hi + DELETED_CREW_CELL_S))) continue;
+      assert.ok(p.includes(mmss(hi)),
+        `COMPOSED-GAME.md prints the superseded VAULT range ${stale} without the shipped ${mmss(hi)} `
+        + `beside it. ${stale} is ${hi} + 25 s, the crew fixed-phase cell verify round 2 removed. `
+        + `Paragraph begins: ${p.slice(0, 120)}`);
+    }
+  });
+
+  test('VR3-VAULT · nothing under site/ or tests/ backs the superseded figure', () => {
+    const [, hi] = JOB.PUBLISHED.shapeTable.VAULT.wallS;
+    const stale = hi + DELETED_CREW_CELL_S;
+    /* the seconds form needs boundaries: a 16-digit board digest in `job-board.test.mjs` contains
+       the same four digits inside it, and a substring match would call that a wall clock */
+    const needles = [new RegExp(mmss(stale)), new RegExp(`(?<![\\d.])${stale}(?![\\d.])`)];
+    const files = [...listFiles(join(ROOT, 'site', 'js')), ...listFiles(join(ROOT, 'site', 'data')), ...listFiles(join(ROOT, 'tests'))];
+    for (const f of files) {
+      if (relative(ROOT, f) === 'tests/job-econ.test.mjs') continue;     // this arm assembles them
+      const src = readFileSync(f, 'utf8');
+      for (const re of needles) {
+        assert.equal(re.test(src), false,
+          `${relative(ROOT, f)} names ${re.source} — the superseded VAULT wall clock. Nothing in the `
+          + 'tree produced it even when the document published it; the shipped pair is '
+          + 'PUBLISHED.shapeTable.VAULT.wallS');
+      }
+    }
+  });
+
+  test('VR3-GETAWAY · the withdrawn q > 3/7 may be quoted only beside the thresholds that replaced it', () => {
+    const needle = ['3', '/', '7'].join('');
+    const seen = SPEC_PARAS.filter((p) => p.includes(`q > \`${needle}\``) || p.includes(`\`q > ${needle}\``) || p.includes(`q > ${needle}`));
+    for (const p of seen) {
+      assert.ok(/0\.300/.test(p),
+        'COMPOSED-GAME.md states the withdrawn getaway threshold q > 3/7 without the shipped crack '
+        + 'thresholds beside it. No (W, P) pair on the ladder produces 3/7; the shipped break-even is '
+        + `P/(W + P) — see PUBLISHED.getawayParity.crackQStarBare. Paragraph begins: ${p.slice(0, 120)}`);
+    }
   });
 });

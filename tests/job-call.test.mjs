@@ -13,6 +13,10 @@
 //   1. `PUBLISHED.sanityRating.overcall` is labelled "95 on q̂ = .5 material" and prints a mean `w·c`
 //      of −4.90. −4.90 is the **85** call at q̂ = .5; the 95 call gives −8.10. Both clamp the rating
 //      to 0.00, so the rating column is right either way. (notes/J1.md §7 flagged this to J2.)
+//      ROUND 4: findings 24 and 35 re-found it. The exact doc substitution is filed in
+//      notes/repair-call.md §"Spec corrections" (the doc lane owns COMPOSED-GAME.md; the constant
+//      `PUBLISHED.sanityRating.overcall` is the RATING column, 0.00, and does not move). The
+//      assertions below are computed from the formula and are true either way.
 //   2. `CALL_DISAGREEMENT_BANDS[0]` labels the band [0.775, 7/9) `money: 85, rank: 70`. The ladders
 //      say the opposite there: carry EV prefers **70** and the Brier credit prefers **85**. The
 //      second band's labels (`money: 95, rank: 85`) are correct. G3.1's prose generalisation ("money
@@ -31,9 +35,10 @@ import {
   weightFor, isInformative, informativeBand, INFORMATIVE_BAND, INFORMATIVE_MIN,
   // the carry ladder
   evFor, evTable, argmaxCall, honestCall, carryIndifference, ratingIndifference,
-  disagreementBands, evMaxBands, evidenceBands, evidenceBandOf,
+  disagreementBands, evMaxBands, evidenceBands, evidenceBandOf, evidenceOf,
   // the window
   callEntry, windowPush, ratingFrom, ratingDetail, expectedRating, wTimesEcDiscrete,
+  weightOf, qHatOf, reachableQHats, informativeQHats,
   WINDOW_N, QHAT_WINDOW,
   // rank
   rankFor, rankOf, rankNameFor, meanWcFor,
@@ -505,14 +510,16 @@ describe('G3.1 the window: only w ≥ 0.25 enters, and the divisor is N = 50', (
        informative calls in the array the fifty slots saturate and the FIXED divisor silently becomes
        the COUNT. A 0.99-clear farmer then converged to 9.53 (Called 5) off the 9.6 % of their makes
        that carry one miss in ten, and no later call could ever evict a stale slot.
-       A blank slot is written as `p: null, w: 0` — see `callEntry` — so it scores nothing here AND
-       is invisible to every consumer that selects on a finite `p` (the `calibrated` trophy and the
-       Reliability diagram, both of which mean "informative calls"). */
+       A blank slot is written with `p: null` and NO evidence — see `callEntry` — so it scores
+       nothing here AND is invisible to every consumer that selects on a finite `p` (the
+       `calibrated` trophy and the Reliability diagram, both of which mean "informative calls"). */
     let win = [];
     for (let i = 0; i < 50; i++) win = windowPush(win, entry(0.97, 95, true, i));
     assert.equal(win.length, 50, 'q̂ = .97 gives w = .116 < .25 — the calls still take their slots');
     assert.deepEqual([...new Set(win.map((e) => e.p))], [null], 'and every one of them is BLANK');
-    assert.deepEqual([...new Set(win.map((e) => e.w))], [0]);
+    assert.deepEqual([...new Set(win.map(weightOf))], [0]);
+    assert.deepEqual([...new Set(win.map(qHatOf))], [null],
+      'a slot that pays nothing must carry no evidence either — nothing can price it back up');
     const d0 = ratingDetail(win);
     assert.equal(d0.n, 0, 'not one of them is a measurement');
     assert.equal(d0.slots, 50, 'but all fifty slots are occupied');
@@ -552,10 +559,10 @@ describe('G3.1 the window: only w ≥ 0.25 enters, and the divisor is N = 50', (
   test('THE DIVISOR IS N, NOT Σw: ten clear 85 calls at q̂ = .85 score 6.856, not 10.0', () => {
     const win = Array.from({ length: 10 }, (_, i) => entry(0.85, 85, true, i));
     assert.equal(win.length, 10);
-    const sum = win.reduce((a, e) => a + e.w * credit(e.p, e.ok), 0);
+    const sum = win.reduce((a, e) => a + weightOf(e) * credit(e.p, e.ok), 0);
     near(sum, 10 * 0.51 * 9.1, 1e-9);
     const byN = JOB.RATING.base + JOB.RATING.scale * (sum / JOB.RATING.N);
-    const bySumW = JOB.RATING.base + JOB.RATING.scale * (sum / win.reduce((a, e) => a + e.w, 0));
+    const bySumW = JOB.RATING.base + JOB.RATING.scale * (sum / win.reduce((a, e) => a + weightOf(e), 0));
     near(ratingFrom(win), byN, 1e-12, 'divided by the fixed window size');
     near(ratingFrom(win), 6.8564, 1e-4);
     assert.ok(bySumW > 10, 'a Σw divisor would peg the rating at the ceiling after ten calls');
@@ -581,11 +588,29 @@ describe('G3.1 the window: only w ≥ 0.25 enters, and the divisor is N = 50', (
     assert.equal(win[win.length - 1].at, 119);
   });
 
-  test('a call entry is exactly the save schema {p, ok, w, skill, at}, in that key order', () => {
+  test('a call entry is exactly the save schema {p, ok, q, skill, at}, in that key order', () => {
     const e = callEntry({ call: 85, ok: true, qHat: 0.85, skill: 'FAC2', at: 1758000000000 });
-    assert.deepEqual(Object.keys(e), ['p', 'ok', 'w', 'skill', 'at']);
-    assert.deepEqual(e, { p: 0.85, ok: true, w: 0.51, skill: 'FAC2', at: 1758000000000 });
+    assert.deepEqual(Object.keys(e), ['p', 'ok', 'q', 'skill', 'at']);
+    assert.deepEqual(e, { p: 0.85, ok: true, q: 0.85, skill: 'FAC2', at: 1758000000000 });
+    assert.equal(weightOf(e), 0.51, 'and the weight is DERIVED from the stored q̂, not stored beside it');
     assert.ok(JSON.stringify(e).length <= 70, `G7 budgets 63 B per entry; got ${JSON.stringify(e).length}`);
+    /* THE SWAP IS BYTE-NEUTRAL, which is the whole reason it could ship (round-4 verify): the
+       widest q̂ on the `hits/of` grid and the widest `w` it produces are both 8 characters, so G7's
+       `player` line and the 39.6 KB headline do not move. `tests/_helpers.mjs` prices `WIDEST_Q`. */
+    const widest = callEntry({ call: 85, ok: true, qHat: 1 / 3, skill: 'QUAD-SOLVE', at: 1758000000000 });
+    assert.equal(widest.q, 0.333333);
+    assert.equal(String(widest.q).length, String(0.888889).length,
+      'the stored q̂ is wider than the w it replaced — G7’s byte table would have to be restated');
+    /* the explicit-`w` form is untouched: the Mock has no MAKE, so it has no q̂ to store. `w` here
+       is the Mock's CEILING (`RATING.mockWeight`, which is `screens/mock.js MOCK_CALL_W`), not a
+       weight any shipped caller passes unconditionally — see the driven arm below. */
+    const mock = callEntry({ p: 0.7, ok: true, w: JOB.RATING.mockWeight, skill: null, at: 1 });
+    assert.deepEqual(Object.keys(mock), ['p', 'ok', 'w', 'skill', 'at']);
+    assert.equal(weightOf(mock), JOB.RATING.mockWeight);
+    assert.equal(qHatOf(mock), null);
+    /* and it is IDEMPOTENT in both forms — `windowPush` re-runs `callEntry` on what it is handed */
+    assert.deepEqual(callEntry(e), e);
+    assert.deepEqual(callEntry(mock), mock);
     // G3.7 #10 / J7: a shielded miss must write a BYTE-IDENTICAL entry to an unshielded one.
     const unshielded = callEntry({ call: 95, ok: false, qHat: 0.6, skill: 'SYS', at: 7 });
     const shielded = callEntry({ call: 95, ok: false, qHat: 0.6, skill: 'SYS', at: 7, shielded: true, backcheck: true });
@@ -593,13 +618,92 @@ describe('G3.1 the window: only w ≥ 0.25 enters, and the divisor is N = 50', (
       'a Backcheck shields the stake and only the stake — the rating credit is always taken');
   });
 
-  test('the Mock enters the window at the defined weight w = 1.0 (G12 #40d)', () => {
-    const e = callEntry({ p: 0.7, ok: true, w: JOB.RATING.mockWeight, skill: null, at: 1 });
-    assert.equal(e.w, 1);
-    assert.equal(e.skill, null, 'the Mock has no make, so it has no q̂ — the weight is DEFINED, not derived');
-    const win = windowPush([], e);
-    assert.equal(win.length, 1);
-    near(ratingFrom(win), 5 + 2 * (1 * 6.4) / 50, 1e-12);
+  /* ────────────────────────────────────────────────────────────────────────────────────────────
+     VERIFY r3 · BLOCKER (call-propriety). THIS ARM USED TO READ:
+
+         test('the Mock enters the window at the defined weight w = 1.0 (G12 #40d)', () => {
+           const e = callEntry({ p: 0.7, ok: true, w: JOB.RATING.mockWeight, skill: null, at: 1 });
+           assert.equal(e.w, 1);   // …and nothing else
+
+     It handed `callEntry` a constant NO SHIPPED CALLER PASSES, so it asserted `callEntry`'s
+     pass-through and published the answer as a fact about the Mock. `grep -rn mockWeight site/`
+     returned `settings.js` and `data/job.js` and nothing in `screens/mock.js`: the constant was a
+     fiction with a student-facing render ("…enters the window as one call at w = 1.0: it has no
+     make, so it has no q̂, and the weight is defined rather than guessed"). Both halves were false.
+     The shipped law is `mockCallWeight(ŝ) = min(4ŝ(1−ŝ), MOCK_CALL_W)` on the trailing-ten MEAN
+     SCORE — MEASURED, and 0 with no prior paper — so a perfect Mock forecast is worth 0.10 of
+     rating and a first-ever one exactly 0.00, against the 0.40 `w = 1.0` implies: a 4× overstatement
+     of the app's only calibration surface outside a job. `tests/job-week.test.mjs` asserted the
+     opposite fact about the same mechanic and both suites were green, because neither drove it.
+     THIS ONE DRIVES IT, end to end, and reads the entry back off `player.rating.calls`.
+     ──────────────────────────────────────────────────────────────────────────────────────────── */
+  test('the Mock’s weight is MEASURED off its own papers and CAPPED — driven, never restated', async () => {
+    const mock = await import('../site/js/screens/mock.js');
+    const DAY = 24 * 60 * 60 * 1000;
+    const paper = ({ pred, score, at, seed }) => ({
+      kind: 'mock', status: 'done', n: 20, seed, retry: false,
+      items: Array.from({ length: 20 }, (_, i) => ({
+        n: i + 1, credit: 0, parts: [{ id: 'a', type: 'text', credit: 0, kind: 'wrong', ok: false }],
+      })),
+      pred, score, startedAt: at - 25 * 60 * 1000, submittedAt: at,
+    });
+    const saveWith = (runs) => ({
+      player: { rating: { calls: [], value: JOB.RATING.base, n: 0 }, rank: 1, records: {} },
+      runs: [...runs], settings: {},
+    });
+    const now = Date.UTC(2026, 8, 22, 18, 0, 0);
+
+    /* THE PUBLISHED CONSTANT IS THE SHIPPED CEILING, or this suite and job-week disagree again */
+    assert.equal(JOB.RATING.mockWeight, mock.MOCK_CALL_W,
+      'RATING.mockWeight must BE screens/mock.js MOCK_CALL_W — it is rendered to the student');
+    assert.equal(JOB.RATING.mockWeight, INFORMATIVE_MIN, 'and that ceiling is the informative floor');
+
+    /* 1 · A FIRST-EVER MOCK IS WORTH EXACTLY NOTHING — no prior paper, so ŝ is null and w is 0. */
+    const first = saveWith([]);
+    const p1 = paper({ pred: 70, score: 70, at: now, seed: 's1' });
+    const r1 = mock.applyMockCall(first, p1, { now });
+    assert.ok(r1, 'the call is eligible — this arm is about the WEIGHT, not the gate');
+    assert.equal(r1.w, 0, 'no prior paper → ŝ = null → weightFor(null) = 0');
+    const e1 = first.player.rating.calls.at(-1);
+    assert.deepEqual(e1, { p: null, ok: true, w: 0, skill: null, at: now }, 'a BLANK slot');
+    assert.equal(weightOf(e1), 0);
+    assert.equal(first.player.rating.value, JOB.RATING.base,
+      'a perfect first forecast moves the rating by exactly 0.00 — the panel implied 0.40');
+
+    /* 2 · WITH A HISTORY INSIDE THE BAND the weight is the CAP, and one slot pays at most 2.50. */
+    const warm = saveWith([paper({ pred: 0, score: 50, at: now - 2 * DAY, seed: 'h1' })]);
+    const p2 = paper({ pred: 80, score: 80, at: now, seed: 's2' });
+    const r2 = mock.applyMockCall(warm, p2, { now });
+    assert.equal(mock.mockPriorMean(warm, p2), 0.5, 'ŝ is the mean score fraction of the prior papers');
+    assert.equal(r2.w, JOB.RATING.mockWeight, 'min(4·0.5·0.5, 0.25) = 0.25 — the cap BINDS');
+    const e2 = warm.player.rating.calls.at(-1);
+    assert.deepEqual(e2, { p: 1, ok: true, w: JOB.RATING.mockWeight, skill: null, at: now });
+    assert.equal(qHatOf(e2), null, 'no MAKE, so no q̂ — but the weight was still measured');
+    near(r2.contribution, mock.MOCK_CALL_SLOT_MAX, 1e-12, 'a perfect forecast pays the slot maximum');
+    near(warm.player.rating.value,
+      JOB.RATING.base + (JOB.RATING.scale * mock.MOCK_CALL_SLOT_MAX) / JOB.RATING.N, 1e-12);
+    /* the number the old constant published, and the number that ships */
+    near(warm.player.rating.value - JOB.RATING.base, 0.10, 1e-12);
+    near((JOB.RATING.scale * (1 * credit(1, true))) / JOB.RATING.N, 0.40, 1e-12,
+      'w = 1.0 would have paid 0.40 — four times what the shipped law pays');
+
+    /* 3 · A HISTORY OUTSIDE THE BAND weighs nothing, however exact the forecast. */
+    const sharp = saveWith([paper({ pred: 0, score: 95, at: now - 2 * DAY, seed: 'h2' })]);
+    const p3 = paper({ pred: 95, score: 95, at: now, seed: 's3' });
+    const r3m = mock.applyMockCall(sharp, p3, { now });
+    assert.equal(mock.mockPriorMean(sharp, p3), 0.95);
+    assert.equal(r3m.w, 0, 'ŝ = 0.95 is outside INFORMATIVE_BAND — the same gate a job call passes');
+    assert.equal(sharp.player.rating.calls.at(-1).p, null, 'and it takes its slot BLANK');
+
+    /* 4 · NO SHIPPED CALLER EVER PASSES THE CEILING UNCONDITIONALLY. The constant is a ceiling, and
+       the sentence Settings prints must say `min(4ŝ(1−ŝ), 0.25)` and "measured", never "defined". */
+    const mockSrc = readFileSync(join(ROOT, 'site/js/screens/mock.js'), 'utf8');
+    assert.ok(/mockCallWeight\(sHat\)/.test(mockSrc), 'the weight comes from mockCallWeight, not a constant');
+    const settings = readFileSync(join(ROOT, 'site/js/screens/settings.js'), 'utf8');
+    if (settings.includes('RATING.mockWeight')) {
+      assert.ok(!/weight is defined rather than guessed/.test(settings),
+        'Settings still tells the student the Mock’s weight is DEFINED — mockCallWeight measures it');
+    }
   });
 });
 
@@ -958,11 +1062,11 @@ describe('G1 global law 6: the EV-max rung appears on no pre-call surface', () =
     assert.deepEqual(planted, ['PLANTED'], 'the scanner must be able to fail');
   });
 
-  test('COPY.regret2 is a debrief line: it prints a cost in rating, about an envelope already answered', () => {
+  test('COPY.regret2 is a debrief line: it prints a cost in CREDIT, about an envelope already answered', () => {
     const s = JOB.COPY.regret2({ envelope: 3, called: 85, evMax: 95, cost: 4 });
     assert.match(s, /envelope 3/);
     assert.match(s, /you called 85/, 'past tense — the call is already locked');
-    assert.match(s, /cost 4 rating/);
+    assert.match(s, /cost 4 credit/, 'finding 40: `cost` is a CREDIT gap, and the word has to say so');
   });
 
   test('no pre-call template mentions a call rung as a recommendation at all', () => {
@@ -1201,7 +1305,8 @@ describe('an UNMEASURED window is not a measurement of 5.00 (round-1 finding 6, 
     assert.equal(ratingDetail([], JOB.RATING.N, { rank: 5 }).rank, 5, 'held, not demoted');
     assert.equal(ratingDetail([], JOB.RATING.N, { rank: 5 }).held, true);
     assert.equal(ratingDetail(filled, JOB.RATING.N, { rank: 1 }).held, false,
-      'a measured window is never held — a rating you earned can still fall');
+      'a NON-BINDING floor is never held — a rating you earned can still fall, and the rank it bought does not '
+      + '(a BINDING floor on a measured window DOES hold: see the S3 ratchet section below)');
     assert.equal(ratingDetail(filled, JOB.RATING.N, { rank: 1 }).rank, rankFor(ratingDetail(filled).value));
   });
 
@@ -1212,6 +1317,689 @@ describe('an UNMEASURED window is not a measurement of 5.00 (round-1 finding 6, 
     assert.equal(rankFor(9.5, { floor: 2 }), 5, 'a floor cannot pull a rank DOWN');
     assert.equal(rankFor(9.5, { floor: null }), 5);
     assert.equal(rankFor.length, 1, 'G8 J2 names rankFor(rating); the floor is optional');
+  });
+});
+
+/* =========================================================================================
+   S3 — MASTERING THE MATERIAL DEMOTED YOU. THE RANK IS A RATCHET.
+   (designs/REPAIR-DECISION.md §S3, acceptance items 1, 2, 3 and 5. Items 4 and 6 are the
+   `state` / `screen` lanes' — see notes/repair-call.md "Requests".)
+
+   THE FAULT, measured through the shipped functions on a homogeneous 50-call window at the
+   honest rung, clears proportioned to q̂:
+
+       q̂ 0.90 → rating 9.536 · n 50 · Called 5 · calls 50,70,85,95 · guardMult 0.75
+       q̂ 0.93 → rating 8.656 · n 50 · Called 4
+       q̂ 0.95 → rating 5.000 · n  0 · Called 2 · calls 50,70,85    · guardMult 0.55
+
+   Improving from q̂ 0.90 to 0.95 cost three ranks, the 95 rung and guardMult 0.75 → 0.55.
+
+   WHY `held = !measured` WAS NOT THE FIX, and why this section is the assertion that refutes it:
+   the demotion is a CONTINUOUS SLIDE in the number of informative slots `k`, not the `n === 0`
+   corner. The expressible honest ceiling is `5 + 2·k·(w·E[c])/N`, so a Called-5 student walking
+   their makes into mastery is demoted 5 → 4 → 3 → 2 with `measured === true` at every step but
+   the last. `!measured` fires only at the last one. The floor covers the whole path, with no new
+   constant: `ratingDetail(calls, N, {rank})` now returns `rankFor(value, { floor: rank })`.
+   ========================================================================================= */
+
+describe('S3 · the held rank is a FLOOR under the printed rank, not an n === 0 fallback', () => {
+  /** `k` informative slots at one q̂/rung (the first `h` cleared), padded to 50 with blank slots. */
+  const winOf = ({ k, h, q, call, N = JOB.RATING.N }) => {
+    const win = [];
+    for (let i = 0; i < k; i++) win.push(callEntry({ call, ok: i < h, qHat: q, skill: 'X', at: i }));
+    /* a MASTERED make: q̂ = 1 ⟹ w = 0 ⟹ `callEntry` writes the blank slot `{p: null, w: 0}` */
+    for (let i = k; i < N; i++) win.push(callEntry({ call: 85, ok: true, qHat: 1, skill: 'X', at: i }));
+    return win;
+  };
+
+  test('a MEASURED window with a BINDING floor holds — rank is a ratchet (S3 item 1)', () => {
+    /* half the window measured, the other half mastered out of it: 25 informative slots at
+       q̂ = 0.90 on the honest rung, 22 of them cleared. Every number below is measured, not
+       transcribed — the rating comes out of the shipped scorer. */
+    const win = winOf({ k: 25, h: 22, q: 0.9, call: 85 });
+    const bare = ratingDetail(win, JOB.RATING.N);
+    assert.equal(bare.n, 25, 'the window must be genuinely measured, or this proves nothing about `measured`');
+    assert.equal(bare.slots, JOB.RATING.N);
+    near(bare.value, 7.066, 0.01, 'the rating this window earns');
+    assert.equal(bare.measured, true);
+    assert.equal(rankFor(bare.value), 3, 'and on its own it prints Called 3');
+    assert.equal(bare.rank, 3, 'with no floor passed, the shipped recomputation is unchanged');
+    assert.equal(bare.held, false);
+
+    const held = ratingDetail(win, JOB.RATING.N, { rank: 5 });
+    assert.equal(held.value, bare.value, 'the floor moves the RANK, never the rating');
+    assert.equal(held.measured, true, 'the window is still a measurement');
+    assert.equal(held.rank, 5, 'a student who earned Called 5 is not demoted to 3 for mastering their makes');
+    assert.equal(held.held, true, 'and `held` says the floor is what carried it');
+    assert.equal(held.n, 25, 'the informative count is untouched — the board still prints 25/50');
+  });
+
+  test('a NON-BINDING floor is transparent, and `held` means the floor BOUND (S3 item 2)', () => {
+    const win = winOf({ k: 25, h: 22, q: 0.9, call: 85 });
+    for (const floor of [1, 2, 3]) {
+      const d = ratingDetail(win, JOB.RATING.N, { rank: floor });
+      assert.equal(d.rank, rankFor(d.value), `floor ${floor} is at or below the earned rank and may not move it`);
+      assert.equal(d.held, false, `floor ${floor} did not bind, so nothing was held`);
+    }
+    /* the invariant, stated once: `held` ⟺ the floor printed a higher rank than the window did */
+    for (const floor of [null, undefined, 1, 2, 3, 4, 5]) {
+      const d = ratingDetail(win, JOB.RATING.N, { rank: floor });
+      assert.equal(d.held, d.rank > rankFor(d.value), `held disagrees with the floor at ${floor}`);
+      assert.ok(d.rank >= rankFor(d.value), 'a floor may never LOWER the printed rank');
+    }
+  });
+
+  test('the whole SLIDE, not the corner: every step of the walk into mastery holds (S3 item 3)', () => {
+    /* A Called-5 student masters their makes five slots at a time. Each step carries the rank the
+       previous step printed — exactly what `state.applyTarget` does with `p.rank`. */
+    const step = (k) => winOf({ k, h: k, q: 0.85, call: 85 });
+    const start = ratingDetail(step(JOB.RATING.N), JOB.RATING.N);
+    assert.equal(start.rank, JOB.RANKS.length, 'the walk must START at Called 5 or it measures nothing');
+
+    let rank = start.rank;
+    const walk = [];
+    let bareFell = 0; let heldMeasured = 0;
+    for (let k = JOB.RATING.N; k >= 0; k -= 5) {
+      const d = ratingDetail(step(k), JOB.RATING.N, { rank });
+      assert.ok(d.rank >= rank, `k = ${k}: the rank FELL ${rank} → ${d.rank} — the ratchet is not holding`);
+      if (rankFor(d.value) < start.rank) bareFell++;
+      if (d.measured && d.held) heldMeasured++;
+      walk.push({ k, value: +d.value.toFixed(3), bare: rankFor(d.value), rank: d.rank, measured: d.measured, held: d.held });
+      rank = d.rank;
+    }
+    assert.equal(rank, start.rank, 'the walk finished on a rank below the one it started with');
+    assert.equal(walk.at(-1).k, 0);
+    assert.equal(walk.at(-1).measured, false, 'the last step is the unmeasured corner');
+    assert.ok(bareFell >= 3,
+      `only ${bareFell} of ${walk.length} steps would have been demoted without the floor — the slide is not being exercised`);
+    assert.ok(heldMeasured > 0,
+      'no step was both MEASURED and HELD, so this walk cannot tell a floor apart from `held = !measured` '
+      + `— ${JSON.stringify(walk)}`);
+    /* the refutation of the critics' own named fix, as a number: strictly more steps are rescued by
+       the floor than `!measured` could ever rescue (which is exactly one, the k = 0 corner) */
+    assert.ok(bareFell > 1, `a floor rescued ${bareFell} steps; \`held = !measured\` rescues 1`);
+  });
+
+  test('downward mobility that must survive the ratchet, and does (S3 item 5)', () => {
+    /* Systematic over-calling: 95 on material that clears half the time. The RATING still goes to
+       the clamp with a full fifty measurements — the brake is the CARRY ladder, not the rank. */
+    const over = Array.from({ length: JOB.RATING.N }, (_, i) =>
+      callEntry({ call: 95, ok: i % 2 === 0, qHat: 0.5, skill: 'X', at: i }));
+    const od = ratingDetail(over, JOB.RATING.N, { rank: 5 });
+    assert.equal(od.n, JOB.RATING.N, 'k = 50: every slot is a measurement');
+    assert.equal(r2(od.value), 0, 'the rating still falls all the way to 0.00');
+    assert.equal(od.measured, true);
+    assert.equal(rankFor(od.value), 1, 'and on its own the window prints Called 1');
+    assert.equal(od.rank, 5, 'the rank is HELD — the published cost of the ratchet (S3.6)');
+    assert.equal(od.held, true);
+
+    /* Cowardice: 50 on everything is a MEASUREMENT of exactly 5.00, and buys no rank from any
+       floor it could honestly have arrived with. */
+    const coward = Array.from({ length: JOB.RATING.N }, (_, i) =>
+      callEntry({ call: 50, ok: i % 2 === 0, qHat: 0.5, skill: 'X', at: i }));
+    for (const floor of [null, 1, 2]) {
+      const cd = ratingDetail(coward, JOB.RATING.N, { rank: floor });
+      assert.equal(cd.measured, true, 'calling 50 fifty times IS a measurement (G3.7 #9)');
+      assert.equal(cd.value, JOB.RATING.base, 'and it scores exactly 5.00');
+      assert.equal(cd.rank, 2, `Called 2 forever, from floor ${floor}`);
+      assert.equal(cd.held, false, 'nothing was held: cowardice earns the rank it prints');
+    }
+  });
+});
+
+/* =========================================================================================
+   S3-CAP · ROUND-4 VERIFY — A RATCHET MAY NOT BANK LUCK.
+
+   THE BLOCKER. S3 made `player.rank` a floor that every writer persists, so the currency that
+   gates the 95 rung and guardMult stopped being `E[rating]` and became `max_t rating_t`. A max
+   over a NOISY statistic pays for VARIANCE: at equal mean the wider report strictly dominates.
+   Measured through the shipped `windowPush → ratingDetail({rank}) → persisted rank` path, 400
+   lives of 300 calls each, before the cap:
+
+       true q 0.55   honest reached Called >= 3 in 33.0 % of lives, `always 70` in 83.0 %
+       true q 0.60   honest 68.5 % / Called 5 in  3.5 %,  `always 70` 98.8 % / 35.8 %
+       q̂ = 0.60 held fixed — the exact 50↔70 indifference of BOTH published ladders — the honest
+                   50 prints exactly 5.000 with probability 1, so the lie was the ONLY report that
+                   could ever print above it.
+
+   THE FIX, and what these arms measure. `ratingDetail` now prices the rank off `earned =
+   min(value, ceiling)`, where `ceiling` is `Σ w·E[c](p, q̂)/N` mapped through the rating formula —
+   the rating the student's OWN REPORTS are worth on this material. It reads `ok` on no slot, so
+   no run of luck can raise it, and because the credit is strictly proper it is maximised SLOT BY
+   SLOT by the truthful rung. The published claims it restores, each an arm below:
+     · G3.8 #3 "truthful self-assessment is the dominant reporting policy" — §1 (an identity over
+       every q̂ the game can compute), §4 (driven, on the floored rank the game persists).
+     · G3.7 #9 "the brake on systematic over-calling is the CARRY ladder, not the rating" — §3:
+       at q̂ = 3/5 the rating ladder no longer hands the over-caller anything AT ALL, whatever the
+       dice do, so the carry ladder is once again the only thing separating the two rungs there.
+   §5 is the anti-tautology arm: the SAME draws, ratcheted the pre-fix way, reproduce the defect.
+   ========================================================================================= */
+
+describe('S3-CAP · the ratchet is priced off the calls, not off the dice', () => {
+  const N = JOB.RATING.N;
+  /* ────────────────────────────────────────────────────────────────────────────────────────────
+     VERIFY r3 · BLOCKER (call-propriety). THIS CONSTRUCTOR USED TO READ:
+
+         const QHATS = Array.from({length: JOB.RATING.qHatWindow + 1}, (_, k) => k / JOB.RATING.qHatWindow)
+           .filter(isInformative);                       // …asserted below as exactly [0.1 … 0.9]
+
+     — "`RATING.qHatWindow` is 10, so every reachable q̂ is `k/10`", which is FALSE. `qHatDetail`
+     divides by the sittings the make HAS (`const win = seenBefore.slice(-size); const of =
+     win.length; … hits / of`), so a make reports `h/of` with `of = min(10, sittings)` and every
+     make is below ten sittings until its tenth. 6/7 is reachable and pays `w·E[c] = 2.4980` —
+     above the 2.2680 the authority published as the reachable maximum, and essentially the
+     CONTINUOUS peak 2.4998. So §1 — the slot-by-slot propriety identity the whole rank cap rests
+     on — was verified on 9 of the 31 informative values the app can produce. (It holds at all 31;
+     the guard was three times narrower than the space it claimed to cover, which is exactly the
+     kind of gap a grid a TEST invents can have and a grid the CODE publishes cannot.)
+     `call.reachableQHats` / `informativeQHats` are now that grid, and this suite imports it.
+     ──────────────────────────────────────────────────────────────────────────────────────────── */
+  const QHATS = informativeQHats().map((r) => r.q);
+  const DECILES = Array.from({ length: JOB.RATING.qHatWindow + 1 }, (_, k) => k / JOB.RATING.qHatWindow)
+    .filter((q) => isInformative(q));
+
+  /** one slot's ceiling in `w·c` units, read back OUT of the shipped detail (never restated here) */
+  const capOf = (call, qHat, ok = true) => {
+    const d = ratingDetail([callEntry({ call, ok, qHat, skill: 'X', at: 1 })], N);
+    return ((d.ceiling - JOB.RATING.base) * N) / JOB.RATING.scale;
+  };
+  const windowOf = (call, qHat, clears) =>
+    Array.from({ length: N }, (_, i) => callEntry({ call, ok: i < clears, qHat, skill: 'X', at: i }));
+
+  /* ROUND-4 VERIFY. There is no longer a readable and an unreadable branch of `w`: the slot stores
+     its own q̂ (`callEntry`'s banner), so `slotCeiling` reads the material instead of guessing a root
+     and the theorem below holds at EVERY q̂ the game can compute. `HALF` is kept because the two
+     roots' midpoint is what the OLD guess compared against, and §1's negative control reproduces
+     that guess to prove this arm measures the fix rather than restating it. */
+  const HALF = (INFORMATIVE_BAND[0] + INFORMATIVE_BAND[1]) / 2;
+  const LOW = QHATS.filter((q) => q < HALF);
+  /** the pre-fix reading: the root that FLATTERS the report, which is all `(w, p)` can support */
+  const flatteringCap = (call, qHat) => {
+    const w = weightFor(qHat);
+    const [lo, hi] = informativeBand(w);
+    const p = callLevel(call).p;
+    return w * expectedCredit(p, p >= (lo + hi) / 2 ? hi : lo);
+  };
+
+  test('§1 the cap is the TRUTHFUL rung’s own worth — no other rung can out-cap it, at ANY q̂', () => {
+    assert.equal(HALF, 0.5, 'the two roots are symmetric about a half, or this split means nothing');
+
+    /* THE GRID IS THE CODE'S, AND IT IS NOT THE DECILES. Both halves are asserted so the arm can
+       never silently shrink back: the set must hold at least 31 members, and it must strictly
+       CONTAIN the nine deciles it used to be. */
+    assert.ok(QHATS.length >= 31,
+      `the informative reachable grid came out as ${QHATS.length} values: ${QHATS.map((q) => q.toFixed(4)).join(', ')}`);
+    assert.deepEqual(DECILES, [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9], 'the deciles, for the record');
+    for (const d of DECILES) assert.ok(QHATS.some((q) => Math.abs(q - d) < 1e-12), `the decile ${d} left the grid`);
+    assert.ok(QHATS.length > DECILES.length * 3, 'the reachable grid is more than three times the decile grid');
+    /* and it is EXACTLY what `qHatDetail` returns — driven, not asserted from the same generator */
+    for (const { q, hits, of } of informativeQHats()) {
+      const hist = Array.from({ length: of }, (_, i) => ({ at: i + 1, ok: i < hits, attempt: 1, hints: 0 }));
+      const d = qHatDetail({ cards: { X: { history: hist } } }, 'S', { cards: { X: { skills: ['S'] } } });
+      assert.equal(d.of, of, `a make with ${of} sittings must divide by ${of}, not by the window`);
+      near(d.qHat, q, 1e-12, `${hits}/${of}`);
+    }
+    /* THE PUBLISHED REACHABLE MAXIMUM. G3.1 called 2.2680 at q̂ = 0.9 "the best a 10-sitting window
+       can actually express"; four reachable values beat it, and the best is 6/7. */
+    const best = QHATS.map((q) => ({ q, wec: wTimesEcDiscrete(q) })).sort((a, b) => b.wec - a.wec);
+    near(best[0].q, 6 / 7, 1e-12, 'the reachable argmax of w·E[c]');
+    near(best[0].wec, 2.4980, 5e-5, 'and what it pays');
+    assert.ok(best[0].wec > wTimesEcDiscrete(0.9) + 1e-9,
+      `6/7 must beat the published 9/10 maximum ${wTimesEcDiscrete(0.9).toFixed(4)}`);
+    assert.equal(best.filter((b) => b.wec > wTimesEcDiscrete(0.9) + 1e-9).length, 4,
+      'exactly four reachable q̂ beat the figure the document published as the maximum: 6/7, 5/6, 7/8, 8/9');
+
+    assert.deepEqual(LOW.filter((q) => DECILES.includes(q)), [0.1, 0.2, 0.3, 0.4],
+      'the branch the shipped cap used to guess wrong is not in the grid — this arm would prove nothing');
+    assert.ok(LOW.length >= 4 && LOW.every((q) => q < HALF));
+    let strict = 0;
+    for (const q of QHATS) {
+      const truth = honestCall(q);
+      const best = capOf(truth, q);
+      let strictHere = 0;
+      for (const id of CALLS) {
+        const c = capOf(id, q);
+        assert.ok(c <= best + 1e-9,
+          `q̂ ${q}: calling ${id} caps at ${c.toFixed(4)} against the honest ${truth}'s ${best.toFixed(4)} `
+          + '— a lie out-caps the truth, and the ratchet would bank it');
+        if (id !== truth && c < best - 1e-9) { strict++; strictHere++; }
+      }
+      assert.ok(strictHere > 0, `q̂ ${q}: no rung was STRICTLY worse than the truth`);
+      /* and the cap is EXACTLY the worth of the call, which is what makes it un-spikeable.
+         AGAINST THE STORED q̂, which is what `slotCeiling` reads: `callEntry` rounds the evidence to
+         6 dp (its banner prices G7's byte budget on that), so 2/3 reaches the cap as 0.666667. The
+         decile grid could not see this — every decile is exact at 6 dp — and over the real
+         reachable grid it is a live, BOUNDED difference, asserted both ways here. */
+      const slot = callEntry({ call: truth, ok: true, qHat: q, skill: 'X', at: 1 });
+      const stored = qHatOf(slot);
+      near(best, weightOf(slot) * expectedCredit(callLevel(truth).p, stored), 1e-12,
+        `q̂ ${q}: the cap is not w·E[c] at the honest rung`);
+      near(best, weightFor(q) * expectedCredit(callLevel(truth).p, q), 1e-4,
+        `q̂ ${q}: 6 dp of stored evidence moved the cap further than that rounding can explain`);
+      if (stored === q) {
+        near(best, weightFor(q) * expectedCredit(callLevel(truth).p, q), 1e-12,
+          `q̂ ${q} is exact at 6 dp, so the cap must be exact too`);
+      }
+    }
+    assert.ok(strict >= QHATS.length * 2,
+      `only ${strict} rung/q̂ pairs were STRICTLY out-capped by the truth — this arm is not measuring propriety`);
+
+    /* THE NEGATIVE CONTROL, and the blocker it reproduces. The shipped cap used to read the root
+       that flattered the report, and every CALL_LEVELS `p` is ≥ ½, so the root was ALWAYS the
+       higher one. On material the student clears 1 time in 10 that priced the 85 lie at the honest
+       master's own 2.268 per slot, against 0 for the honest 50. If this loop ever stops finding
+       over-priced lies, the arm above has become a tautology. */
+    let fooled = 0;
+    for (const q of LOW) {
+      const truth = honestCall(q);
+      assert.equal(truth, CALLS[0], `q̂ ${q}: the honest rung on this branch is the bottom one`);
+      assert.equal(capOf(truth, q), 0, 'and the honest 50 is worth exactly nothing at every q̂');
+      for (const id of CALLS) {
+        if (id === truth) continue;
+        if (flatteringCap(id, q) > flatteringCap(truth, q) + 1e-9) fooled++;
+      }
+    }
+    assert.ok(fooled >= LOW.length,
+      `the pre-fix reading over-priced only ${fooled} lies on the low branch — the control is dead, so §1 `
+      + 'is no longer measuring the round-4 blocker');
+    near(flatteringCap(85, 0.1), capOf(85, 0.9), 1e-9,
+      'the blocker in one line: (w, p) alone cannot tell an 85 lie at q̂ = 0.1 from an honest 85 at q̂ = 0.9');
+    assert.ok(capOf(85, 0.1) < capOf(50, 0.1) - 1e-9,
+      'and with the q̂ stored, that same lie is now priced BELOW the honest 50 it was beating');
+  });
+
+  test('§1b a slot with NO q̂ — the Mock — keeps the double-root reading, and its LOW arm is live', () => {
+    /* `screens/mock.js mockCall` writes `callEntry({ p: 1 − err, w: mockCallWeight(ŝ) })`: it has no
+       make, so it has no clear rate, and there is nothing for `slotCeiling` to read. Those slots
+       (and every window written before round-4 verify) keep the flattering reading — it can only
+       ever cap TOO HIGH, so it demotes nobody, and no game call reaches it any more.
+       THE ARM FINDING 4 ASKED FOR. `p = 1 − err`, so a prediction wrong by more than half (predict
+       95, score 20 → p = 0.25) is read at the LOWER root. That branch is live code and no test used
+       to execute it: replacing the whole conditional with the constant generous root left the suite
+       green. It is red now. */
+    const q = 0.2;                                     // ŝ = 0.2 ⟹ w = 0.64, roots {0.2, 0.8}
+    const w = weightFor(q);
+    const [lo, hi] = informativeBand(w);
+    near(lo, q, 1e-12); near(hi, 1 - q, 1e-12);
+    const p = 0.25;                                    // predict 95, score 20 — the Mock's own shape
+    assert.ok(p < 0.5, 'the premise: only a report BELOW a half takes the lower root');
+
+    const slot = callEntry({ p, ok: true, w, skill: null, at: 1 });
+    assert.equal(qHatOf(slot), null, 'a Mock slot records a DEFINED weight and no evidence');
+    const ceiling = ((ratingDetail([slot], 1).ceiling - JOB.RATING.base) * 1) / JOB.RATING.scale;
+    near(ceiling, w * expectedCredit(p, lo), 1e-9, 'the Mock slot is not priced at the LOWER root');
+    assert.ok(ceiling > w * expectedCredit(p, hi) + 1e-9,
+      `the two roots do not separate here (${(w * expectedCredit(p, lo)).toFixed(4)} vs `
+      + `${(w * expectedCredit(p, hi)).toFixed(4)}) — a constant-root mutant would survive this arm`);
+    near(w * expectedCredit(p, lo) - w * expectedCredit(p, hi), 7.68, 1e-9,
+      'the swing the unpinned branch was worth, in w·c units');
+
+    /* and the HIGH arm still takes the higher root, so the conditional is pinned in both directions */
+    const high = callEntry({ p: 0.95, ok: true, w, skill: null, at: 2 });
+    const hiCeiling = ((ratingDetail([high], 1).ceiling - JOB.RATING.base) * 1) / JOB.RATING.scale;
+    near(hiCeiling, w * expectedCredit(0.95, hi), 1e-9, 'a Mock report above a half is not priced at the HIGHER root');
+    assert.ok(hiCeiling > w * expectedCredit(0.95, lo) + 1e-9, 'the two roots do not separate on the high arm either');
+
+    /* THE BOUNDARY IS AN EQUIVALENT MUTANT, AND HERE IS WHY — so the next mutation sweep does not
+       re-file `>=` → `>` on that line as an untested branch. `E[c](½, q) = 10 − 40·¼ = 0` for EVERY
+       q, so at `p = ½` the two roots pay the same and the comparison's tie side cannot be observed.
+       It is not a gap in the arm above; it is a property of the credit at the midpoint. */
+    for (const qq of [0.1, 0.3, 0.5, 0.7, 0.9]) {
+      near(expectedCredit(0.5, qq), 0, 1e-12, 'the 50 rung is worth exactly nothing at every q̂');
+    }
+    const tie = callEntry({ p: 0.5, ok: true, w, skill: null, at: 3 });
+    assert.equal(ratingDetail([tie], 1).ceiling, JOB.RATING.base,
+      'a Mock report of exactly a half caps at the neutral whichever root is taken');
+
+    /* A LEGACY WINDOW — `{p, ok, w}` with no `q`, which is what every save written before this
+       round holds — still scores and still caps exactly as it did. */
+    const legacy = Array.from({ length: N }, (_, i) => ({ p: 0.85, ok: i < 40, w: weightFor(0.8), skill: 'X', at: i }));
+    const dLegacy = ratingDetail(legacy, N);
+    near(dLegacy.value, ratingDetail(windowOf(85, 0.8, 40), N).value, 1e-9, 'a legacy window scores differently');
+    near(dLegacy.ceiling, ratingDetail(windowOf(85, 0.8, 40), N).ceiling, 1e-9, 'a legacy window caps differently');
+  });
+
+  test('§2 no outcome moves the cap: it is a function of the report and the weight, and of nothing else', () => {
+    for (const q of QHATS) {
+      for (const id of CALLS) {
+        assert.equal(capOf(id, q, true), capOf(id, q, false),
+          `q̂ ${q}, call ${id}: clearing the target changed the cap — luck can reach the rank again`);
+      }
+      /* a whole window: fifty outcomes, one ceiling */
+      const seen = new Set([0, 1, 25, 49, 50].map((k) => ratingDetail(windowOf(85, q, k), N).ceiling));
+      assert.equal(seen.size, 1, `q̂ ${q}: the ceiling moved with the clear count — ${[...seen].join(' / ')}`);
+    }
+    /* a blank slot is worth nothing and says so: a mastered make cannot buy rank either */
+    assert.equal(ratingDetail(windowOf(95, 1, N), N).ceiling, JOB.RATING.base);
+  });
+
+  test('§3 at q̂ = 3/5 — the exact indifference of BOTH ladders — the 70 call buys nothing at all', () => {
+    const q = JOB.CALL_INDIFFERENCE.rating[0];
+    assert.equal(q, JOB.CALL_INDIFFERENCE.carry[0], 'the premise: the two ladders agree on this boundary');
+    near(expectedCredit(0.5, q), expectedCredit(0.7, q), 1e-12, 'the rating ladder is exactly tied here');
+    near(evFor(q, 50), evFor(q, 70), 1e-12, 'and so is the carry ladder — the lie is FREE on both');
+
+    for (const id of [50, 70]) {
+      for (const clears of [0, 1, 12, 25, 30, 37, 49, N]) {
+        const d = ratingDetail(windowOf(id, q, clears), N, { rank: 2 });
+        near(d.ceiling, JOB.RATING.base, 1e-6,
+          `calling ${id} at q̂ = 3/5 was worth ${d.ceiling} — a tied rung must be worth exactly the neutral`);
+        assert.equal(d.rank, 2,
+          `calling ${id} with ${clears}/${N} clears banked Called ${d.rank} (rating ${d.value.toFixed(3)}) `
+          + '— at the indifference point neither rung may buy a rung the other cannot');
+      }
+    }
+    /* the pre-fix statistic, on the same windows, is what the blocker measured */
+    assert.equal(rankFor(ratingDetail(windowOf(70, q, N), N).value), JOB.RANKS.length,
+      'the un-capped rating of a lucky 70 window still clamps to Called 5 — the cap is what stops it being banked');
+    assert.equal(rankFor(ratingDetail(windowOf(50, q, N), N).value), 2,
+      'while the honest 50 prints exactly Called 2 whatever the dice do');
+  });
+
+  test('§4 honest vs ONE RUNG OVER, on the FLOORED rank the game persists', () => {
+    /* Driven exactly as `state.applyTarget:1184-1187` drives it: q̂ snapshotted BEFORE the outcome,
+       the entry pushed through `windowPush`, the rank read out of `ratingDetail({ rank })` and
+       persisted as the next call's floor. The currency is the rank the save carries, not
+       `rankFor(rating)` — which is the comparison the round-4 blocker asks for by name. */
+    const shift = (n) => (qHat) => {
+      const i = CALLS.indexOf(qHat == null ? CALLS[0] : honestCall(qHat));
+      return CALLS[Math.min(CALLS.length - 1, Math.max(0, i + n))];
+    };
+    const lives = (trueQ, policy, trials = 60, calls = 200) => {
+      let banked = 0; let bankedPre = 0;
+      for (let s = 1; s <= trials; s++) {
+        const rng = rngFrom('s3-cap', `${trueQ}:${s}`);
+        let win = []; let rank = 2; let pre = 2; const hist = [];
+        for (let i = 0; i < calls; i++) {
+          const qHat = hist.length
+            ? hist.slice(-JOB.RATING.qHatWindow).filter(Boolean).length / Math.min(hist.length, JOB.RATING.qHatWindow)
+            : null;
+          const ok = rng.chance(trueQ);
+          win = windowPush(win, { call: policy(qHat), ok, qHat: qHat ?? undefined, skill: 'M', at: i }, { N });
+          const d = ratingDetail(win, N, { rank });
+          rank = d.rank;                                   // the shipped ratchet, on the capped rank
+          pre = Math.max(pre, rankFor(d.value));           // the pre-fix ratchet, on rankFor(rating)
+          hist.push(ok);
+        }
+        banked += rank; bankedPre += pre;
+      }
+      return { banked: banked / trials, pre: bankedPre / trials };
+    };
+
+    /* ROUND-4 VERIFY — THE FAMILY THIS ARM USED TO MISS, AND THE BLOCKER IT HID.
+       The two-member family `shift(±1)` is UNIFORM: it lies at every q̂, including the ones where
+       lying is obviously ruinous, so the cap closed it easily and the arm passed. The policy that
+       broke the theorem is BRANCH-CONDITIONAL — tell the truth everywhere the window could read the
+       material, and over-call only where it could not (`honestCall(q̂)` is the bottom rung, i.e.
+       q̂ < ½, where `w` used to be ambiguous). Measured on the shipped ratchet before the q̂ was
+       stored, that policy out-banked truth at FIVE of six true q. It is in the family now. */
+    const branchShift = (n) => (qHat) => {
+      const honest = qHat == null ? CALLS[0] : honestCall(qHat);
+      if (honest !== CALLS[0]) return honest;                 // readable material: tell the truth
+      return CALLS[Math.min(CALLS.length - 1, n)];            // unreadable material: over-call
+    };
+    const FAMILY = [
+      ['+1 rung uniform', shift(1)],
+      ['−1 rung uniform', shift(-1)],
+      ['+1 rung on the bottom-rung branch only', branchShift(1)],
+      ['+2 rungs on the bottom-rung branch only', branchShift(2)],
+      ['top rung on the bottom-rung branch only', branchShift(CALLS.length - 1)],
+    ];
+
+    let preDefect = 0; let branchTested = 0;
+    for (const trueQ of [0.5, 0.55, 0.6, 0.65, 0.7, 0.8]) {
+      const truth = lives(trueQ, shift(0));
+      for (const [name, policy] of FAMILY) {
+        const lie = lives(trueQ, policy);
+        assert.ok(truth.banked >= lie.banked - 1e-9,
+          `true q ${trueQ}: "${name}" banked Called ${lie.banked.toFixed(3)} against truth's `
+          + `${truth.banked.toFixed(3)} — that reporting policy still out-ranks the honest one`);
+        if (name.startsWith('+1 rung on')) branchTested++;
+        /* §5, folded in: the SAME draws, ratcheted the pre-fix way, must reproduce the defect —
+           otherwise this arm would pass on a scorer that never had the problem. */
+        if (lie.pre > truth.pre + 1e-9) preDefect++;
+      }
+    }
+    assert.equal(branchTested, 6, 'the branch-conditional policy was not driven at every true q');
+    assert.ok(preDefect > 0,
+      'ratcheting `rankFor(rating)` never once beat the truth on these draws — the arm is a tautology, '
+      + 'not a measurement of the blocker');
+  });
+
+  test('§6 the rank is the WORTH of the calls, moves with no outcome, and leaves Called 5 reachable', () => {
+    for (const q of QHATS) {
+      for (const id of CALLS) {
+        const ranks = new Set(); const earns = new Set();
+        for (const clears of [0, 17, 33, N]) {
+          const d = ratingDetail(windowOf(id, q, clears), N);
+          assert.equal(d.earned, d.ceiling, 'the rank is read off the ceiling and off nothing else');
+          assert.equal(d.rank, rankFor(d.ceiling), 'and with no floor it is exactly that ceiling’s band');
+          assert.equal(d.capped, d.value > d.ceiling);
+          assert.equal(d.offBand, rankFor(d.value) !== d.rank,
+            'offBand must be true exactly when the printed rank is not the printed rating’s band');
+          assert.equal(ratingDetail(windowOf(id, q, clears), N, { rank: JOB.RANKS.length }).rank, JOB.RANKS.length,
+            'and the floor still holds every rank the student owns');
+          ranks.add(d.rank); earns.add(d.earned);
+        }
+        /* THE WHOLE POINT OF THE ROUND-4 REPAIR, as one assertion: fifty clears and fifty misses on
+           the same reports buy the same rank, so `max_t` cannot pay for variance. */
+        assert.equal(ranks.size, 1, `q̂ ${q} call ${id}: the rank moved with the clear count — ${[...ranks].join('/')}`);
+        assert.equal(earns.size, 1, `q̂ ${q} call ${id}: the rank’s own rating moved with the clear count`);
+      }
+      /* the honest ceiling IS the published expectation — `expectedRating` computes the same number
+         off `wTimesEcDiscrete`, so the cap cannot drift from the table G3.1 publishes */
+      /* THE ONE GAP THE WIDER GRID OPENED, bounded rather than waved at. `callEntry` stores q̂ at
+         6 dp and `weightOf` rounds `w` to 6 dp; `expectedRating` computes both exactly. A q̂ that is
+         exact at 6 dp (every decile, and 3/5, 1/4, …) therefore agrees to the last bit; one that is
+         not (2/3, 6/7, 1/7 …) agrees to within what those two roundings can move, which is
+         `scale · 5e-7 · c_max` on the rating scale. The decile grid could not see this at all. */
+      const stored = qHatOf(callEntry({ call: honestCall(q), ok: true, qHat: q, skill: 'X', at: 1 }));
+      const ROUND_EPS = JOB.RATING.scale * 5e-7 * JOB.CREDIT.base;
+      near(ratingDetail(windowOf(honestCall(q), q, 0), N).ceiling, expectedRating(q),
+        stored === q ? 1e-12 : ROUND_EPS, `q̂ ${q}: the cap and expectedRating disagree`);
+    }
+    const best = Math.max(...QHATS.map((q) => ratingDetail(windowOf(honestCall(q), q, 0), N).ceiling));
+    assert.ok(best >= JOB.RANK_THRESHOLDS[JOB.RANKS.length - 1],
+      `the best a truthful window can be WORTH is ${best.toFixed(3)}, below the ${JOB.RANK_THRESHOLDS[4]} `
+      + 'Called 5 asks for — the cap has closed the top rank to honest play');
+  });
+
+  /* -------------------------------------------------------------------------------------------
+     §6b — "CALLED 5 IS REACHABLE" IS A CLAIM ABOUT PLAY, SO IT IS MEASURED BY PLAYING.
+     (round-2 verify, call-propriety finding 1: "§6's Called-5 arm takes Math.max over single-q̂
+     homogeneous windows, which is arithmetic about the cap rather than a measurement of honest
+     play".)
+
+     §6's last two lines take the best `ceiling` over nine homogeneous windows — fifty identical
+     calls at one q̂, a window no student produces — and compare it with `RANK_THRESHOLDS[4]`. That
+     is a statement about the cap's arithmetic; it stays true on a scorer no live save could ever
+     reach the top of. This arm drives the SHIPPED path instead — `windowPush → ratingDetail({rank})
+     → the persisted rank`, 60 lives of 200 calls, q̂ recomputed from the student's own clear history
+     exactly as `state.applyTarget` recomputes it — and asks how often a TRUTHFUL student actually
+     banks Called 5. Measured on this tree:
+
+         true q   truth reaches Called 5   always-95   always-50
+         0.70              15 %                0 %        0 %
+         0.80              65 %                7 %        0 %
+         0.85              68 %                8 %        0 %
+         0.95               5 %                2 %        0 %
+
+     The collapse at 0.95 is not a defect, it is G3.7 #3 working: material the student clears 19
+     times in 20 drives q̂ towards 1, `w = 4q̂(1−q̂)` towards 0, and a window of blank slots is worth
+     the neutral. The top rank is bought on material the student is genuinely uncertain about.
+     ------------------------------------------------------------------------------------------- */
+  test('§6b Called 5 is reachable BY PLAYING HONESTLY — and it is easy material, not lies, that closes it', () => {
+    const truth = (qHat) => (qHat == null ? CALLS[0] : honestCall(qHat));
+    const lives = (trueQ, policy, trials = 60, calls = 200) => {
+      let reached = 0; let sum = 0;
+      for (let s = 1; s <= trials; s++) {
+        const rng = rngFrom('s3-cap', `${trueQ}:${s}`);
+        let win = []; let rank = 2; const hist = [];
+        for (let i = 0; i < calls; i++) {
+          const qHat = hist.length
+            ? hist.slice(-JOB.RATING.qHatWindow).filter(Boolean).length / Math.min(hist.length, JOB.RATING.qHatWindow)
+            : null;
+          const ok = rng.chance(trueQ);
+          win = windowPush(win, { call: policy(qHat), ok, qHat: qHat ?? undefined, skill: 'M', at: i }, { N });
+          rank = ratingDetail(win, N, { rank }).rank;
+          hist.push(ok);
+        }
+        if (rank >= JOB.RANKS.length) reached++;
+        sum += rank;
+      }
+      return { pct: Math.round((100 * reached) / trials), mean: sum / trials };
+    };
+
+    const GRID = [0.7, 0.8, 0.85, 0.95];
+    const rows = GRID.map((q) => ({
+      q,
+      truth: lives(q, truth),
+      bold: lives(q, () => 95),
+      coward: lives(q, () => 50),
+    }));
+    const table = rows.map((r) => `q ${r.q}: truth ${r.truth.pct}% / 95 ${r.bold.pct}% / 50 ${r.coward.pct}%`).join(' · ');
+
+    assert.ok(rows.some((r) => r.truth.pct >= 40),
+      `a truthful student banked Called 5 on at most ${Math.max(...rows.map((r) => r.truth.pct))} % of lives at any `
+      + `true q — the top rank is not reachable by honest play (${table})`);
+    for (const r of rows) {
+      assert.ok(r.truth.pct >= r.bold.pct,
+        `true q ${r.q}: calling 95 on everything reached Called 5 on ${r.bold.pct} % of lives against truth's `
+        + `${r.truth.pct} % — the top rank is cheaper to lie for (${table})`);
+      assert.equal(r.coward.pct, 0, `true q ${r.q}: calling 50 forever reached the top rank (${table})`);
+      assert.ok(r.truth.mean >= r.bold.mean - 1e-9, `true q ${r.q}: the bold policy out-banks truth on the mean rank`);
+    }
+    /* …and the anti-farming half: the SAME honest policy on material that is too easy cannot get
+       there, because the window it writes is uninformative. */
+    const best = rows.reduce((a, b) => (a.truth.pct >= b.truth.pct ? a : b));
+    const easiest = rows[rows.length - 1];
+    assert.equal(easiest.q, 0.95, 'the last row must be the mastered-material row');
+    assert.ok(easiest.truth.pct * 2 <= best.truth.pct,
+      `honest play on material cleared 19 times in 20 still banks Called 5 on ${easiest.truth.pct} % of lives against `
+      + `${best.truth.pct} % at true q ${best.q} — the top rank is farmable on easy material (${table})`);
+  });
+
+  test('§7 the rank on the page is derivable FROM THE PAGE: both shipped audit lines print the worth', async () => {
+    /* THE EXPLOIT-HUNT AND TEST-INTEGRITY BLOCKERS, as one arm, driven through the SHIPPED builders.
+       `ratingDetail` computes `ceiling`, the rank is read off it, and for two rounds NO surface
+       printed it: a student holding 10.00 over 50 of 50 informative calls was told `Called 2`
+       directly above the same panel's legend saying 10.00 is `Called 5`, with nothing on the screen
+       to reconcile them. The arm that should have caught it recomputed `rankFor(value)` — the
+       number the panel had stopped printing — so it stayed green while the panel contradicted
+       itself. This one asserts the property that actually matters: for every shipped window, the
+       band containing the printed RATING is the printed RANK's band, OR the line prints the
+       ceiling that explains why it is not. */
+    const { ratingAuditLine } = await import('../site/js/screens/settings.js');
+    const { ledgerRatingLine } = await import('../site/js/screens/stats.js');
+    const { fresh } = await import('../site/js/store.js');
+    const NOW = Date.UTC(2026, 8, 22);
+
+    let offBand = 0; let onBand = 0;
+    for (const q of QHATS) {
+      for (const id of CALLS) {
+        for (const clears of [0, 11, 25, 38, N]) {
+          for (const heldRank of [null, 1, 2, 4, 5]) {
+            const save = fresh(NOW);
+            save.player.rating.calls = windowOf(id, q, clears);
+            if (heldRank != null) save.player.rank = heldRank;
+            const d = ratingDetail(save.player.rating.calls, N, { rank: save.player.rank });
+            save.player.rating.value = d.value;
+            save.player.rating.n = d.n;
+            save.player.rank = d.rank;
+
+            const band = rankOf(rankFor(d.value)).name;
+            const printedRank = rankOf(d.rank).name;
+            for (const [where, line] of [['Settings', ratingAuditLine(save)], ['Stats', ledgerRatingLine(save)]]) {
+              assert.ok(line.startsWith(d.value.toFixed(2)), `${where} does not lead with the live rating: "${line}"`);
+              assert.ok(line.includes(printedRank), `${where} does not print the rank the save holds: "${line}"`);
+              if (band === printedRank) { onBand++; continue; }
+              assert.ok(line.includes(d.ceiling.toFixed(2)),
+                `${where} prints "${line}": the rating's own band is ${band} but the rank beside it is `
+                + `${printedRank}, and the ${d.ceiling.toFixed(2)} the rank comes from is nowhere on the line`);
+              assert.equal(d.offBand, true, 'offBand must fire on exactly these windows');
+              offBand++;
+            }
+          }
+        }
+      }
+    }
+    assert.ok(offBand > 50,
+      `only ${offBand} of the ${offBand + onBand} shipped windows printed a rank outside their rating's band — `
+      + 'this arm is not measuring the contradiction it exists to close');
+    assert.ok(onBand > 50, `only ${onBand} windows agreed — the arm is not measuring the quiet case either`);
+
+    /* THE EXPLOIT-HUNT'S OWN SAVE, verbatim: q̂ ≈ 0.5 material, the top legal call, every target
+       cleared. It used to print `10.00 · Called 2 · 50 of 50 informative calls` and nothing else. */
+    const save = fresh(NOW);
+    save.player.rating.calls = windowOf(95, 0.5, N);
+    const d = ratingDetail(save.player.rating.calls, N, { rank: save.player.rank });
+    save.player.rating.value = d.value; save.player.rating.n = d.n; save.player.rank = d.rank;
+    assert.equal(d.value, JOB.RATING.max, 'the premise: fifty cleared 95 calls on coin-flip material read 10.00');
+    assert.equal(rankOf(rankFor(d.value)).name, rankOf(JOB.RANKS.length).name, 'and 10.00 is the top band');
+    assert.equal(d.rank, 2, 'while the calls themselves were worth nothing at all');
+    for (const line of [ratingAuditLine(save), ledgerRatingLine(save)]) {
+      assert.match(line, /your calls were worth 0\.00/, `the capping quantity is still unprinted: "${line}"`);
+    }
+  });
+
+  /* ────────────────────────────────────────────────────────────────────────────────────────────
+     §8 · VERIFY r3, MAJOR (call-propriety). THE CAP IS PROPER IN q̂, NOT IN BELIEF.
+
+     `slotCeiling(w, p, q) = w·E[c](p, q)` takes its expectation against the slot's STORED q̂ — the
+     trailing-10 CLEAR RATE — so `argmax_p` is the rung nearest the RECORD, never the rung nearest
+     what the student believes about THIS target. Before the round-4 repair the rank was
+     `rankFor(value, {floor})`, which IS proper in belief; pricing it off `ceiling` moved it onto q̂
+     and the published sentences did not move with it (G2 THE CAP, G3.1, and Settings' "the only way
+     to score well is to say what you actually believe", which is true of the RATING and was printed
+     over the RANK). This arm measures the gap on the app's own material so the qualifier can never
+     be dropped again: it is not a defect to fix in code — `ok` is the only other thing a slot
+     carries and pricing the rank off an outcome is the S3 lottery the ratchet exists to refuse —
+     it is a SCOPE that has to be published, and is, at three sites.
+     ──────────────────────────────────────────────────────────────────────────────────────────── */
+  test('§8 the rung that is honest about THIS target earns more RATING and two bands LESS RANK', () => {
+    /* the app's own m60 material: `RUNG_BANDS[60]` says it clears 0.92, the record says 7 of 10 */
+    const band = crew.bandFor(60);
+    const trueClear = 1 - band[band.length - 1];
+    near(trueClear, 0.92, 1e-12, 'RUNG_BANDS[60] — the shipped clear rate of consolidating material');
+    const record = 7 / 10;
+    assert.equal(honestCall(record), 70, 'honest about the RECORD');
+    assert.equal(honestCall(trueClear), 95, 'honest about the TARGET');
+    assert.ok(isInformative(record), 'and the record is informative, so these slots really score');
+
+    const fifty = (call) => Array.from({ length: N },
+      (_, i) => callEntry({ call, ok: true, qHat: record, skill: 'X', at: i }));
+    /** what one slot is WORTH to the rank — read back out of the shipped detail, never restated */
+    const rankWorth = (call) => ((ratingDetail(fifty(call), N).ceiling - JOB.RATING.base) * N) / JOB.RATING.scale / N;
+    /** what one slot PAYS in expectation at the TRUE clear rate, which is what the student faces */
+    const trueWorth = (call) => weightOf(fifty(call)[0]) * expectedCredit(callLevel(call).p, trueClear);
+
+    const rows = [70, 85, 95].map((call) => ({
+      call, rank: ratingDetail(fifty(call), N).rank, worth: rankWorth(call), paid: trueWorth(call),
+    }));
+    const by = (c) => rows.find((r) => r.call === c);
+
+    /* THE RANK LADDER runs the wrong way for a student who knows more than their window does */
+    assert.equal(by(70).rank, 3, 'the record-honest 70 buys Called 3 — the gate on the 95 button');
+    assert.equal(by(85).rank, 2);
+    assert.equal(by(95).rank, 1, 'and the TARGET-honest 95 buys Called 1: two bands lower');
+    near(by(70).worth, 1.3440, 5e-5); near(by(85).worth, 0.5880, 5e-5); near(by(95).worth, -0.7560, 5e-5);
+
+    /* THE RATING LADDER runs the right way, at the same time, on the same fifty slots */
+    near(by(70).paid, 4.3008, 5e-5); near(by(85).paid, 5.7624, 5e-5); near(by(95).paid, 5.8968, 5e-5);
+    assert.ok(by(95).paid > by(70).paid, 'the target-honest report is worth MORE rating in expectation');
+    near(by(95).paid - by(70).paid, 1.5960, 5e-5, 'the published per-slot gap');
+    assert.equal(Math.max(...rows.map((r) => r.paid)), by(95).paid, 'the rating’s argmax is the TRUE rate’s rung');
+    assert.equal(Math.max(...rows.map((r) => r.worth)), by(70).worth, 'the rank’s argmax is the RECORD’s rung');
+
+    /* …and the identity itself is untouched: against q̂, the record's rung is still the argmax */
+    for (const { q } of informativeQHats()) {
+      const truth = honestCall(q);
+      const capOfAt = (call) => ratingDetail([callEntry({ call, ok: true, qHat: q, skill: 'X', at: 1 })], N).ceiling;
+      for (const id of CALLS) {
+        assert.ok(capOfAt(id) <= capOfAt(truth) + 1e-9,
+          `q̂ ${q}: the cap is still proper in the report AGAINST q̂ — ${id} out-capped ${truth}`);
+      }
+    }
   });
 });
 
@@ -1325,7 +2113,12 @@ function e2ePlay(save, { jobs = 8, seed = 1 } = {}) {
         const tgt = state.pricedTarget(save, {});
         const qHat = qHatFor(save, tgt.make, { cards: CARDS_BY_ID });
         const want = honestCall(qHat ?? 0.5);
-        const legal = callsFor(rankFor(save.player?.rating?.value));
+        /* the rungs the GAME will accept, read where `state.lockCall` reads them (`player.rank`,
+           via `guard.rankOf`). This used to derive them from `rankFor(rating.value)`, which was the
+           same set only while `player.rank >= rankFor(value)` held for every save — an invariant the
+           round-4 ceiling cap deliberately ends (a lucky rating no longer buys a rung the material
+           cannot pay for), and the harness would then seal a 95 the shipped gate refuses. */
+        const legal = callsFor(save.player?.rank);
         const callId = legal.includes(want) ? want : legal[legal.length - 1];
         qs.push(qHat);
         calls.push(callId);
@@ -1355,10 +2148,11 @@ function e2ePlay(save, { jobs = 8, seed = 1 } = {}) {
           const stored = save.player.rating.calls.at(-1);
           /* what the lock-time evidence implies, built through the shipped constructor */
           const want = callEntry({ call: lockedCall, ok: cleared, qHat: lockedQ, skill: lockedMake, at: 0 });
-          if (stored.w !== want.w || stored.p !== want.p) {
+          if (weightOf(stored) !== weightOf(want) || stored.p !== want.p || stored.q !== want.q) {
             wMismatch++;
             if (firstMismatch.length < 3) {
-              firstMismatch.push(`${lockedMake}: stored w=${stored.w} p=${stored.p}, lock-time w=${want.w} p=${want.p}`);
+              firstMismatch.push(`${lockedMake}: stored w=${weightOf(stored)} q=${stored.q} p=${stored.p}, `
+                + `lock-time w=${weightOf(want)} q=${want.q} p=${want.p}`);
             }
           }
           /* the same entry built from the LIVE reading — the outcome inside its own window */
@@ -1366,7 +2160,7 @@ function e2ePlay(save, { jobs = 8, seed = 1 } = {}) {
             call: lockedCall, ok: cleared, skill: lockedMake, at: 0,
             qHat: qHatFor(save, lockedMake, { cards: CARDS_BY_ID, before: null }),
           });
-          if (endo.w !== want.w) endoWould++;
+          if (weightOf(endo) !== weightOf(want)) endoWould++;
           lockedCall = null;
           lockedQ = null;
           lockedMake = null;
@@ -1595,8 +2389,14 @@ describe('R2 · the fifty slots are the last fifty CALLS, not the last fifty mea
     // reliability diagram farmable by exactly the material the gate exists to exclude.
     const blank = callEntry({ call: 95, ok: true, qHat: 1, skill: 'VOC', at: 7 });
     assert.equal(blank.p, null, 'a non-informative call carries no forecast');
-    assert.equal(blank.w, 0);
-    assert.deepEqual(Object.keys(blank), ['p', 'ok', 'w', 'skill', 'at'], 'and the save key order is unchanged');
+    assert.equal(weightOf(blank), 0);
+    assert.equal(blank.q, null, 'and no evidence: nothing downstream may price a slot that pays 0');
+    assert.deepEqual(Object.keys(blank), ['p', 'ok', 'q', 'skill', 'at'], 'and the save key order is unchanged');
+    /* the DEFINED-weight (Mock) form keeps its own blank, `{p: null, w: 0}`, byte for byte */
+    const mockBlank = callEntry({ p: 0.85, ok: true, w: 0, skill: null, at: 7 });
+    assert.deepEqual(Object.keys(mockBlank), ['p', 'ok', 'w', 'skill', 'at']);
+    assert.equal(mockBlank.w, 0);
+    assert.equal(mockBlank.p, null);
     const measured = callEntry({ call: 85, ok: true, qHat: 0.85, skill: 'VOC', at: 8 });
     assert.equal(measured.p, 0.85);
     const win = [blank, measured, blank];
@@ -1771,6 +2571,78 @@ describe('R2 · GLOBAL LAW 6 by composition: the coarse evidence partition', () 
     assert.equal(evidenceBandOf(null), null, 'no measurement is not a band');
     assert.equal(evidenceBandOf(NaN), null);
   });
+
+  /* ────────────────────────────────────────────────────────────────────────────────────────────
+     §9 · VERIFY r3, MAJOR (player-feel). THE BAND CANNOT SAY WHETHER THE CALL WILL COUNT.
+
+     `INFORMATIVE_MIN` cuts at q̂ = 0.9330127, which is STRICTLY INSIDE the top evidence band
+     `[0.8375, 1]`. So the one sentence the sealed envelope prints — `clear rate 84 % or more` —
+     covered q̂ 0.84 (w 0.5376, scores) and q̂ 1.00 (w 0, writes a BLANK slot and pays exactly 0)
+     alike, and the student found out which only in the payout line, after committing. That is the
+     common case, not a corner: spaced repetition drives q̂ to 1 on reviewed makes, so on this
+     repo's own mid-week fixture 60 % of a 40-job arm's calls (240 of 400) are blank slots — the
+     better the student, the more of their calls stop counting.
+
+     THE FIX IS NOT A FOURTH BAND. Splitting at the cutoff makes `[0.93301, 1]` a band whose every
+     q̂ has honest rung 95 AND EV-max 95 — a band that names the argmax, which is the one thing this
+     whole partition exists to prevent. `evidenceOf` gives the caller a SECOND STATE instead: one
+     shared by BOTH tails, printed INSTEAD of the band, which carries strictly less than the bands
+     it replaces because it resolves neither end of either ladder.
+     ──────────────────────────────────────────────────────────────────────────────────────────── */
+  test('§9 a call that cannot score says so BEFORE the tap, and still names no rung', async () => {
+    const bands = evidenceBands();
+    const cut = INFORMATIVE_BAND[1];
+    const top = bands[bands.length - 1];
+    assert.ok(cut > top.from && cut < top.to,
+      `the informative cutoff ${cut} must be INSIDE the top band [${top.from}, ${top.to}) — that is the defect`);
+
+    // the four readings the finding measured, through the shipped functions
+    for (const [q, measures] of [[0.84, true], [0.90, true], [0.95, false], [1, false]]) {
+      const ev = evidenceOf(q);
+      assert.equal(ev.measures, measures, `q̂ ${q} → w ${weightFor(q).toFixed(4)}`);
+      assert.equal(evidenceBandOf(q), bands.length - 1, `q̂ ${q} is in the SAME printed band as the others`);
+      assert.equal(ev.band, measures ? bands.length - 1 : null, 'a blank record is not given a band to print');
+    }
+
+    /* THE TWO TAILS ARE ONE STATE, and that is what makes it law-6 safe: the region it denotes is
+       `[0, 0.06699) ∪ (0.93301, 1]`, whose honest rung is 50 OR 95 and whose EV-max rung is 50 OR
+       95 — it resolves neither. Sampled over both tails rather than asserted from the endpoints. */
+    const honest = new Set(); const evMax = new Set();
+    for (let k = 0; k <= 400; k++) {
+      const q = k / 400;
+      if (evidenceOf(q).measures) continue;
+      honest.add(honestCall(q)); evMax.add(argmaxCall(q));
+    }
+    assert.ok(honest.size >= 2 && evMax.size >= 2,
+      `the blank state decodes to the single rung ${[...honest]} / ${[...evMax]}`);
+    assert.deepEqual([...honest].sort((a, b) => a - b), [CALL_IDS[0], CALL_IDS[CALL_IDS.length - 1]],
+      'it spans BOTH ends of the ladder, which is the most ambiguous a pre-call sentence can be');
+
+    /* IT IS NOT RARE ON THE REACHABLE GRID: every make's q̂ = of/of reads 1, which is blank. */
+    const reach = reachableQHats();
+    const blanks = reach.filter((r) => !evidenceOf(r.q).measures);
+    assert.ok(blanks.length >= 2, 'both tails are reachable');
+    assert.ok(blanks.some((r) => r.q === 1) && blanks.some((r) => r.q === 0),
+      'a make cleared every sitting and a make cleared none both write blank slots');
+    assert.equal(reach.length - informativeQHats().length, blanks.length, 'and nothing else is blank');
+
+    /* …and the SHIPPED pre-call surface says it. `screens/job.js` owns the words; this asserts the
+       sentence exists, differs from the band sentence it replaces, and is the same for both tails. */
+    const screen = await import('../site/js/screens/job.js');
+    const env = { make: 'FAC2', name: 'Factoring a > 1', grade: 2, cold: 1.2, posted: 40, from: 'F', tell: null };
+    const lineAt = (q) => screen.envelopeLinesOf(env, { qHat: q, hits: 0, of: 10 }).evidence;
+    assert.notEqual(lineAt(1), lineAt(0.9),
+      'the envelope still prints one sentence for a call that scores and one that pays exactly 0');
+    assert.equal(lineAt(1), lineAt(0), 'and the two tails must print the SAME sentence, or it names a tail');
+    /* the words themselves — the make's name is the caller's, the sentence is the one under test */
+    const blankWords = screen.evidenceWordsOf(1);
+    assert.equal(blankWords, screen.evidenceWordsOf(0));
+    assert.ok(!/\d/.test(blankWords), `the blank sentence carries a numeral: "${blankWords}"`);
+    for (const id of CALL_IDS) {
+      assert.ok(!blankWords.includes(String(id)), `the blank sentence names the rung ${id}`);
+    }
+    assert.equal(screen.evidenceWordsOf(null), null, 'and no history at all is still no history');
+  });
 });
 
 describe('R2 · q̂ is the CLEAR rate — the exact history the round-2 critic ran', () => {
@@ -1888,10 +2760,15 @@ describe('R3 · the weight the SHIPPED path stores, read off the save it wrote',
     const C = branch(base, lock, true);
     const M = branch(base, lock, false);
 
-    assert.equal(C.entry.w, M.entry.w,
-      `the stored weight moved with the outcome: clear ${C.entry.w} vs miss ${M.entry.w} — `
+    assert.equal(weightOf(C.entry), weightOf(M.entry),
+      `the stored weight moved with the outcome: clear ${weightOf(C.entry)} vs miss ${weightOf(M.entry)} — `
       + 'the caller is reading q̂ after the grade path has written it (call.js `sealedCallOf`)');
-    assert.equal(C.entry.w, ECON.round(lock.atLock.w, 6), 'and the weight stored is the one the LOCK-time evidence implies');
+    assert.equal(weightOf(C.entry), ECON.round(lock.atLock.w, 6), 'and the weight stored is the one the LOCK-time evidence implies');
+    /* ROUND-4 VERIFY: the slot now stores the q̂ ITSELF, so the same invariant is asserted on the
+       stored evidence — which is the number the rank cap prices the slot off. */
+    assert.equal(C.entry.q, M.entry.q,
+      `the stored q̂ moved with the outcome: clear ${C.entry.q} vs miss ${M.entry.q}`);
+    assert.equal(C.entry.q, ECON.round(lock.atLock.qHat, 6), 'and it is the LOCK-time clear rate');
     assert.equal(C.entry.p, M.entry.p, 'the forecast differs between the branches');
     assert.equal(C.entry.skill, lock.make);
     assert.equal(C.entry.ok, true);
@@ -1913,8 +2790,8 @@ describe('R3 · the weight the SHIPPED path stores, read off the save it wrote',
     const lock = lockOne(base);
     const C = branch(base, lock, true);
     const M = branch(base, lock, false);
-    const wClear = C.entry.w;
-    const wMiss = M.entry.w;
+    const wClear = weightOf(C.entry);
+    const wMiss = weightOf(M.entry);
     const wLiveClear = C.live.w;
     const wLiveMiss = M.live.w;
 
@@ -2112,5 +2989,106 @@ describe('R3 · Called 5 is reachable by honest play again (finding 3)', () => {
     assert.ok(fixed.v > broken.v * 1.5, `the snapshot must be worth something: ${fixed.v.toFixed(4)} vs ${broken.v.toFixed(4)}`);
     assert.ok(JOB.RATING.base + JOB.RATING.scale * broken.v < JOB.RANK_THRESHOLDS.at(-1),
       'and the rating it buys is below the Called 5 threshold');
+  });
+});
+
+/* ================================================================================================
+   S1 · THE OPT-OUT LINT — `before:` may never reach `qHatDetail` from a shipped caller
+   (REPAIR-DECISION §S1.3 item 1)
+   ================================================================================================
+
+   The propriety theorem needs two assumptions and both are load-bearing: an outcome the student
+   does not choose, and a WEIGHT FIXED AT THE SEAL. The second one is now `qHatDetail`'s DEFAULT
+   (`call.js` — `const seal = opts.before === undefined ? sealedCallOf(save) : null`), so a caller
+   that forgets the option still gets an exogenous weight. `before: null` is the explicit opt-out,
+   and `before: <number>` an explicit cut: either one, passed by a shipped caller on a path that
+   feeds `callEntry`, re-opens the hole that made lying pay.
+
+   A CORRECTION TO THE DECISION'S OWN MEASUREMENT, with the command. §S1.3 says to "grep every file
+   under `site/js/` for `before:` … and assert the result set is EMPTY", on the basis that "the only
+   hits are three docblock lines inside `call.js` itself". That is stale against this tree — the run
+   lane's r3 debrief snapshot added three live ones that have nothing to do with q̂:
+
+     $ grep -rn 'before:' site/js/ | grep -v '^site/js/job/call.js'
+       site/js/figure/svg.js:36:      // … Two things were wrong before:          (a comment)
+       site/js/screens/run.js:857:    p.meta = { …, before: snap }                (the page's tile snapshot)
+       site/js/screens/run.js:1821:   ip.meta = { …, before: snap }                (the same snapshot)
+       site/js/screens/job.js:1701:   jobSummaryContext(…, { queue, before: jobBefore ?? undefined })
+
+   An empty-set assertion over that grep would be red today and would have to be relaxed to an
+   allowlist of three unrelated call sites, which is a weaker pin than the one the invariant
+   actually needs. So the lint below asserts the INVARIANT rather than the string: no `before:` is
+   an argument to `qHatDetail(`, `qHatFor(`, `callEntry(` or `ratingDetail(` anywhere under
+   `site/js/`, comments stripped — and the default branch that makes that safe is asserted to exist.
+
+   NEGATIVE CONTROL, run over in-memory copies of all 40 lane files (no project file edited):
+   baseline → `[]`; with `state.js:1167`'s own read changed to
+   `call.qHatFor(s, t.make, { cards: opts.cards ?? cardById, before: null })` →
+   `['site/js/job/state.js:1167 qHatFor']`. The pin fires on the exact regression it exists for.
+   ================================================================================================ */
+
+describe('S1 · no shipped caller opts out of the seal', () => {
+  /** every `.js` under `site/js`, comments and string bodies stripped (a prose mention is not a call) */
+  const LANE_FILES = listFiles(join(ROOT, 'site', 'js'), /\.js$/)
+    .map((abs) => ({ path: relative(ROOT, abs), code: stripCommentsAndStrings(readFileSync(abs, 'utf8')) }));
+
+  /** the argument text of every call to `fn` in `code`, paren-balanced */
+  const callArgsOf = (code, fn) => {
+    const out = [];
+    const re = new RegExp(`\\b${fn}\\s*\\(`, 'g');
+    for (let m = re.exec(code); m; m = re.exec(code)) {
+      let d = 1; let i = m.index + m[0].length; const from = i;
+      while (i < code.length && d > 0) { const c = code[i]; if (c === '(') d++; else if (c === ')') d--; i++; }
+      out.push({ at: code.slice(0, m.index).split('\n').length, args: code.slice(from, i - 1) });
+    }
+    return out;
+  };
+
+  test('the lexer finds the calls it is meant to police', () => {
+    assert.ok(LANE_FILES.length > 30, `only ${LANE_FILES.length} lane files scanned`);
+    const probe = 'a = qHatFor(save, make, { cards });\nb = qHatFor(s, m, { cards, before: null });';
+    const found = callArgsOf(probe, 'qHatFor');
+    assert.equal(found.length, 2, 'both call sites');
+    assert.equal(/\bbefore:/.test(found[0].args), false);
+    assert.equal(/\bbefore:/.test(found[1].args), true, 'and the opt-out is visible in the argument text');
+    /* nested parens must not end the argument list early */
+    assert.match(callArgsOf('qHatFor(save, make, { cards: byId(x), before: at(1) })', 'qHatFor')[0].args,
+      /before: at\(1\)/);
+    /* and the real tree really does call these functions, or the lint is scanning nothing */
+    const live = LANE_FILES.reduce((n, f) => n + callArgsOf(f.code, 'qHatFor').length + callArgsOf(f.code, 'qHatDetail').length, 0);
+    assert.ok(live >= 4, `only ${live} q̂ call sites found under site/js — the scan has lost the tree`);
+  });
+
+  test('THE PIN: no q̂ or rating call under site/js passes `before:`', () => {
+    const offenders = [];
+    for (const { path, code } of LANE_FILES) {
+      for (const fn of ['qHatFor', 'qHatDetail', 'callEntry', 'ratingDetail']) {
+        for (const { at, args } of callArgsOf(code, fn)) {
+          if (/\bbefore\s*:/.test(args)) offenders.push(`${path}:${at} → ${fn}(… ${args.trim().slice(0, 80)})`);
+        }
+      }
+    }
+    assert.deepEqual(offenders, [],
+      'a LIVE q̂ read may not feed `callEntry`: `before: null` (and an explicit `before`) defeats the '
+      + 'seal, and with an endogenous weight the argmax is `p* = q·w_clear/(q·w_clear + (1−q)·w_miss) '
+      + '< q` whenever q̂ > 0.5 — lying pays. The sealed default in `call.js qHatDetail` is what makes '
+      + 'every caller safe; do not opt out of it on a path that stakes a call.');
+  });
+
+  test('…and the default that makes that safe is still in the shipped function', () => {
+    const src = stripCommentsAndStrings(readFileSync(join(ROOT, 'site/js/job/call.js'), 'utf8'));
+    assert.match(src, /opts\.before === undefined \? sealedCallOf\(save\) : null/,
+      'the cut is no longer defaulted from the save\'s own seal — every caller is live again');
+    /* behavioural, not just source: a caller that passes NOTHING gets the cut */
+    const hist = Array.from({ length: 10 }, (_, i) => ({ at: i, ok: i > 0, attempt: 1, hints: 0, ms: 900 }));
+    const save = { cards: { c: { history: [...hist, { at: 500, ok: true, attempt: 1, hints: 0, ms: 900 }] } },
+      inProgress: { game: { locked: { call: 85, n: 1, at: 100 } } } };
+    const d = qHatDetail(save, 'FAC2', { cards: { c: ['FAC2'] } });
+    assert.equal(d.sealed, true, 'a caller that passes only `cards` must still get the seal');
+    assert.equal(d.of, 10, 'the sitting written after the lock is not in its own q̂');
+    /* the CONTROL: the opt-out really does change the answer, so the pin above is not vacuous */
+    const live = qHatDetail(save, 'FAC2', { cards: { c: ['FAC2'] }, before: null });
+    assert.equal(live.sealed, false);
+    assert.notEqual(live.qHat, d.qHat, 'the opt-out is inert — then the lint above polices nothing');
   });
 });

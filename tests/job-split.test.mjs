@@ -118,7 +118,8 @@ function derivedRunFullPhases() {
   const briefs = SHAPES.RUN.briefs;
   const jobD = FIXED_PHASES.JOB.default.phases;
   const jobF = FIXED_PHASES.JOB.full.phases;
-  const grow = FIXED_PHASES.RUN.full.total - (d.board + d.guard + d.brief * briefs + d.getaway + d.debrief + d.crew);
+  const grow = FIXED_PHASES.RUN.full.total
+    - (d.board + d.guard + d.brief * briefs + d.getaway + d.debrief);
   const wBoard = jobF.board - jobD.board;
   const wBrief = (jobF.brief - jobD.brief) * briefs;
   const board = d.board + Math.round((grow * wBoard) / (wBoard + wBrief));
@@ -137,10 +138,14 @@ function derivedRunFullPhases() {
  *
  * @returns {{debrief, board, elapsed, split, save, briefs, phases}}
  */
-function walkthrough(save0, shapeId, path = 'default', { canon = false, spend = false, seed = null, boardOpts = {} } = {}) {
+function walkthrough(save0, shapeId, path = 'default', { canon = false, spend = false, seed = null, boardOpts = {}, watch = null } = {}) {
   const save = clone(save0);
   const board = postBoard(save, TODAY, { now: NOW, shape: shapeId, ...boardOpts });
   const FX = phasesFor(shapeId, path);
+  /* the one-per-session crew re-allocation, spent in the FIRST window that opens — because that is
+     where `state.brief` takes it (`actions.crew` → `crew.allocate`). The column used to charge it to
+     a `crew` phase instead, which no `setPhase` in `site/js` ever sets, so the walkthrough could not
+     spend it at all and every full-use cell came out 1.2–1.7 points under its published value. */
   const full = path === 'full';
   let t = NOW;
   const step = (secs) => (t += Math.round(secs * 1000));
@@ -157,7 +162,9 @@ function walkthrough(save0, shapeId, path = 'default', { canon = false, spend = 
     commitBind(save, { kind: 'walk', byMin: 600 }, { now: t });      // the COMMIT verb: at the board (G1)
   }
   /* board read + draft, then the guard reveal and the token press */
+  if (watch) watch.add(stateOf(save).phase);          // 'board' — the phase `startJob` opens in
   tick(save, 'guard', step(FX.board));
+  if (watch) watch.add(stateOf(save).phase);
   beginTargets(save, { now: step(FX.guard) });
 
   /* a Backcheck needs a miss that cost something — and a miss queues a Rematch, which lengthens the
@@ -166,10 +173,13 @@ function walkthrough(save0, shapeId, path = 'default', { canon = false, spend = 
   const misses = spend ? new Set([3, 6]) : new Set();
   let spent = 0;
   let out = null;
+  let ph = null;                 // `g.ph`, snapshotted while there is still a job to read it off
   const took = [];
   for (let stop = 0; stop < 900; stop++) {
     const g = stateOf(save);
+    if (watch && g) watch.add(g.phase);               // includes the terminal 'debrief' on the last pass
     if (!g || g.outcome != null) break;
+    ph = { ...g.ph };
     if (g.phase === 'envelope') { lockCall(save, 70, { now: step(DECISION_PARTS_T1.call) }); continue; }
     if (g.phase === 'answer') {
       const it = queueOf(save)[idxOf(save)];
@@ -213,6 +223,7 @@ function walkthrough(save0, shapeId, path = 'default', { canon = false, spend = 
     debrief: d,
     briefs: took,
     phases: FX,
+    ph,
     elapsed: t - NOW,
     /* the two bases, both printed on the debrief line (screens/run.js `sessionSplit`) */
     measured: measuredWall > 0 ? (entry.tGame / measuredWall) : 0,
@@ -250,7 +261,10 @@ function tableFrom(shapeId, K = {}) {
   const fixedFor = (path) => {
     const cell = fixed[s.fixed][path];
     const p = cell.phases;
-    return p ? p.board + p.guard + p.brief * windows + p.getaway + p.debrief + p.crew : cell.total;
+    /* no `crew` term: the crew re-rank is one of the brief window's five published options, so its
+       seconds are inside `brief` already (verify round 2, split-honesty — the sixth cell this line
+       used to add billed them twice, to a phase no `setPhase` in `site/js` ever set). */
+    return p ? p.board + p.guard + p.brief * windows + p.getaway + p.debrief : cell.total;
   };
   const gameS = { default: fixedFor('default') + decisionS, full: fixedFor('full') + decisionS };
   const wallS = { default: answerS + gameS.default, full: answerS + gameS.full };
@@ -317,7 +331,7 @@ describe('J8 §1 — G1\'s shape table is RECOMPUTED from data/job.js, never rea
       for (const path of ['default', 'full']) {
         const cell = FIXED_PHASES[SHAPES[id].fixed][path];
         const p = phasesFor(id, path);
-        const summed = p.board + p.guard + p.brief * SHAPES[id].briefs + p.getaway + p.debrief + p.crew;
+        const summed = p.board + p.guard + p.brief * SHAPES[id].briefs + p.getaway + p.debrief;
         assert.ok(cell.phases, `${id}/${path} publishes no phase column — data/job.js owns every one`);
         assert.equal(summed, cell.total, `${id}/${path} published phases do not sum to the total`);
       }
@@ -358,16 +372,73 @@ describe('J8 §2 — the scripted walkthroughs measure G1\'s two honest columns'
     assert.equal(w.entry.tGame / 1000 + w.phases.debrief, shapeTable('JOB').gameS.default);
   });
 
-  test('a FULL-USE walkthrough of the same shape measures 51.3 % ± 5', () => {
+  test('a FULL-USE walkthrough of the same shape measures G1\'s full column EXACTLY — no phantom phase in the band', () => {
     const w = walkthrough(CORPUS[0], 'JOB', 'full', { canon: true });
     const pub = PUBLISHED.shapeTable.JOB.split[1];
     const got = 100 * w.session;
     assert.ok(abs(got - pub) <= 5, `full-use path measured ${got.toFixed(1)} % against G1's ${pub} %`);
-    /* the crew re-allocation (25 s) is the second phase that lands after `endJob`, and the only one
-       `phaseMeans` has no key for; crediting the debrief alone leaves the walkthrough 1.5 points
-       under the published cell, inside the band and recorded in notes/J8.md §4. */
-    assert.ok(got < pub, 'the crew phase is not creditable — see notes/J8.md §4');
-    assert.ok(abs(got - pub) <= 2, `full-use gap is ${(pub - got).toFixed(1)} points`);
+    /* **The ±5 band used to be the only thing this assertion did**, and a 1.5-point deficit lived
+       inside it. The full column billed 25 s to a `crew` phase that `PHASE_ORDER` listed and no
+       `setPhase` under `site/js` ever set, so no walkthrough could spend it and the published 51.3 %
+       was a number no shipped path produces; this file wrote the gap down as a tolerance ("the crew
+       phase is not creditable") instead of closing it. The cell was also a DOUBLE charge — G1 sells
+       the crew re-rank as one of the brief window's five options inside its 50 s, and G1's decision
+       table charges it the same way — so it is gone, and the published full cell is now the 49.8 %
+       the machine has always measured. Asserted as an EQUALITY, exactly like the default path above,
+       so nothing unmeasurable can hide in the band again. (Verify round 2, split-honesty.) */
+    assert.equal(round(got, 1), pub, `full-use measured ${got.toFixed(1)} % against G1's ${pub} %`);
+    assert.equal(w.entry.tAnswer / 1000, shapeTable('JOB').answerS);
+    assert.equal(w.entry.tGame / 1000 + w.phases.debrief, shapeTable('JOB').gameS.full);
+    /* and every fixed second the column charges landed in a phase the machine entered */
+    assert.equal(w.ph.brief, w.phases.brief * 2 * 1000, 'both brief windows, and nothing beside them');
+    assert.equal(w.ph.board + w.ph.guard + w.ph.brief + w.ph.getaway,
+      (w.phases.board + w.phases.guard + w.phases.brief * 2 + w.phases.getaway) * 1000,
+      'the four measurable fixed phases must account for the whole fixed column but the debrief read');
+  });
+
+  test('every shape reproduces BOTH published cells exactly — the full column included', () => {
+    for (const id of SHAPE_IDS) {
+      for (const [path, i] of [['default', 0], ['full', 1]]) {
+        const w = walkthrough(CORPUS[0], id, path, { canon: true });
+        const pub = PUBLISHED.shapeTable[id].split[i];
+        assert.equal(round(100 * w.session, 1), pub, `${id}/${path} measured ${(100 * w.session).toFixed(1)} % against ${pub} %`);
+        assert.equal(round(100 * w.measured, 1), PUBLISHED.nominalHeadlineSplit[id][i],
+          `${id}/${path} headline basis`);
+      }
+    }
+  });
+
+  test('no cell of FIXED_PHASES charges seconds to a phase the machine cannot enter', () => {
+    /* the defect the two tests above now close, stated as the general rule. Every key of every
+       published phase column has to be a phase a real job passes through — otherwise its seconds
+       are unmeasurable and the published split is above anything the app can produce. */
+    const seen = new Set();
+    let last = null;
+    for (const id of SHAPE_IDS) {
+      for (const path of ['default', 'full']) last = walkthrough(CORPUS[0], id, path, { canon: true, watch: seen });
+    }
+    /* `endJob` stamps the terminal phase and tears the job down in the same call, so it is the one
+       phase no `stateOf()` can be caught holding. Its stamp is what proves it was entered: the same
+       line writes `ledger.debriefAt`, which is the clock `closeDebrief` later banks the read from. */
+    assert.ok(last.save.game.ledger.debriefAt > 0, 'the finished job never stamped the debrief');
+    seen.add(state.TERMINAL_PHASE);
+    assert.ok(seen.size >= 8, `the walkthroughs entered only ${[...seen].join(', ')}`);
+    for (const col of Object.values(FIXED_PHASES)) {
+      for (const [path, cell] of Object.entries(col)) {
+        for (const k of Object.keys(cell.phases ?? {})) {
+          assert.ok(seen.has(k), `FIXED_PHASES.*.${path} charges ${cell.phases[k]} s to '${k}', which no job enters`);
+          assert.ok(PHASE_ORDER.includes(k), `'${k}' is not in PHASE_ORDER`);
+        }
+      }
+    }
+    assert.ok(!PHASE_ORDER.includes('crew'), "'crew' is an action inside the brief window, not a phase");
+    assert.ok(!GAME_PHASES.includes('crew'));
+    /* and the machine refuses it by name, so it cannot come back as a silent no-op */
+    const s = clone(CORPUS[0]);
+    startJob(s, { today: TODAY, now: NOW, board: postBoard(s, TODAY, { now: NOW, shape: 'JOB' }) });
+    assert.throws(() => tick(s, 'crew', NOW + 1000), (e) => e.code === 'bad-phase',
+      'tick must refuse a phase that is not in PHASE_ORDER');
+    assert.equal(tick(s, 'guard', NOW + 1000), 'guard', 'a real phase still ticks');
   });
 
   test('the full-use path is the longer, more decision-dense session — both columns, all four shapes', () => {
@@ -764,6 +835,69 @@ describe('J8 §5 — the debrief prints the decision count and 0 ms of dead time
       `${((optionCount + DECISIONS.backchecksFull) / w.debrief.calls.length).toFixed(2)} decisions per item on the full-use path`);
   });
 
+  /* ---------------------------------------------------------------------------------------------
+     ROUND-2 VERIFY (split-honesty finding 5) — THE SHIPPED `perItem`, AGAINST THE PUBLISHED FLOOR.
+
+     G9 #1 is published as "≥ 3 decisions per graded item with the windows", and the only assertion
+     that guarded it was `decisionCount('JOB').perItem.full >= JOB.SPLIT.densityMinFull` — arithmetic
+     over literals in `site/data/job.js` compared against another literal in `site/data/job.js`. It
+     would pass if `debriefOf` printed zero decisions. The arm above avoided the shipped number too:
+     it rebuilds the count G1's way (`optionCount`) and divides that.
+
+     So here is the number the MACHINE prints, on every shape, measured through a played full-use
+     job — and it does not clear the floor. The two counts are not the same quantity:
+
+       shape   debrief.perItem (window = 1 decision)   G1's count (window = up to 5 options)
+       RUN                       2.67                                    3.67
+       JOB                       2.50                                    3.50
+       JOB12                     2.42                                    3.25
+       VAULT                     2.57                                    3.43
+
+     THE GAP IS A DEFINITION, and the defect is that only one of the two definitions is published:
+     `debriefOf` charges a brief WINDOW as one decision (the skip), G1 charges the options taken
+     inside it. Until one of them moves, the floor `SPLIT.densityMinFull` is a statement about G1's
+     count and about nothing the student is shown. Filed as notes/repair-tests.md Requests · G (the
+     econ lane owns `debriefOf`'s counter and `data/job.js`'s constant).
+
+     Both directions are pinned: the machine's own density may not fall (it clears the DEFAULT floor
+     on every shape), and it does not yet reach the published FULL floor — the day it does, this arm
+     fails and says to make it the plain `>= densityMinFull` assertion G9 #1 always claimed.
+     --------------------------------------------------------------------------------------------- */
+  test('G9 #1, MEASURED: debriefOf().perItem on a played full-use job, every shape', () => {
+    const rows = [];
+    for (const id of SHAPE_IDS) {
+      const w = walkthrough(CORPUS[0], id, 'full', { canon: true });
+      const optionCount = w.debrief.decisions - w.debrief.briefs.length
+        + w.briefs.reduce((t, n) => t + 1 + n, 0);
+      rows.push({
+        id,
+        perItem: w.debrief.perItem,
+        g1: (optionCount + DECISIONS.backchecksFull) / w.debrief.calls.length,
+        items: w.debrief.calls.length,
+      });
+    }
+    if (process.env.J8_PRINT) console.log(`  G9#1 measured: ${JSON.stringify(rows.map((r) => ({ ...r, perItem: +r.perItem.toFixed(2), g1: +r.g1.toFixed(2) })))}`);
+    const note = JSON.stringify(rows.map((r) => `${r.id}: debrief ${r.perItem.toFixed(2)} / G1 ${r.g1.toFixed(2)}`));
+
+    for (const r of rows) {
+      assert.ok(r.items > 0, `${r.id}: no graded items`);
+      // the machine's own density clears the DEFAULT floor on the full-use path, on every shape
+      assert.ok(r.perItem >= SPLIT.densityMinDefault,
+        `${r.id}: the debrief prints ${r.perItem.toFixed(2)} decisions per graded item, below the ${SPLIT.densityMinDefault} `
+        + `G9 #1 claims even for the default path — ${note}`);
+      // …and G1's own count, the one the published floor is about, clears the FULL floor
+      assert.ok(r.g1 >= SPLIT.densityMinFull,
+        `${r.id}: counted G1's way it is ${r.g1.toFixed(2)}, below the published ${SPLIT.densityMinFull} — ${note}`);
+    }
+    const short = rows.filter((r) => r.perItem < SPLIT.densityMinFull);
+    assert.equal(short.length, rows.length,
+      `${note} — the SHIPPED density now reaches ${SPLIT.densityMinFull} on ${rows.length - short.length} of ${rows.length} shapes: `
+      + 'replace this arm with the plain `perItem >= SPLIT.densityMinFull` assertion G9 #1 has always claimed, '
+      + 'and strike notes/repair-tests.md Requests · G');
+    assert.ok(Math.min(...rows.map((r) => r.g1 - r.perItem)) > 0.3,
+      `${note} — the two counts have converged; if the window is now charged its options, assert the shipped number directly`);
+  });
+
   test('a Backcheck spend is a decision but NOT a phase (G1, the fixed-phase table\'s own note)', () => {
     const clean = walkthrough(CORPUS[0], 'JOB', 'full', { canon: true });
     const spent = walkthrough(CORPUS[0], 'JOB', 'full', { canon: true, spend: true });
@@ -790,8 +924,28 @@ describe('J8 §5 — the debrief prints the decision count and 0 ms of dead time
         const banked = w.debrief.tGame + w.debrief.tAnswer;
         assert.equal(w.elapsed - banked, SPLIT.deadMs,
           `${id}/${path}: ${w.elapsed - banked} ms fell outside every phase`);
-        /* and the number the debrief prints is that same difference */
-        assert.equal(sessionSplit(w.debrief, w.save).idle, SPLIT.deadMs);
+        /* and the number the debrief prints is that same difference.
+
+           REPAIR (r3 split-honesty, MINOR). This line used to read
+           `sessionSplit(w.debrief, w.save).idle === SPLIT.deadMs` with NO third argument — and
+           `run.js:2058-2064` returns `idle: 0` whenever `opts.wall` is absent, while `SPLIT.deadMs`
+           IS 0. The assertion was `0 === 0` for every job in the corpus, measured or not: it passed
+           for a session with ten minutes of dead time. Negative control, run before the fix:
+           feeding the same debrief `{ wall: banked + 600_000 }` prints `idle 600000,
+           idleMeasured true`, and the old un-opted call still printed `idle 0, idleMeasured false`
+           — i.e. the old line could not see 10 minutes of idle.
+           The walkthrough's own clock (`w.elapsed`) is the independent second clock the line above
+           uses, so it is what is handed in; `idleMeasured` is asserted so a null clock coerced to 0
+           cannot put the tautology back (run.js:2056-2057 warns about exactly that). */
+        const split = sessionSplit(w.debrief, w.save, { wall: w.elapsed });
+        assert.equal(split.idleMeasured, true,
+          `${id}/${path}: the split line did not measure the idle at all`);
+        assert.equal(split.idle, SPLIT.deadMs,
+          `${id}/${path}: the debrief printed ${split.idle} ms idle against a measured ${w.elapsed - banked}`);
+        /* the control that keeps this arm honest: the same call with a clock 10 minutes longer than
+           the banked phases MUST print that gap, or the measurement is still not happening */
+        const dead = sessionSplit(w.debrief, w.save, { wall: banked + 600000 });
+        assert.equal(dead.idle, 600000, `${id}/${path}: sessionSplit cannot see 600000 ms of dead time`);
       }
     }
   });

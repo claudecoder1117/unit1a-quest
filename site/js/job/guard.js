@@ -14,7 +14,7 @@
 // (notes/J1.md §7).
 
 import {
-  WINGS, WING_IDS, WING_OF_SKILL, AREA_WING, GUARD, ELO, VAULT_GRADE, RANKS, SHAPES, COPY,
+  WINGS, WING_IDS, WING_OF_SKILL, AREA_WING, GUARD, ELO, VAULT_GRADE, RANKS, SHAPES, COPY, CAPS,
 } from '../../data/job.js';
 import { MISCONCEPTIONS, AREAS } from '../../data/misconceptions.js';
 import { rngFrom } from '../rng.js';
@@ -252,8 +252,20 @@ export const X_HAT_FORMULA = Object.freeze({
   ballast: 'β = max(0, max(ω)/cap − Σω)   — uniform weight added until the largest job IS `cap` of the window',
   bound: 'therefore ωⱼ/(Σω + β) ≤ cap for every job, at every window size, job 1 included',
 });
-/** The GUARD's mixing. Evidence, never the student's advice — see `fixedPointMix`. */
-export const GUARD_MIX_FORMULA = 'yᵢ = 1 − k/vᵢ,  k = (n − 1)/Σ(1/vᵢ)   — the GUARD mixes this way';
+/**
+ * The mixing a MINIMISING guard would be forced to, from the player's indifference condition —
+ * `fixedPointMix`. IT IS NOT THE GUARD THIS LAYER SHIPS and it is not the vector the board prints:
+ * `guardDist` mirrors `x̂` and never reads `v` at all.
+ *
+ * ROUND 6 — the symbol is `g`, not `y`, and the tense is counterfactual. The settings card prints
+ * the real draw law `y = project((1 − ε)·x̂ + ε·uniform, cap)` and then, thirty lines lower, printed
+ * this string under the SAME letter `y` and in the unqualified present tense ("the GUARD mixes this
+ * way"), so one card published two different laws for one symbol. The second was measurably not the
+ * bars beside it: over 400 shipped `postBoard` boards, `fixedPointMix(board.press.v).y` differs from
+ * the printed bars by a mean of 0.332 and by as much as 0.709, and matches them on 0 of 400.
+ * Asserted in §7 of `tests/job-guard.test.mjs` ("`g` IS NOT THE PRINTED `y`").
+ */
+export const GUARD_MIX_FORMULA = 'gᵢ = 1 − k/vᵢ,  k = (n − 1)/Σ(1/vᵢ)   — the way a GUARD that MINIMISED would have to mix; this one does not, it mirrors x̂';
 /** The PLAYER's maximin against ANY guard, worth the game's value `k` — see `maximinPress`. */
 export const MAXIMIN_FORMULA = 'xᵢ ∝ 1/vᵢ over the same support   — worth k against a guard that reads your press';
 /** What the board PRE-PRESSES: the best reply to the guard this layer ships — `stationaryPress`. */
@@ -262,20 +274,83 @@ export const PRESS_FORMULA = 'pᵢ = A − B/vᵢ,  A = (1 − ε/n)/(2(1 − ε
 /**
  * THE PARAGRAPH THE SETTINGS PANEL PRINTS next to the pre-press, assembled from the three strings
  * above so that the one panel G7 lets print the real formula cannot print it against the wrong
- * side. It exists because that panel published `yᵢ = 1 − k/vᵢ` as "the unexploitable answer … in
+ * side. It exists because that panel published `gᵢ = 1 − k/vᵢ` as "the unexploitable answer … in
  * proportion to their study value", and all three halves of that sentence are false of this file:
- * `y` is the GUARD's mixing, the unexploitable press is its RECIPROCAL (`x ∝ 1/v`, most weight on
- * the LOWEST-value wing), and neither of them is what `pressAdvice().tokens` pre-presses — that is
- * `p`, the best reply to the mirror-House this layer actually ships. On `v = (30, 20, 10)` the
- * difference is a whole token: `y` puts 0 of 3 on the third wing and the board puts 1.
+ * `g` is a MINIMISING guard's mixing, the unexploitable press is its RECIPROCAL (`x ∝ 1/v`, most
+ * weight on the LOWEST-value wing), and neither of them is what `pressAdvice().tokens` pre-presses
+ * — that is `p`, the best reply to the mirror-House this layer actually ships. On `v = (30, 20, 10)`
+ * the difference is a whole token: `g` puts 0 of 3 on the third wing and the board puts 1.
  *
- * Sentence order is (1) the rule, (2) what the board pre-presses, (3) whose mix `y` is, (4) what
+ * Sentence order is (1) the rule, (2) what the board pre-presses, (3) whose mix `g` is, (4) what
  * "unexploitable" names. `tests/job-guard.test.mjs` executes it against the vectors.
+ *
+ * ROUND 5 — TWO UNIVERSALS IN THIS PARAGRAPH WERE MEASURABLY FALSE, and both are now stated
+ * against what was measured:
+ *
+ *   (2) *"positive on every wing of every board the composer deals"*. `stationaryPress` DROPS a
+ *       wing whose `A − B/vᵢ` comes out negative, exactly as `fixedPointMix` drops one — and on a
+ *       four-wing board that is the ordinary case, not a corner: over 500 saves through the shipped
+ *       `postBoard`, a support wing was pressed at 0 on 55.6 % of four-wing boards (86 of 500
+ *       boards overall). `v = (58.5, 131.25, 71.25, 18)` — a real one — drops ALGEBRA at every
+ *       rank's ε. What survives is positivity ON THE SUPPORT THE PRESS KEEPS, plus an ordering —
+ *       but see ROUND 6 for WHICH ordering, because round 5 named the wrong one.
+ *   (3) *"pressed by a player it is worth less than a flat press"*. True on the worked vector
+ *       `v = (30, 20, 10)` (8.0 against 10.0) and false in general: where `g` collapses onto two
+ *       wings and the flat press spreads over four, `g` wins — on 19.6 % of random boards against a
+ *       minimising guard and 36.4 % against the shipped mirror guard. What IS universal is the pair
+ *       of dominances that actually matter, and both are asserted over 4 000 boards: the maximin is
+ *       never worse than `g` against a minimiser, and `stationaryPress` is never worse than `g`
+ *       against the guard this layer ships — but see ROUND 7, because "the guard this layer ships"
+ *       named two different objects and the sentence did not say which.
+ *
+ * ROUND 7 — "THE GUARD THAT SHIPS" IS NOT THE GUARD ON THE BOARD IN FRONT OF YOU, and the sentence
+ * read as if it were. The clause *"the press above beats it on every board against the guard that
+ * ships"* is true under the STATIONARY objective, `U(x) = Σ xᵢvᵢ(1 − (1 − ε)xᵢ − ε/n)` — the `y` a
+ * repeated press of `x` itself creates — and false under tonight's printed `y`, which is what a
+ * student reads "the guard that ships" as, because it is drawn on the same screen ten lines above.
+ * Both readings, over 500 boards driven through the shipped `board.postBoard`
+ * (`tests/job-guard.test.mjs` §PRESS_PANEL_COPY, "THE PRESS BEATS g AGAINST THE GUARD IT CONVERGES
+ * TO"):
+ *
+ *     (A) stationary objective  U(x) = Σ xᵢvᵢ(1 − (1 − ε)xᵢ − ε/n)   p worse than g on   0 / 500
+ *     (B) tonight's printed y   U(x) = Σ xᵢvᵢ(1 − yᵢ)                p worse than g on 491 / 500
+ *                                                              mean shortfall 11.7 %, max 31.7 %
+ *
+ * The suite's own assertion could never have caught it: `valueShipped` in the 4 000-board loop IS
+ * the objective `stationaryPress` solves by construction, so `valueShipped(p) >= valueShipped(g)`
+ * said "the optimiser optimises" four thousand times. It is kept — as an OPTIMISER CHECK, labelled
+ * as one — and the sentence's number is now measured against the board's own printed `y`. The
+ * other half of the sentence was never vacuous: `maximin` vs `g` against a minimiser is a genuine
+ * comparison of two different vectors, and it holds 500 / 500 on the same corpus.
+ *
+ * ROUND 6 — THE ORDERING ROUND 5 PUBLISHED IS THE WRONG ONE, and it is false on the shipped board.
+ * The sentence read *"never presses one wing harder than a wing A TOKEN IS WORTH MORE ON"*, and
+ * this file defines what a token is worth: `marginalᵢ = 0.25·vᵢ·(1 − yᵢ)` (`pressAdvice`). But
+ * `stationaryPress` solves `p = A − B/vPress` and `vPress` is the RAW study value on every wing the
+ * guard is not certain to take — `(1 − yᵢ)` is nowhere in it — so `p` is monotone in `v`, and
+ * whenever `y` reverses the `v` ordering the press is heavier where a token is worth less.
+ * Measured through the shipped `postBoard` over 500 seeded saves carrying a real 0-12-job press
+ * history (`tests/job-guard.test.mjs` §7, "THE PRESS ORDERS BY STUDY VALUE…"):
+ *
+ *     ordering by `marginal` violated in `p`                       88 / 500   (17.6 %)
+ *     …and violated in the WHOLE TOKENS the board pre-fills        14 / 500   ( 2.8 %)
+ *     a real board: v = (103.5, 131.25, 33.75), y = (0.148, 0.487, 0.365)
+ *       marginal = (22.05, 16.83, 5.36) — and the board pre-presses (1, 2, 0)
+ *
+ * Both `v` and `y` are printed as bars on the same screen, so a student can falsify the round-5
+ * sentence from one board. THE MATHS IS NOT THE DEFECT and was not changed: `p` is the STATIONARY
+ * reply, solved against the `y` a repeated press itself creates (`yᵢ = (1 − ε)pᵢ + ε/n`), and at
+ * that `y` the marginal ordering and the `v` ordering coincide — `vᵢ(1 − yᵢ) = vᵢ(1 − ε/n)/2 +
+ * (1 − ε)B`, increasing in `vᵢ`. Ordering by tonight's `marginal` instead would make the pre-press
+ * a greedy best reply to the bars on screen, which is what Global law 6 forbids the board to
+ * pre-fill (`bestResponseWing` is DEBRIEF material for exactly that reason) and what makes the
+ * mirror-House loop cycle (`BEST_RESPONSE_ACCEPTANCE.indexOrderTies`). So the SENTENCE is what was
+ * wrong, and the sentence now states the ordering `p` has and names the gap, with the measurement.
  */
 export const PRESS_PANEL_COPY = Object.freeze([
   'A token pays only where the guard is not.',
-  `The board pre-presses ${PRESS_FORMULA} — the best reply to the guard this layer ships, whose y is a published mirror of your own last ${GUARD.xHatWindowJobs} jobs and not a minimiser. It is positive on every wing of every board the composer deals, which is what spreading pressure across the wings looks like here.`,
-  `The guard's own mixing is the other half of the fixed point: ${GUARD_MIX_FORMULA}. It is the HOUSE's vector, published as evidence; pressed by a player it is worth less than a flat press.`,
+  `The board pre-presses ${PRESS_FORMULA} — the best reply to the guard this layer ships, whose y is a published mirror of your own last ${GUARD.xHatWindowJobs} jobs and not a minimiser. It is positive on every wing the press KEEPS, and it never presses one wing harder than a wing of greater STUDY VALUE — a wing worth too little to press leaves that support exactly as a wing worth too little to defend leaves the guard's, and so does a wing the guard is certain to take, however high its study value, because a token there buys nothing. On a four-wing board a drop is the ordinary case and not a corner: v = (58.5, 131.25, 71.25, 18) presses (0.25, 0.44, 0.31, 0) and spends nothing on the fourth. STUDY VALUE IS NOT WHAT A TOKEN IS WORTH TONIGHT, and p does not claim it is: a token buys ${GUARD.tokenBonus}·vᵢ·(1 − yᵢ), tonight's y is not in v's order, so the press can be heavier on a wing a token is worth less on — 17.6 % of 500 shipped boards, and 2.8 % of them in the whole tokens the board pre-fills. That is p being stationary rather than greedy: it answers the guard a repeated press creates, not the one drawn against tonight's bars. Both v and y are printed above, so the gap is checkable on the board it happens on.`,
+  `The other half of the fixed point is ${GUARD_MIX_FORMULA}. It is the HOUSE's side of the algebra, published as evidence and not a press to copy, and it is NOT the bars printed above it: over 400 shipped boards g and the drawn y differ by a mean of 0.33 and by as much as 0.71, and agree on 0 of them. On the worked board v = (30, 20, 10), pressing g is worth 8.0 against a flat press's 10.0 and the maximin's 12.0. A flat press does not always beat it — where g collapses onto two wings and the flat press spreads over four, g wins — but the maximin below beats it on every board against a guard that MINIMISES, and the press above beats it on every board against the y a repeated press of itself creates, yᵢ = (1 − ε)pᵢ + ε/n, which is the guard this layer converges to and NOT the bars above. Against the bars above it does not: measured on the y printed on the board, g beats the press on 491 of 500 shipped boards by a mean of 11.7 % and by as much as 31.7 %. That is the same fact as the paragraph before it — p is stationary, not greedy — and it is why the two halves of this sentence name two different guards.`,
   `Against a guard that reads the press and minimises, the unexploitable press is the maximin ${MAXIMIN_FORMULA}. It puts the most weight on the LOWEST-value wing, because that is what equalises xᵢ·vᵢ and leaves the guard no wing it prefers.`,
 ]);
 
@@ -296,11 +371,26 @@ export const BEST_RESPONSE_ACCEPTANCE = Object.freeze({
   ranks: 'at ε > 0 the target is the ε-floored equilibrium and NOT (.60, .40): the shipped loop is inside 0.025 of that closed form at every rank, while (.60, .40) itself is missed by 0.039 at Called 1',
   indexOrderTies: 'settled by WING_IDS order instead, the SAME loop cycles with period 11 and averages (7/11, 4/11) for v = (30, 20, 10) and (4/11, 4/11, 3/11) for equal v — 0.036 and 0.061 out, stable to 5000 jobs, because a ten-job window pressed in three whole tokens ties the argmax exactly',
 });
-/** G12 #12's farm figure, with the window it holds on and the bound that holds on every window. */
+/**
+ * G12 #12's farm figure, with the window it holds on and the bound that holds on every window.
+ *
+ * ROUND 4 — `holds` says TEN-JOB and it means it. The `< 0.08` figure is a statement about a FULL
+ * window, because `heatWindow` is `jobs.slice(-10)`: under ten jobs the three decoy RUNs are ADDED
+ * to the window rather than substituted into it, so they own three of four jobs instead of three of
+ * ten and the farm moves x̂ by 0.300, not 0.058 (`shortWindow` below, measured through `pushHeat`).
+ * A doc sentence that says "any window" or "every window" holding plan-sized or VAULT work is false
+ * on the very window it names — three RUNs and one VAULT is four jobs.
+ *
+ * The other condition is the HONEST PRESS. The move is `subset share × (1 − the farmed wing's honest
+ * share)`, so the three published figures are figures for a student who spreads their press; a
+ * ten-job VAULT window whose honest press never touched the farmed wing moves the full share, 0.087,
+ * which is over the band. `bound` is the only unconditional sentence here.
+ */
 export const FARM_BAND = Object.freeze({
   claim: 'a 3-RUN + 1-VAULT farm moves x̂ by < 0.08',
-  holds: 'on a 10-job window that holds plan-sized or VAULT work: 0.058 vault-heavy, 0.061 plan-sized, 0.071 the mixed week',
-  misses: '0.082 on a 9-JOB + 1-VAULT window, 0.103 on a JOB-10-only window, 0.200 on an all-RUN window (the school-hours week), where every job posts the same and the stake weighting has nothing to weigh',
+  holds: 'on a FULL 10-job window that holds plan-sized or VAULT work and spreads the honest press: 0.058 vault-heavy, 0.061 plan-sized, 0.071 the mixed week',
+  shortWindow: 'BELOW ten jobs the three RUNs are added to the window instead of evicting three of it, so nothing under 0.08 holds until the eighth job: 0.300 at four jobs (the literal 3-RUN + 1-VAULT window), 0.188 at five, 0.136 at six, 0.095 at seven, and first inside the band at 0.078 on eight',
+  misses: '0.082 on a 9-JOB + 1-VAULT window, 0.087 on a 10-job VAULT window whose honest press never touched the farmed wing, 0.103 on a JOB-10-only window, 0.200 on an all-RUN window (the school-hours week), where every job posts the same and the stake weighting has nothing to weigh',
   bound: 'what holds on EVERY window: re-pressing a subset moves x̂ by at most that subset share of the window weight — three of ten equal jobs is 0.30 of it, and 0.30 x (1 - 1/3) = 0.200 exactly',
 });
 
@@ -354,27 +444,59 @@ function heatEntry(entry) {
  * anyway, so pressing zero tokens on any one job shortens the window by one and slides every older
  * pairing off its own log entry.
  *
- * Four tiers, in order, and the last two are the fix:
+ * ROUND 7 — THE ONE-JOB DESYNC DEFEATED THE WHOLE DEFENCE, and the docblock that stood here said it
+ * could not. Two sentences were false, and a third described a test the code did not run:
+ *
+ *   • *"Tier 2 already covers that week, because a tail of equal `posted` pairs onto itself
+ *     whichever way the skip fell."* It does not. The old tier 2 checked only that the last
+ *     `rows.length` log entries matched the rows on `posted`, POSITION FOR POSITION — never that
+ *     the rows WERE that tail. One job out of step and a SHIFTED pairing passes that check on any
+ *     week of equal stakes, and the shift runs the farmer's way.
+ *   • Tier 3's *"as LATE as possible and as EARLY as possible"* uniqueness test anchored the
+ *     EARLIEST pass at `latest[0]`, so the two passes agreed on row 0 by construction and could
+ *     never disagree about a prefix. The criterion was published; the test was not run.
+ *
+ * Measured on an all-RUN school week (ten jobs at 36, a board drafted and walked at job 3 pressing
+ * three tokens on RECALL, one night at job 6 where every token was taken off before the start):
+ *
+ *     log 10, heat rows 9   credited 8   shares RECALL [0,1,0,0,0,0,0,0]   x̂ RECALL 0.125
+ *     lists in step         credited 9   shares RECALL [0,0,0,0,0,0,0,0,0] x̂ RECALL 0.000
+ *
+ * The walk's whole press reached `x̂` at full posted, over three times `FARM_BAND.claim`'s band and
+ * above `FARM_BAND.bound`'s all-RUN ceiling, bought with one free action.
+ *
+ * THE REPAIR IS TO STOP GUESSING THE PAIRING AND START PROVING IT. Two facts the save already
+ * carries make that exact, at no save cost: `game.ledger.jobs` counts every job that reached
+ * `state.endJob` (which is every job that wrote a log entry, on the line above), and `heat.jobs`
+ * counts every job `pushHeat` accepted (which is every job that wrote a row). Their difference IS
+ * the number of jobs that ended without writing a row — the desync, counted rather than assumed.
+ *
+ * Four tiers, in order:
  *
  *   1. SELF-DESCRIBING — every row already knows what it answered. Nothing to do.
- *   2. EXACT — the window is the log's tail, position for position, checksummed on `posted`.
- *      True whenever no job pressed zero tokens, which is the ordinary case.
- *   3. GREEDY, AND ONLY WHEN IT IS UNIQUE — walk both lists backwards and allow a log entry to be
- *      skipped (the job that pressed nothing, and wrote no row). A skip makes the pairing a guess
- *      unless the alignment is the only one there is, which is checked rather than assumed:
- *      matching the rows into the log is a subsequence match on `posted`, and an occurrence is
- *      unique exactly when matching every row as LATE as possible and as EARLY as possible land on
- *      the same entries — so both are run and must agree. Ambiguous greedy alignment is NOT used:
- *      with a week of identical JOB-10s it would shift every row onto its neighbour's evidence, and
- *      the shift runs in the farmer's favour (the abandoned board inherits the worked job's
- *      targets). Tier 2 already covers that week, because a tail of equal `posted` pairs onto
- *      itself whichever way the skip fell.
- *   4. OTHERWISE, AND ONLY WHEN THE LOG SHOWS AN ABANDONED BOARD — the evidence-less rows are
- *      DROPPED rather than credited. They cannot be attributed, and the log says at least one of
- *      them may be a board that was drafted and walked out of; crediting them is the exploit, and
- *      dropping them costs a legacy save some history and pushes `x̂` toward uniform, which is the
- *      direction that pays the farmer nothing. With no abandoned board in reach there is nothing to
- *      defend against, so the legacy reading stands untouched.
+ *   2. IN STEP, AND PROVED — `skipsEver(save) === 0`: every job that ended wrote a row, so the
+ *      window IS the log's tail, position for position. Checksummed on `posted` as before. This is
+ *      the ordinary case (a student who never empties the press) and it is now a proof rather than
+ *      an assumption.
+ *   3. FORCED — otherwise the rows are a subsequence of the log and the alignment is a guess. So
+ *      the guess is not taken: for each row the FEASIBLE log entries are computed (every position
+ *      between the earliest and the latest that an order-preserving match can put it at, with
+ *      matching `posted`), and the row takes the evidence only when EVERY feasible entry agrees on
+ *      it — same `targets`, same `shape`. Agreement makes the conclusion independent of which
+ *      alignment is the true one, which is the only thing this function needs. Both passes run over
+ *      the same reach, and the reach is bounded by the counted desync (`rows.length + skips`), so
+ *      it is a real test and not one anchored to its own answer.
+ *   4. WHAT IS STILL UNATTRIBUTABLE, AND ONLY WHEN THE LOG SHOWS AN ABANDONED BOARD — those rows
+ *      are DROPPED rather than credited. They cannot be attributed, and the log says at least one
+ *      of them may be a board that was drafted and walked out of; crediting them is the exploit,
+ *      and dropping them costs a legacy save some history and pushes `x̂` toward uniform, which is
+ *      the direction that pays the farmer nothing. With no abandoned board in reach there is
+ *      nothing to defend against, so the legacy reading stands untouched.
+ *
+ * On the week above, tier 2 is refused (the counters differ by one), the walked row's two feasible
+ * entries disagree (its own log entry says 0 targets, its neighbour says 4), and the row is dropped:
+ * the farmed wing buys 0.000 of `x̂`, in step or out of it. `tests/job-guard.test.mjs` §5b drives it
+ * through the shipped `postBoard` → `startJob` → press → walk machine and sweeps 40 000 windows.
  *
  * @returns {Array} the rows, with evidence merged in where it could be established, and with
  *                  unattributable rows removed when the log shows a walk in the same reach.
@@ -384,59 +506,115 @@ function withLogEvidence(rows, save) {
   if (rows.every((e) => targetsAnswered(e) != null)) return rows;       // 1. already self-describing
   const log = Array.isArray(save?.game?.log) ? save.game.log : [];
   const postedOf = (e) => num(e?.posted, 0);
+  const sameStake = (a, b) => Math.abs(postedOf(a) - postedOf(b)) <= 1e-9;
   const merge = (row, src) => ({
     ...row,
     targets: targetsAnswered(row) ?? targetsAnswered(src),
     shape: row?.shape ?? src?.shape,
   });
+  /* 4, as a closure, because three different failures end here. */
+  const settle = (out) => {
+    const reach = log.slice(-Math.max(rows.length, GUARD.xHatWindowJobs));
+    if (!reach.some(abandonedJob)) return out;
+    return out.filter((e) => targetsAnswered(e) != null);
+  };
+  if (log.length < rows.length) return settle(rows);        // no alignment exists at all
 
-  /* 2. EXACT: one row per log entry, from the end. */
-  if (log.length >= rows.length) {
+  let skips = skipsEver(save, rows.length);
+
+  /* 2. IN STEP, AND PROVED: no job ever ended without writing a row, so the window is the log's
+        tail one for one. The `posted` checksum stays, so a save whose counters say "in step" while
+        its two lists plainly are not falls through to 3 — and falls through with `skips` back at
+        `null`, because a counter that cannot describe THIS window may not be trusted to bound the
+        reach for it either. Widening the reach can only make more rows unattributable, never
+        fewer, so the unreliable-counter case costs history rather than paying it out. */
+  if (skips === 0) {
     const tail = log.slice(-rows.length);
     let ok = true;
     for (let i = 0; i < rows.length && ok; i++) {
       if (targetsAnswered(tail[i]) == null) ok = false;
-      else if (Math.abs(postedOf(rows[i]) - postedOf(tail[i])) > 1e-9) ok = false;
+      else if (!sameStake(rows[i], tail[i])) ok = false;
     }
     if (ok) return rows.map((e, i) => merge(e, tail[i]));
+    skips = null;
   }
 
-  /* 3. GREEDY, backwards, skipping the log entries that wrote no row — accepted only when that
-        alignment is the ONLY one. Matching the rows into the log is a subsequence match on
-        `posted`, and a subsequence occurrence is unique exactly when matching every row as LATE as
-        possible and matching every row as EARLY as possible land on the same log entries. So both
-        are run, over the same reach, and they must agree. */
+  /* 3. FORCED. The reach is the last `rows.length + skips` log entries — the widest span the rows
+        can occupy when `skips` of the jobs inside it wrote no row — and the whole log when the save
+        cannot say (`skips === null`), which is the conservative reading and not the convenient one.
+        `latest[r]` / `earliest[r]` are the last and first positions an order-preserving match can
+        give row `r`; every position between them whose `posted` matches is feasible too, so those
+        are exactly the entries the row could be. */
+  const span = skips == null ? log.length : Math.min(log.length, rows.length + Math.max(0, skips));
+  const lo = Math.max(0, log.length - span);
   const latest = (() => {
     const at = new Array(rows.length).fill(-1);
     let r = rows.length - 1;
     let l = log.length - 1;
-    while (r >= 0 && l >= 0) {
-      if (targetsAnswered(log[l]) == null) return null;          // a log from before the evidence
-      if (Math.abs(postedOf(rows[r]) - postedOf(log[l])) <= 1e-9) { at[r] = l; r--; }
+    while (r >= 0 && l >= lo) {
+      if (sameStake(rows[r], log[l])) { at[r] = l; r--; }
       l--;
     }
-    return r >= 0 ? null : at;                                   // ran out of log
+    return r >= 0 ? null : at;                                   // ran out of reach
   })();
   const earliest = (() => {
     if (!latest) return null;
     const at = new Array(rows.length).fill(-1);
     let r = 0;
-    let l = latest[0];                                           // the same reach, from its front
+    let l = lo;                                                  // the SAME reach, from its front
     while (r < rows.length && l < log.length) {
-      if (Math.abs(postedOf(rows[r]) - postedOf(log[l])) <= 1e-9) { at[r] = l; r++; }
+      if (sameStake(rows[r], log[l])) { at[r] = l; r++; }
       l++;
     }
     return r < rows.length ? null : at;
   })();
-  if (latest && earliest && latest.every((v, i) => v === earliest[i])) {
-    return rows.map((e, i) => merge(e, log[latest[i]]));
-  }
+  if (!latest || !earliest) return settle(rows);
 
-  /* 4. Unattributable. Drop the evidence-less rows iff the log shows a board that was drafted and
-        abandoned in the same reach — otherwise there is nothing here to defend against. */
-  const reach = log.slice(-Math.max(rows.length, GUARD.xHatWindowJobs));
-  if (!reach.some(abandonedJob)) return rows;
-  return rows.filter((e) => targetsAnswered(e) != null);
+  return settle(rows.map((row, r) => {
+    let forced;
+    for (let l = earliest[r]; l <= latest[r]; l++) {
+      if (!sameStake(row, log[l])) continue;
+      const t = targetsAnswered(log[l]);
+      if (t == null) return row;                                 // a log from before the evidence
+      const shape = typeof log[l]?.shape === 'string' ? log[l].shape : null;
+      if (forced === undefined) forced = { t, shape };
+      else if (forced.t !== t || forced.shape !== shape) return row;   // the feasible entries disagree
+    }
+    return forced === undefined ? row : merge(row, { targets: forced.t, shape: forced.shape ?? undefined });
+  }));
+}
+
+/**
+ * How many jobs ENDED WITHOUT WRITING A HEAT ROW over this save's life, or `null` when the save
+ * cannot say. This is the desync of finding R7-1, counted from two counters the save already keeps:
+ *
+ *   `game.ledger.jobs`  — every job that reached `state.endJob`, which is every job that wrote a
+ *                         `game.log` entry (`state.js` writes the log and folds the ledger in the
+ *                         same function, unconditionally).
+ *   `game.heat.jobs`    — every job `pushHeat` ACCEPTED, which is every job that wrote a window row.
+ *
+ * `ledger.jobs` is the authority; a save too old to carry it can still be read when its log has
+ * never been truncated (`log.length < CAPS.log`), because then the log IS every job it ever played.
+ * Anything inconsistent — a row count above the job count, a window longer than the rows ever
+ * pushed — returns `null`, which makes tier 3 read the whole log and tier 4 do the dropping. Being
+ * wrong in that direction costs a legacy save some history; being wrong in the other direction is
+ * the farm.
+ *
+ * @param {object|null} save
+ * @param {number} windowRows  the number of rows the window currently holds
+ * @returns {number|null}
+ */
+function skipsEver(save, windowRows) {
+  const g = save?.game;
+  const log = Array.isArray(g?.log) ? g.log : [];
+  const rowsEver = Number.isFinite(+g?.heat?.jobs) ? Math.trunc(+g.heat.jobs) : null;
+  const ledgerJobs = Number.isFinite(+g?.ledger?.jobs) ? Math.trunc(+g.ledger.jobs) : null;
+  const jobsEver = ledgerJobs != null && ledgerJobs >= log.length
+    ? ledgerJobs
+    : (log.length < CAPS.log ? log.length : null);
+  if (rowsEver == null || jobsEver == null) return null;
+  if (rowsEver < windowRows || rowsEver > jobsEver) return null;        // the counters do not add up
+  return jobsEver - rowsEver;
 }
 
 /**
@@ -494,7 +672,14 @@ export function heatWindow(save) {
  * `X_HAT_FORMULA` above, exported so a panel cannot print a shape the code does not run.
  *
  * `posted` here is always the CREDITED posted (`workedPosted`), so a board that was drafted and
- * abandoned weighs nothing at all.
+ * abandoned weighs nothing at all — WHICH IS A STATEMENT ABOUT THE WHOLE READ PATH AND NOT ABOUT
+ * THIS LINE (round 7). `workedPosted` can only credit 0 if the row is carrying the walk's own
+ * evidence, and on a window written by the shipped `state.endJob` the row carries none: it is
+ * `withLogEvidence` that must find the walk's log entry, and until round 7 one zero-press job was
+ * enough to hand the walk a worked job's evidence instead. The sentence holds because that pairing
+ * is now PROVED (the two counters agree) or FORCED (every feasible log entry says the same thing)
+ * or else refused, and a row that cannot be attributed with an abandoned board in reach is dropped
+ * rather than credited. In step or out of step, the walk weighs nothing.
  *
  * @param {object|null} save
  * @returns {{byWing: Record<string, number>, values: number[], wings: string[], jobs: number,
@@ -569,10 +754,17 @@ export function xHatFrom(save) {
  * The pure updater `state.js` should call when a job ends, so the window and G7's accumulator stay
  * in step. Returns a NEW heat object; nothing is mutated.
  *
- * A job that answered NOTHING is not pushed at all — the window records work, not intent, so
- * drafting a board and walking out of it two seconds later leaves `x̂` exactly where it was. Pass
- * `targets` (and `shape`, for the pro-rating) alongside `posted`; when they are absent the window
- * falls back to pairing itself against `save.game.log` at read time (`withLogEvidence`).
+ * A job that answered NOTHING is not pushed at all — the window records work, not intent — SO LONG
+ * AS THIS FUNCTION IS TOLD (round 7). Pass `targets` (and `shape`, for the pro-rating) alongside
+ * `posted` and the refusal happens here, on the spot, and drafting a board and walking out of it
+ * two seconds later leaves `x̂` exactly where it was. WITHOUT them this function cannot tell a walk
+ * from a worked job and pushes the row; the refusal then happens at READ time instead, in
+ * `withLogEvidence`, which has to find the walk's own `game.log` entry first. That is the shipped
+ * path today (`state.endJob` passes neither — see `withLogEvidence` for why, and for the save-budget
+ * price of closing it), and it is the path round 7 had to repair: the two lists can fall out of
+ * step, because this function refuses a row whose press total is 0 while `state.endJob` logs that
+ * job anyway. `x̂` ends up in the same place either way now, but only one of the two routes is a
+ * one-line refusal and the other is a proof.
  *
  * The window stores the RAW `posted` and the work evidence separately, not the credited product, so
  * an entry stays checkable against the log entry of the same job.
@@ -607,7 +799,8 @@ export function pushHeat(heat, entry) {
 }
 
 /* ==========================================================================================
-   G3.4 — the cap projection (water-filling)
+   G3.4 — the cap projection ("water-filling", loosely — see below: the excess is shared in
+   proportion, not levelled)
    ========================================================================================== */
 
 /**
@@ -621,11 +814,32 @@ export function pushHeat(heat, entry) {
  *     over = { i : y_i > cap }
  *     if over is empty: return y
  *     excess = Σ_{i∈over} (y_i − cap)
- *     for i in over: y_i = cap
- *     free = { i : i ∉ over }
+ *     for i in over: y_i = cap        // and i is retired: it is never `free` again
+ *     free = { i : i not capped }
  *     if Σ_{i∈free} y_i > 0: distribute excess over `free` in proportion to current y_i
  *     else:                  distribute excess over `free` uniformly
  * ```
+ *
+ * THE CLARIFICATION IS LOAD-BEARING, and it is the one the authority's printed block drops
+ * (`COMPOSED-GAME.md:472`, `free = { i : i ∉ over }`). A capped entry is *equal* to `cap`, not above
+ * it, so it is not in `over` on the next pass; re-freeing it hands it excess again, and the same
+ * limit is then reached by an asymptote instead of by retirement. Measured, both implementations
+ * side by side (`tests/job-guard.test.mjs` §4, and it is asserted, not recalled):
+ *
+ *     cap 0.30, y = (0.60, 0.25, 0.10, 0.05) → (0.300, 0.300, 0.267, 0.133): here 2 passes, doc 40
+ *     cap 0.28, y = (0.50, 0.30, 0.15, 0.05) → (0.280, 0.280, 0.280, 0.160): here 2 passes, doc 92
+ *
+ * Same limit to 1e-15, wildly different pass count — so "terminates in ≤ n−1 passes" is false of
+ * the printed block and true of this one. The Settings panel already prints the corrected line.
+ *
+ * "WATER-FILLING" IS A LOOSE NAME for what this does, and the difference is visible, so it is
+ * recorded rather than papered over: the excess is shared PROPORTIONALLY to the uncapped entries,
+ * where water-filling proper (the Euclidean projection onto the capped simplex) LEVELS them,
+ * `y_i = min(cap, y_i + λ)`. On `(0.90, 0.08, 0.02)` with `cap = 0.75` this returns
+ * `(0.750, 0.200, 0.050)` and level-filling returns `(0.750, 0.155, 0.095)`. Both are feasible and
+ * sum-preserving; only the proportional rule is the one the guard draws from, it is the rule the
+ * doc and the panel both print, and §4 pins the difference so that nobody "corrects" the guard's
+ * distribution into the other one by renaming it.
  *
  * The sum is preserved exactly (excess is moved, never dropped), so a distribution in goes a
  * distribution out. When `n · cap < Σy` the constraint is infeasible — no vector of `n` entries can
@@ -667,7 +881,7 @@ export function projectWithPasses(y, cap = GUARD.cap) {
 /**
  * G3.4 — the cap projection. `project((1−ε)x̂ + ε·uniform_n, 0.75)` is the guard's published draw.
  * @param {number[]} y
- * @param {number} [cap]
+ * @param {number} [cap]  the draw cap (`GUARD.cap` = 0.75); see `projectWithPasses` on the name
  * @returns {number[]}
  */
 export function project(y, cap = GUARD.cap) {
@@ -704,6 +918,15 @@ function normSupport(support) {
  * rather than counted or treated as a break, and so are abandoned boards — Mercy exists to stop the
  * HOUSE pinning a wing, so a student who starts and quits three boards must not be able to buy a
  * wing's exemption with six seconds of clicking.
+ *
+ * MERCY IS NOT THE WHOLE SENTENCE, and any panel that prints it flat is printing something
+ * falsifiable: `heldWing` OVERRIDES this block in `guardDist`. Three worked RECALL guards followed
+ * by a board walked out on with RECALL standing draws RECALL again with probability 1, and
+ * `guardDist().blocked` then reads `null` while `.held` reads `RECALL` (measured; §6b of
+ * `tests/job-guard.test.mjs`). That is deliberate — the hold ends the SHOPPING for a wing (G3.7
+ * proof 6) and Mercy is a promise against the House, not a lever a walked board may pull — but it
+ * is a condition on the published clause, so the clause is published WITH it, from
+ * `CAP_PANEL_COPY` below, rather than written out again by hand in a screen.
  * @param {object|null} save
  * @param {string[]} [support]
  * @returns {string|null} the wing this job may NOT draw, or `null`
@@ -740,6 +963,33 @@ export function blockedWing(save, support = WING_IDS) {
  * Only the most recent log entry is consulted, so one answered target releases the hold, and the
  * hold cannot outlive the board that earned it.
  *
+ * ── WHAT THE HOLD DOES NOT DO, MEASURED (ROUND 6) ────────────────────────────────────────────────
+ * It does not make quitting worthless. It makes the wing UNSHOPPABLE, which is a different thing,
+ * and the difference is worth roughly a tenth of a board TO THE STUDENT. Driven through the shipped
+ * machine — `postBoard` → `startJob` (the press is sealed and the guard is drawn and printed) →
+ * `walk` → `postBoard` — over 120 seeded saves (§5c of `tests/job-guard.test.mjs`, "THE HOLD IS NOT
+ * A PRICE"):
+ *
+ *   the walk costs nothing  `ratesElo` false, 0 banked, rating unmoved, Elo unmoved on 120/120;
+ *                           the only durable write is `records.walked += 1`
+ *   the board is the same   seed identical 120/120, contract lines identical 120/120
+ *   the wing is now certain `guardDist().held` is the wing that was drawn, `byWing[wing] = 1`
+ *   and it is worth having  against the wing already shown, a sealed press replaced by a fresh
+ *                           three-token press against a KNOWN guard is better on 120 of 120 boards,
+ *                           +13.56 % mean, +0.87 % at worst, +24.85 % at best; taking the re-posted
+ *                           board's own pre-press instead, better on 106, equal on 14, worse on 0
+ *                           (+7.61 % mean)
+ *
+ * It also undercuts the S5 brief-window economy it was meant to complement: a brief window buys ONE
+ * token move plus a redraw, and this buys all three with no redraw, before the first envelope.
+ *
+ * NO FIX INSIDE THIS FILE REMOVES IT. The board publishes its distribution BEFORE the press (Global
+ * law 6), so a held board must tell the student the wing, and pinning the seed on a getaway count
+ * leaks it identically. The fix belongs to `state.js`/`board.js`: an abandoned board must be
+ * RESUMED with its committed press, not re-posted (`notes/guard-fix.md` R1b — `startJob` refuses a
+ * fresh post while a held board stands). Until it lands, `CAP_PANEL_COPY[2]` publishes the numbers
+ * above rather than the sentence "quitting is worthless", which is measured false.
+ *
  * @param {object|null} save
  * @returns {string|null} the wing still standing from an abandoned board, or `null`
  */
@@ -753,6 +1003,63 @@ export function heldWing(save) {
 }
 
 /**
+ * THE `cap` LEGEND THE SETTINGS PANEL PRINTS, assembled from `GUARD` so that it cannot drift from
+ * the constants, and carrying the two conditions the shipped draw actually has — for the same
+ * reason `PRESS_PANEL_COPY` exists: the panel prints this file's behaviour or it prints a claim a
+ * student can falsify in one evening.
+ *
+ * The two sentences it replaces were each falsifiable as published. (1) *"no wing may be drawn with
+ * probability above 0.75, and the guard may not take the same wing more than 3 jobs running"* — the
+ * second clause has no exception printed beside it, and `heldWing` is an exception to it (see
+ * `blockedWing`). (2) The word *"unexploitable"*, used of the press: the press is not unexploitable
+ * (that is `MAXIMIN_FORMULA`, and it is not what the board commits), and the cap is not a promise
+ * of unexploitability either. What the cap IS, is a bound — and the bound is a bound on boards with
+ * TWO OR MORE wings in play, with two named exceptions, all of which the board PRINTS before the
+ * press (Global law 6), which is why they are conditions rather than leaks:
+ *
+ *     plain board          max y ≤ cap = 0.75                     (asserted over 3 000 random saves)
+ *     Mercy, 2-wing board  the other wing is drawn with certainty  (the block empties the support)
+ *     a board you walked   that wing is drawn with certainty       (the hold, G3.7 proof 6)
+ *     ONE-WING board       that wing is drawn with certainty       (n·cap < 1, so there is no
+ *                                                                   projection to run — see
+ *                                                                   `projectWithPasses`)
+ *
+ * ROUND 4 — the one-wing board is the third regime, and the legend used to enumerate two. It is
+ * reachable and ordinary: the RECALL wing owns 5 of the 19 makes, so an evening whose whole due list
+ * is one ASN sheet posts one wing (`board.js` has a branch and a printed line for it — "one wing
+ * tonight · <wing> · no press"). `blockedWing` already refuses to block a one-wing support and
+ * `heldWing` may still fire there, so this is a THIRD condition and not a case of either of the
+ * other two. The §6b sweep drove n ∈ {2,3,4} and therefore could not see it; it drives n ∈ {1,2,3,4}
+ * now, and the one-wing regime is asserted rather than excluded.
+ *
+ * `tests/job-guard.test.mjs` §6b drives all four regimes through `guardDist` and asserts each
+ * clause of this legend against the measurement, including that the random sweep REACHES both
+ * exception regimes rather than asserting a bound it never tests.
+ *
+ * ROUND 7 — *"the board prints the block"* WAS NOT TRUE OF ANY PIXEL ON THE BOARD. `guardDist` sets
+ * the blocked wing's `y` to exactly 0 and `guardBars` returns `blocked: true`, `screens/job.js` puts
+ * that on `dataset.blocked`, and the ONE rule that reads the flag (`site/css/job.css`,
+ * `.job-bar[data-blocked="true"] .job-bar-fill { background: var(--muted) }`) recolours a fill the
+ * same element sets to `scaleX(0)` — a zero-width box. The word "Mercy" appears in no screen file.
+ * A blocked wing was on screen as `RECALL 0 %`, and nothing else.
+ *
+ * Two halves, and this file owns one of them. THE COPY now claims only what a student can see — the
+ * wing is printed at 0 % before the press, which `guardBars` guarantees (`pct` 0, `blocked` true) —
+ * and `guardDist` now carries a `note` on a blocked board, the way it already does for the cold
+ * start and the hold, so a screen has a LINE to print rather than a flag to style. Printing it is
+ * `screens/job.js`'s call and is filed as a request in `notes/repair-guard.md` (R7-a), together with
+ * the second half of the same defect, which is also not in this file: `screens/job.js` rebuilds the
+ * distribution as `{ byWing, eps }` once the job is live, and `blocked`/`held` do not survive that
+ * — `distOf` reads them off the object it is handed, so they must be handed over.
+ */
+export const CAP_PANEL_COPY = Object.freeze([
+  `cap — on a board with two or more wings in play, no wing is drawn with probability above ${GUARD.cap}: outside the two exceptions below, the guard is never a certainty. A board that posts ONE wing is the third condition and is not an exception you have to hunt for — it prints itself, "one wing tonight", and asks for no press at all, because ${GUARD.tokens} tokens cannot change a payoff when every wing on the board is the guarded one. That bound is what the cap buys. It is not a promise that the guard cannot be out-pressed, and it is not the word "unexploitable" — that word belongs to a vector the board does not press, the maximin: ${MAXIMIN_FORMULA}.`,
+  `Mercy — the guard may not take the same wing more than ${GUARD.sameWingMaxRuns} jobs running: on the fourth the wing leaves the draw entirely, and the board prints that wing at 0 % before you press. On a board with only two wings on it that sends the guard to the other wing with certainty, which is the first of the cap's two exceptions.`,
+  'The second exception is the one you choose: a board you walk out on keeps its guard standing, and the next board draws that wing with probability 1 — Mercy included, because Mercy is a promise against the House and not a lever a walked board may pull. One answered target ends the hold. WHAT THE HOLD IS, AND WHAT IT IS NOT, measured over 120 shipped boards: it ends the SHOPPING — the re-posted board is the same seed and the same contracts on 120 of 120, so the wing cannot be re-rolled — and it hands you that wing for free. A walk at the board is priced at nothing: no Elo, no rating, nothing banked, one tally in records.walked. So it turns a sealed press against a wing just drawn into a fresh three-token press against a wing already known, which is better on 120 of 120 boards (+13.6 % mean, +0.9 % at worst), or better on 106 and worse on 0 taking the new board\'s own pre-press. AND IT BUYS TWO MORE FREE MOVES INSIDE THE JOB, which this list used to leave out. A brief window lets you move one token, and the price of moving it is that the guard is DRAWN AGAIN: on an ordinary board that redraw lands on a different wing 62.6 % of the time (500 shipped boards, both windows). On a held board it is drawn from a distribution that is 1 on the held wing, so it lands on the same wing 1000 times out of 1000 — the price is zero, and a JOB has two of those windows. The hold beats the re-roll; it does not make quitting worthless, and it does not leave the brief window costing anything. What would is a board RESUMED with its press instead of re-posted, and a brief redraw taken from the board\'s UNHELD distribution (`guardDist().unheld`, computed here for exactly that) instead of from the published one-hot. Both live in the state machine rather than here.',
+  `So the honest sentence is the bound and its three conditions: on a board with two or more wings, and outside a held board and a ${GUARD.sameWingMaxRuns}-in-a-row block on a two-wing board, no wing is above ${GUARD.cap}; inside any of the three the board publishes a certainty, and it publishes it before you press.`,
+]);
+
+/**
  * G3.4 — the guard's PUBLISHED distribution: `y = project((1−ε)·x̂ + ε·uniform_n, cap)` over the
  * support (the wings the drafted contracts actually touch). Printed as bars with percentages
  * BEFORE the token press (Global law 6: evidence before the decision).
@@ -763,9 +1070,15 @@ export function heldWing(save) {
  * @param {object|null} save
  * @param {number|{eps?: number, cap?: number, support?: string[]|object, wings?: string[],
  *                 blocked?: string|null}} [eps]  ε, or an options object
- * @param {number} [cap]  the water-filling cap (`GUARD.cap` = 0.75)
+ * @param {number} [cap]  the draw cap (`GUARD.cap` = 0.75)
+ * `unheld` / `unheldByWing` are the same projection BEFORE the hold flattened it onto one wing —
+ * identical to `y` on every board that is not held. A caller that has to charge for a re-draw on a
+ * held board (the brief window, `state.press`) needs a distribution that can still move; this is
+ * it. On an unheld board the two are the same object's values, so reading `unheld` is never wrong.
+ *
  * @returns {{wings: string[], n: number, eps: number, cap: number, xHat: number[], mixed: number[],
- *            y: number[], byWing: Record<string, number>, passes: number, blocked: string|null,
+ *            y: number[], unheld: number[], byWing: Record<string, number>,
+ *            unheldByWing: Record<string, number>, passes: number, blocked: string|null,
  *            held: string|null, coldStart: boolean, jobs: number, source: string,
  *            note: string|null}}
  */
@@ -808,23 +1121,45 @@ export function guardDist(save, eps, cap) {
   }
 
   /* The guard you walked out on is still there (see `heldWing`). This OVERRIDES both the draw and
-     Mercy: Mercy is a promise against the house, not a lever an abandoned board may pull. */
+     Mercy: Mercy is a promise against the house, not a lever an abandoned board may pull.
+
+     `unheld` is the distribution the board WOULD have drawn from — the projection above, before the
+     hold flattened it onto one wing. It is kept because the hold makes one price disappear: the
+     brief window's re-press is paid for by a REDRAW (`state.press` draws again from the board's
+     stored `dist`), and a redraw from a one-hot is not a price, it is a formality. Nothing in this
+     file can charge it — `state.js` owns the redraw — but the vector it needs to charge it with is
+     computed here and was being thrown away. See R7-b in `notes/repair-guard.md`. */
   const held = Object.hasOwn(opts, 'held') ? opts.held : heldWing(save);
   const hIdx = held && WING_IDS.includes(held) ? wings.indexOf(held) : -1;
+  const unheld = y.slice();
   if (hIdx >= 0) y = wings.map((_, i) => (i === hIdx ? 1 : 0));
 
   return {
     wings, n, eps: e, cap: c,
-    xHat: x, mixed, y, passes,
+    xHat: x, mixed, y, unheld, passes,
     byWing: Object.fromEntries(wings.map((w, i) => [w, y[i]])),
+    unheldByWing: Object.fromEntries(wings.map((w, i) => [w, unheld[i]])),
     blocked: hIdx >= 0 ? null : (bIdx >= 0 ? blocked : null),
     held: hIdx >= 0 ? held : null,
     coldStart: hat.coldStart, jobs: hat.jobs, source: hat.source,
     note: hIdx >= 0
       ? (COPY.guardHeld?.({ wing: held }) ?? null)
-      : (hat.coldStart ? COPY.guardColdStart({ n }) : null),
+      : (bIdx >= 0 && n >= 2
+        ? (COPY.guardBlocked?.({ wing: blocked, runs: GUARD.sameWingMaxRuns }) ?? GUARD_BLOCK_NOTE(blocked))
+        : (hat.coldStart ? COPY.guardColdStart({ n }) : null)),
   };
 }
+
+/**
+ * The line a board prints when Mercy has taken a wing out of the draw — this file's own string,
+ * used when `data/job.js` has no `COPY.guardBlocked` of its own (it does not today, and `COPY` is
+ * not this lane's file). It exists so `guardDist().note` is never a flag a screen has to invent
+ * words for: R7-3's defect was a block with no text anywhere in the layer.
+ * @param {string} wing
+ * @returns {string}
+ */
+export const GUARD_BLOCK_NOTE = (wing) =>
+  `${wing} is blocked — ${GUARD.sameWingMaxRuns} jobs running is the limit, so the guard cannot take it tonight`;
 
 /** The bars the board prints, as whole percentages that still sum to 100 (largest remainder). */
 export function guardBars(dist) {
@@ -1016,9 +1351,28 @@ export function maximinPress(values, wings = WING_IDS) {
  *   `U(p) = Σ p_i · v_i · (1 − (1−ε)p_i − ε/n)`
  *   `∂U/∂p_i = λ  ⟹  p_i = A − B/v_i`,  `A = (1 − ε/n) / (2(1 − ε))`,  `B = (|S|·A − 1) / Σ_{S}(1/v_i)`
  *
- * `p` is increasing in `v_i` and, on every board the composer deals, positive on every wing — which
- * is what "spread pressure across the wings" describes. A wing whose `p_i` comes out negative is
- * worth too little to press at all and leaves the support, exactly as in `fixedPointMix`.
+ * `p` is non-decreasing in `v_i` — `B = (|S|·A − 1)/Σ_S(1/v_i) ≥ 0`, because `A ≥ ½` and `|S| ≥ 2`
+ * on every support the loop keeps — so a wing is never pressed harder than one with a larger `v_i`,
+ * and `p` is POSITIVE ON THE SUPPORT IT KEEPS.
+ *
+ * **THAT ORDERING IS BY STUDY VALUE AND BY NOTHING ELSE** (ROUND 6). The `v` `pressAdvice` hands
+ * this function is `vPress`, which is the RAW study value on every wing except one the guard is
+ * CERTAIN to take (`y_i ≥ 1 − EPS`), which is zeroed — so on a held board the highest-study-value
+ * wing can be the one that is dropped, and everywhere else `p` follows `v`. It does NOT follow
+ * `marginal_i = 0.25·v_i·(1 − y_i)`, the value `pressAdvice` publishes for a token on wing *i*:
+ * `(1 − y_i)` is not in this solve at all. Where tonight's `y` reverses the `v` ordering the two
+ * disagree, and they disagree on 17.6 % of 500 shipped `postBoard` boards (2.8 % in whole tokens).
+ * That is correct and deliberate — `p` is the stationary reply to the `y` a repeated press creates,
+ * not the greedy reply to the bars on screen, and Global law 6 forbids the board to pre-fill the
+ * greedy one — but it is not what `PRESS_PANEL_COPY` used to say, so the sentence was corrected
+ * rather than the solve. See the ROUND 6 block on `PRESS_PANEL_COPY`. It is NOT positive on every wing
+ * of every board: a wing whose `p_i` comes out negative is worth too little to press at all and
+ * leaves the support, exactly as in `fixedPointMix`. That is the ordinary case on a four-wing board,
+ * not a corner — 55.6 % of the four-wing boards in the 500-save `postBoard` corpus press a support
+ * wing at 0, and `v = (58.5, 131.25, 71.25, 18)`, a real one, drops its fourth wing at every rank's
+ * ε. "Spread pressure across the wings" therefore means across the wings the press keeps, and
+ * `PRESS_PANEL_COPY` says so; the universal it used to say is measured false in §PRESS_PANEL_COPY
+ * of `tests/job-guard.test.mjs`.
  *
  * @param {number[]|Record<string, number>} values
  * @param {string[]} [wings]

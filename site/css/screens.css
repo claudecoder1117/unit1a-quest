@@ -784,10 +784,27 @@ body:has(.sw-pill:not([hidden])) .set-msg { top: calc(var(--header-h) + 64px); }
    r1: the screen fills the viewport (head · meter · stage) and the card fills the stage, so the answer
    row sits at the bottom of an 844 px phone too — it used to size to content and end mid-screen with
    340 px of empty ground under it (INTEGRATION-W4 #3). The miss line ("−3 s · …") is the card's middle
-   row, just above the thumb. On a laptop the column is capped and centred. */
+   row, just above the thumb. On a laptop the column is capped and centred.
+
+   THE CAP IS A STRETCH CAP, SO IT IS TYPOGRAPHIC — `35rem`, not `560px` (verify round 1, integrator,
+   layout-audit BLOCKER on `run-blitz-m1`). `max-height` on this card is a CLIP, and the card's own
+   `min-height` (`min(36vh, 320px)`) replaces the grid item's automatic content-based minimum, so
+   nothing floors the box at its content: at 320x568 with `html{font-size:20px}` the content needs
+   623 px, the box was pinned at 560 px, and `.blitz-answers` — which is `align-self: end` — hung
+   64 px BELOW the card and covered `.blitz-hint`, the stage's next row (measured 2 198 px², 89 % of
+   the hint, chromium and webkit, both themes). Two things were tried and are refuted, so they are
+   not re-tried: `minmax(min-content, 1fr)` on `.blitz-stage` changes nothing (a grid item's
+   content-based minimum is itself clamped by its max size — measured identical in both engines),
+   and no value of `max-height` in `px` can be both a cap and non-clipping, because the content it
+   caps scales with the root font while the cap does not.
+   `35rem` IS that cap in the unit the content is measured in: 35 × 16 px = the same 560 px this line
+   has always been below 768 px, and it grows exactly as the type does (623 px of content at 20 px
+   root against a 700 px cap — the same 89 % headroom the 16 px case has). Swept 320→1900 × {none,
+   20 px, 24 px} × {chromium, webkit}: zero overlap, where `560px` overlapped in 8 of those 48 cells.
+   Pinned as a source lint in tests/final-layout.test.mjs so the unit cannot quietly go back to px. */
 .run-screen.blitz { min-height: calc(100dvh - var(--header-h) - 40px); grid-template-rows: auto auto 1fr; }
 .blitz-stage { display: grid; gap: 10px; grid-template-rows: minmax(0, 1fr) auto; align-content: stretch; }
-.blitz-card { padding: 16px; display: grid; gap: 14px; grid-template-rows: auto 1fr auto; min-height: min(36vh, 320px); max-height: 560px; align-self: stretch; width: 100%; }
+.blitz-card { padding: 16px; display: grid; gap: 14px; grid-template-rows: auto 1fr auto; min-height: min(36vh, 320px); max-height: 35rem; align-self: stretch; width: 100%; }
 .blitz-card .blitz-flash { align-self: end; }
 .blitz-answers { align-self: end; }
 @media (min-width: 1024px) {

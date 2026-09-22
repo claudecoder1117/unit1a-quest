@@ -223,30 +223,233 @@ export function postedFor(target = {}) {
     * tellFor(target.tell) * x2Mult(target.x2) * num(target.mult, 1));
 }
 
+/* ------------------------------------------------------------------ G2: the COVER (the cap, both ways) */
+
+/** The rung every rank may make, and the `W` a covered-to-nothing call falls back to (`CALL_LEVELS[0]`). */
+const BASE_CALL = CALL_LEVELS[0].id;
+const BASE_W = CARRY_LADDER[BASE_CALL].W;
+
 /**
- * G2 clear branch: `Δloose = round( L · ρ_eff · m_chain · W_call · scope · wing · cold · tell )`,
- * times the ×2 posting (G3.6 — a random object multiplies both branches identically, G3.7 proof 1).
- * ONE round, at the end, of the whole product.
+ * **THE COVER — how much of the call's own price the pile can actually pay.**
+ *
+ * G2's miss branch is `−min(LOOSE, L·m·P·wing_pen)`. The `min` is deliberate (G3.7 #4 keeps it as
+ * the design's one Kelly-ish brake), but it is one-sided: it truncates the PRICE of a bold call and
+ * left its PRIZE — `W_call` — at full value. At `LOOSE = 0` the price is exactly 0 for every rung
+ * while the clear branch is strictly increasing in `W`, so the top rung was weakly dominant; BAG
+ * sets `LOOSE = 0` (`chainAfterBag`) and is offered at every beat but the last, so "bag, then call
+ * the top rung" collected the whole ladder for nothing. Measured through the shipped machine
+ * (`startJob → lockCall → applyTarget → bag → endJob`, 16 seeds × 10 days × JOB-10): **+95.6 % over
+ * honest play at q = 0.50, winning on 16/16 seeds, and paying MORE the weaker the student** — the
+ * `162` that G3.7 #9 names as *the* brake on systematic over-calling was paid zero times.
+ *
+ * The close is the cap applied to BOTH sides of the wager instead of one: **you are paid the bold
+ * call's premium in the same proportion as its penalty is collectable.**
+ *
+ *   `cover = min(1, LOOSE / |nominal miss|)`        `W_eff = W(50) + (W_call − W(50))·cover`
+ *
+ * so on a deep pile (`S ≥ L·m·P`, `isDeepPile`) the cover is 1 and **every published number is
+ * untouched**, and at `S = 0` the cover is 0, every rung pays `W = 1.0`, and the call is decided by
+ * the rating alone — which is strictly proper, so honest calling is *strictly* best at the exact
+ * state where the top rung used to be free. The exploit collapses onto "call 50 and bag every beat",
+ * which the 10 % fee already prices below honest play.
+ *
+ * Two things the cover deliberately does NOT read:
+ *   · **crew forgiveness.** At rank ≥ 1 `missFor` returns 0 because the miss rung is forgiven to a
+ *     paying one — the CAP is not what removed the price, so the premium stands (cover 1). The
+ *     forgiveness hole is its own finding (notes/econ-fix.md round 2 §1, Requests) and is not this.
+ *   · **the 50 rung.** `P(50) = 0`: there is no price to cover and no premium to scale (`W = 1.0`).
+ *
+ * @param {Target} target
+ * @param {number|{id:number}} call
+ * @param {number} chain
+ * @param {number} [loose=Infinity]  LOOSE before this target. `Infinity` (the default) = "price the
+ *                                   ladder itself", which is what every caller that asks for a
+ *                                   target's worth without naming a pile means.
+ * @param {number} [crew=0]
+ * @returns {number} cover ∈ [0, 1]
+ */
+export function coverFor(target = {}, call = BASE_CALL, chain = 0, loose = Infinity, crew = 0) {
+  const { P } = carryOf(call);
+  if (!(P > 0)) return 1;                              // the 50 rung: no price, no premium
+  if (!isMiss(MISS_RUNG, crew)) return 1;              // forgiven, not capped — see above
+  /* `Infinity` (the default) and a missing pile both mean "no pile was named" — price the ladder
+     itself. The check is on the ARGUMENT, before `num()`, which maps a non-finite value to 0 and
+     would otherwise turn "unspecified" into "empty", i.e. into no premium at all. */
+  if (!Number.isFinite(loose)) return 1;
+  const S = Math.max(0, loose);
+  const nominal = lootFor(target) * chainMult(chain) * P * wingPen(target?.guarded)
+    * x2Mult(target?.x2) * num(target?.mult, 1);
+  if (!(nominal > 0)) return 1;
+  return clamp(S / nominal, 0, 1);
+}
+
+/** `W_eff = W(50) + (W_call − W(50))·cover` — the carry ladder, covered. `cover = 1` is the ladder. */
+export function coveredW(call, cover = 1) {
+  const { W } = carryOf(call);
+  return BASE_W + (W - BASE_W) * clamp(num(cover, 1), 0, 1);
+}
+
+/**
+ * **The STAKE** — `L · ×2 · mult`: `missFor`'s multiplier list at `P = 1`, minus `wing_pen`.
+ * This is what the CALL wagers, and (since verify round 2) what its premium is paid on.
+ *
+ * `wing_pen` is left out deliberately and it is the one asymmetry that survives. Putting it in would
+ * make the carry ladder's published cuts exact on the guarded wing too — and it would also double a
+ * bold call's PRIZE there, which inverts the guard: measured, a guarded tier-1 at rank 1, chain 3,
+ * call 85 would out-earn the same target on a safe wing at any `q > 0.870` (17.1 against 15.2 at
+ * q = 0.95), i.e. a confident student should hunt the guard. Leaving it out keeps `guardMult` a real
+ * tax at every `q` and moves the guarded wing's cuts UP instead — `q/(1−q) = 2·ΔP/ΔW`, i.e.
+ * `0.750 / 0.875 / 0.9375` against the published `0.600 / 0.7778 / 0.88235`. That is a deviation in
+ * the CAUTIOUS direction only: on the guarded wing the money ladder asks for more certainty than the
+ * rating ladder does, so over-calling is punished harder there and rewarded nowhere.
+ *
+ * `ρ_eff` is NOT left out — `carryFor` multiplies the premium by it — for the same reason in the
+ * same direction: it keeps G3's printed *"a hint costs 30 %"* exactly true (the hint scales both
+ * terms), and `ρ̄ < 1` also pushes the cuts up rather than down.
+ */
+function stakeOf(target = {}) {
+  return lootFor(target) * x2Mult(target?.x2) * num(target?.mult, 1);
+}
+
+/**
+ * G2 clear branch: `Δloose = round( m_chain · ( LOOT + STAKE·ρ_eff·(W_eff − 1) ) )`, where
+ *
+ * ```
+ * LOOT  = L · ρ_eff · scope · wing · cold · tell · ×2      (`gainLFor`·ρ̄ — the target's worth)
+ * STAKE = L · ×2                                           (`stakeOf` — what the CALL bets)
+ * W_eff = W(50) + (W_call − W(50))·cover                    (`coverFor` — the premium the pile can back)
+ * ```
+ *
+ * ONE round, at the end, of the whole thing. On a **bare target** `LOOT === STAKE·ρ_eff` and this
+ * collapses to `round(L·ρ·m·W)` — G2's published product, and the basis every published table in
+ * this file is computed on, so **not one published numeral in `data/job.js` moves.**
+ *
+ * ### Why the premium is paid on the STAKE and not on the loot (verify round 2, exploit-hunt)
+ *
+ * It used to be `round(L · ρ_eff · m · W_eff · scope · wing · cold · tell · ×2)` — the whole product,
+ * `W` included. G2 gives the two branches different multiplier sets on purpose ("`scope`, `cold` and
+ * `tell` do NOT scale a loss"), so multiplying `W` by the GAIN set made the call's odds depend on how
+ * the target was dressed: the prize of a bold call rose with `scope · wing · cold · tell` while its
+ * price did not. **Dressing a target was therefore the same thing as raising `q`**, and the carry
+ * ladder's indifference points — published as `0.600 / 0.7778 / 0.88235`, and reproduced by
+ * `call.carryIndifference()` — held on a bare target and nowhere else.
+ *
+ * Measured on one target a real board serves (tier 2, chain 4, LOOSE 200, a due review with
+ * `scope 1.25`, `cold 1.5`, two tokens on its wing), `econ.settle`'s own numbers before the repair:
+ *
+ * ```
+ *   q      50      70      85      95     honest   carry-argmax
+ *   0.50   32.0    35.0    25.0   −11.0      50         70        +9.4 % for the lie
+ *   0.60   38.4    45.8    43.0    19.2      50         70       +19.3 %
+ *   0.70   44.8    56.6    61.0    49.4      70         85        +7.8 %
+ *   0.90   57.6    78.2    97.0   109.8      85         95       +13.2 %
+ * ```
+ *
+ * The same four rungs now clear at `64 / 73 / 82 / 91` against the same untouched misses
+ * `0 / −19 / −65 / −162`, and the carry argmax is the honest rung or one below it at every one of
+ * those nine `q` — never above.
+ *
+ * — the honest rung was the carry argmax at **no** `q` in `[0.50, 0.90]`, and `evMaxCallAt` disagreed
+ * with `call.honestCall` on 4 of 5 cells. End to end through `startJob → lockCall → applyTarget →
+ * endJob` over 16 seeds × 6 jobs on a common outcome stream, an EV-max caller banked **+1.5 % to
+ * +10.3 %** over an honest one. G3.8 step 3 ("*truthful self-assessment is the dominant reporting
+ * policy*") and G3.7 #9 ("*the brake on systematic over-calling is the CARRY ladder*") were both
+ * false in the currency they name, and G3.8 step 1 sends the student at the review block first —
+ * which carries the highest scope in the game, i.e. the class of target the policy failed hardest on.
+ *
+ * Paying the premium on the stake closes it as an identity rather than as a tuning. The rung terms
+ * now enter both branches through the same `L · ×2`, so every pairwise indifference is
+ * `q·ρ̄·ΔW = (1−q)·wing_pen·ΔP` — and at `ρ̄ = 1` on an unguarded wing that is exactly
+ * `0.600 / 0.7778 / 0.88235`, i.e. `call.carryIndifference()`, **at every scope, wing, cold, tell,
+ * ×2, chain and pile depth** (on a shallow pile the premium is `ρ̄·S·(W−1)/(wing_pen·P)` against a
+ * price of `S`, which is the same cut again). `ρ̄ = 1` is the state a call is MADE at — the rung does
+ * not exist yet, and `rhoBarFor(null)` is the bound `evMaxCallAt` and the envelope price it on.
+ *
+ * **Every remaining deviation is one-directional.** `ρ̄ < 1` (a hinted or second-attempt clear) and
+ * the guarded wing (`wing_pen = 2`, deliberately absent from `STAKE` — see `stakeOf`) both push the
+ * cuts UP. So the money ladder can ask for MORE certainty than the rating ladder and never for less:
+ * **a lie is never paid, anywhere.** Measured over 1 059 840 (target × chain × rung × pile × q) cells
+ * with integer rounding scaled out (`mult: 1000`): the carry argmax is above the honest rung in
+ * **0** cells outside the two published disagreement bands, and on unguarded `ρ̄ = 1` deep states it
+ * IS the honest rung in **all** of them. At shipped integer scale the residue is `round` alone —
+ * 2 675 cells (0.25 %), **worst edge 0.60 loot**, against the **+19.3 % of the honest rung's whole
+ * EV** the defect used to pay. `job-econ.test.mjs` §3c sweeps the grid.
+ *
+ * Three consequences worth naming rather than discovering:
+ *   · **a gain-side multiplier no longer scales the call's premium.** `tell ×1.25` is a quarter of
+ *     the LOOT, so its realised multiple on a 70 call is `×1.184`, not `×1.25` — which makes G12
+ *     #14's tell-farming trade worse than it was published as (six targets to repay, not four), and
+ *     incidentally closes the tier-1 rounding inflation `job-exploit.test.mjs` had pinned at ×1.375.
+ *   · **the hint price is unchanged at 30 %**, because `ρ_eff` multiplies BOTH terms. It was the
+ *     reason to keep `ρ` on the premium: G3 prints that number to the student.
+ *   · the guarded wing keeps a ladder of its own, one notch more cautious at every rung (`stakeOf`).
+ *     G3.4 already publishes the guard as the high-variance line; what it is NOT is a place where
+ *     boldness gets cheaper.
+ *
+ * Omit `loose` and the cover is 1, i.e. the published ladder — the right answer for "what is this
+ * target worth" and the wrong one for "what did this target pay", which is why `settle()` is the
+ * routing function and passes the pile.
  * @param {Target} target
  * @param {number|{id:number}} call    a call id (50/70/85/95)
  * @param {number} chain               the chain BEFORE this target
  * @param {number|number[]|Record<number,number>} rungs  the realised rung, or a rung distribution
  * @param {number} [crew=0]            the crew rank on this make (0/1/2)
+ * @param {number} [loose=Infinity]    LOOSE before this target — the cover's own argument
  * @returns {number} Δloose, ≥ 0
  */
-export function carryFor(target, call, chain, rungs, crew = 0) {
-  const { W } = carryOf(call);
-  const raw = lootFor(target)
+export function carryFor(target, call, chain, rungs, crew = 0, loose = Infinity) {
+  const loot = lootFor(target)
     * rhoBarFor(rungs, crew)
-    * chainMult(chain)
-    * W
     * scopeOf(target)
     * wingMult(target)
     * coldOf(target)
     * tellFor(target?.tell)
     * x2Mult(target?.x2)
     * num(target?.mult, 1);
-  return round(raw);
+  const premium = stakeOf(target) * rhoBarFor(rungs, crew)
+    * (coveredW(call, coverFor(target, call, chain, loose, crew)) - BASE_W);
+  return round(chainMult(chain) * (loot + premium));
+}
+
+/**
+ * **`carryFor` INVERTED** — the `mult` a one-unit synthetic target must carry to have paid `delta`
+ * at this chain, call and pile, cover included.
+ *
+ * The debrief has no pricing to read back: `inProgress.game.calls[]` keeps `{call, rung, d}` and not
+ * the multipliers that produced `d`, so `screens/run.js realisedOrderOf` rebuilds each realised
+ * target as "every published multiplier at 1, everything folded into `mult`". That inversion used to
+ * be one division — `mult = d/(ρ·m·W)` — and the cover breaks it, because `W_eff` depends on `mult`
+ * through the target's own nominal miss. It is still closed-form, in two branches:
+ *
+ *   covered  (`S < m·P·mult`):  `d = mult·ρ·m + ρ·(W−1)·S/P`   ⟹ `mult = (d − ρ(W−1)S/P)/(ρ·m)`
+ *   uncovered(`S ≥ m·P·mult`):  `d = mult·ρ·m·W`               ⟹ `mult = d/(ρ·m·W)`
+ *
+ * — the covered form is LINEAR in `mult` because the premium the cover pays,
+ * `mult·ρ·m·(W−1)·S/(m·P·mult)`, cancels `mult` entirely. It lives here rather than in the screen so
+ * that one file owns the relationship between a payout and its inverse (notes/repair-econ.md,
+ * verify round 1).
+ *
+ * **Verify round 2 did not move it.** The premium moved onto the STAKE, but on the synthetic target
+ * the screen rebuilds every published multiplier is 1, so `LOOT = mult·ρ` and `STAKE·ρ = mult·ρ` —
+ * the two bases coincide and `carryFor` collapses back to `mult·ρ·m·W_eff`. The inverse below is
+ * therefore unchanged, and `job-econ.test.mjs` re-asserts the round trip.
+ *
+ * @param {number} delta   the realised Δloose (≥ 0, a clear)
+ * @param {{rho?: number, chain?: number, call?: number|{id:number}, loose?: number}} [at]
+ * @returns {number} the `mult` for which `carryFor({mult}, call, chain, ρ, 0, loose) === round(delta)`
+ */
+export function realisedMult(delta, { rho = 1, chain = 0, call = BASE_CALL, loose = Infinity } = {}) {
+  const d = num(delta, 0);
+  const r = num(rho, 0);
+  const m = chainMult(chain);
+  const { W, P } = carryOf(call);
+  if (!(r > 0) || !(m > 0)) return 0;
+  if (P > 0 && Number.isFinite(loose)) {
+    const S = Math.max(0, loose);
+    const covered = (d - (r * (W - 1) * S) / P) / (r * m);
+    if (covered > 0 && S < m * P * covered) return covered;    // the branch it solves under
+  }
+  return (r * m * W) > 0 ? d / (r * m * W) : 0;
 }
 
 /**
@@ -297,7 +500,9 @@ export function settle(target = {}, chain = 0, loose = 0) {
     const after = target.shielded ? chain : chainAfterTarget(rung, crew, chain, { idle: target.idle });
     return { kind: 'miss', delta, loose: applyDelta(loose, delta), chain: after, rho };
   }
-  const delta = carryFor(target, call, chain, rung, crew);
+  /* the pile is passed on BOTH branches: it caps the miss (`missFor`) and it covers the premium
+     (`coverFor`) — the two halves of G2's one `min(LOOSE, ·)`. */
+  const delta = carryFor(target, call, chain, rung, crew, loose);
   return { kind: 'carry', delta, loose: applyDelta(loose, delta), chain: chainAfterTarget(rung, crew, chain, { idle: target.idle }), rho };
 }
 
@@ -330,6 +535,59 @@ export function getawayBank(s) {
 /** A non-bag exit auto-banks 50 %; 22:00 and a bound COMMIT bank in full (G1, G5, G3.9). */
 export function autoBank(s, kind = 'walk') {
   return round(Math.max(0, num(s)) * (AUTO_BAG[kind] ?? AUTO_BAG.walk));
+}
+
+/**
+ * THE END-OF-JOB BONUS RATE — the one rule, owned here rather than spelled inline at the exit.
+ *
+ * **What it repairs (verify round 3, exploit-hunt BLOCKER).** `state.endJob` computed this as
+ * `honoured ? COMMIT_BONUS : (complete && stakes ? COMPLETION : 0)` with `complete` meaning
+ * `targetsLeft === 0` — "every drafted target was ANSWERED". Two shipped facts turned that into an
+ * arbitrage at the getaway, and the arbitrage was free in every state:
+ *
+ *   · the vault's call row contains the **50 rung**, which `call.canCall` grants at every rank and
+ *     whose `P` is 0 (`CALL_LEVELS[0]`), so `missFor` returns 0 on it — a **deliberate miss on the
+ *     vault at 50 costs exactly nothing**, at any pile, chain, tier or crew rank;
+ *   · answering the vault — even by missing it — made `targetsLeft === 0`, which paid `COMPLETION`
+ *     on the WHOLE bagged pile. WALK banked the same LOOSE at the same full rate (both exits route
+ *     through `getawayBank`) and paid none of it.
+ *
+ * So `CRACK@50 → deliberate miss` banked exactly `×(1 + COMPLETION)` of what WALK banked. Measured
+ * on the shipped machine, four shapes × 50 seeds, both branches driven to a terminal debrief
+ * (`tests/job-econ.test.mjs` §8; `PUBLISHED.getawayParity`): RUN ×1.1001 · JOB ×1.1000 ·
+ * JOB12 ×1.1002 · VAULT ×1.1004, CRACK ahead on **200 of 200** getaways, worst branch ×1.0976.
+ * A wager with a branch that cannot lose is not a wager, and G1's *"all-in on the vault, or leave
+ * with the bag"* was selling one.
+ *
+ * **The repair is PARITY, and deliberately NOT a gate on the vault CLEARING.** Withholding the
+ * bonus from a knocked vault would make facing the last lock of the night worse than skipping it —
+ * which §3.7 proof 6 forbids in as many words (*"there is no state from which a student is better
+ * off closing the app than answering one more problem"*) and which a study app may never do. So the
+ * two exits are priced identically instead: **a WALK AT THE GETAWAY pays `COMPLETION` too.** That
+ * exit is the one whose only unanswered target is the vault, and it already banks LOOSE at the same
+ * full rate. A mid-job QUIT still pays nothing — it leaves targets the student never faced, which
+ * is the case G1 line 259 was written for, and `autoBank` already prices it at 50 %.
+ *
+ * After it, on the same 200 getaways: the miss branch at 50 is **exactly** equal — ratio 1.0000 on
+ * every one of them, CRACK ahead on 0 — and CRACK is ahead only when the vault CLEARS (×1.3244
+ * mean, 200/200). At a staked rung CRACK can also LOSE, and does: `CRACK@70 → miss` ×0.7987 and
+ * `CRACK@85 → miss` ×0.4912, behind WALK on 200 of 200. So the getaway has two live branches again,
+ * and the live question there is the **call**, not whether to face the lock: the rung's own
+ * break-even against walking is `P/(W + P)` — 0 · 0.300 · 0.526 · 0.694 — and the EV-max rung
+ * changes hands at the published carry cuts (`CALL_INDIFFERENCE.carry`, measured 0.601 / 0.778 /
+ * 0.910 on a bare tier-4 vault over a 300 pile, the cover moving the top one).
+ *
+ * @param {{honoured?: boolean, complete?: boolean, stakes?: boolean, getawayWalk?: boolean}} [at]
+ *   `honoured`    a bound declaration fired (G3.9) — it pays `COMMIT_BONUS` and forfeits the rest
+ *   `complete`    every drafted target was answered (`state.targetsLeft(save) === 0`)
+ *   `stakes`      the job still has stakes (CALL IT switches them off and forfeits both bonuses)
+ *   `getawayWalk` WALK was taken AT THE GETAWAY — the only target left is the vault
+ * @returns {number} the rate applied to BAGGED: `COMMIT_BONUS`, `COMPLETION`, or 0
+ */
+export function exitBonusRate({ honoured = false, complete = false, stakes = true, getawayWalk = false } = {}) {
+  if (honoured === true) return COMMIT_BONUS;
+  if (stakes === false) return 0;
+  return (complete === true || getawayWalk === true) ? COMPLETION : 0;
 }
 
 /* ------------------------------------------------------------------ G2: the four chain transitions */
@@ -456,47 +714,111 @@ export function gainLFor(state = {}) {
  */
 export function lossLFor(state = {}) {
   if (!isMiss(MISS_RUNG, num(state?.crew))) return 0;      // crew forgiveness — `missFor` returns 0
-  const t = stateTarget(state);
-  return baseL(state) * wingPen(t?.guarded) * x2Mult(t?.x2);
+  return stakeLFor(state) * wingPen(stateTarget(state)?.guarded);
+}
+
+/**
+ * **The STAKE-side `L`** — `lossLFor` without the crew-forgiveness zero: `L · wing_pen · ×2 · mult`.
+ *
+ * It is `stakeOf` written in a push/bag state, and it is the base the CALL's premium is paid on
+ * (`carryFor`, verify round 2). The two differ in exactly one place and deliberately: crew
+ * forgiveness removes the miss's PRICE, so `lossLFor` is 0 there, but it does not remove the wager —
+ * the clear branch still pays `STAKE·(W−1)` for the rung the student called, exactly as `carryFor`
+ * does on the same target. Using `lossLFor` here would make a forgiven target's bold call pay
+ * nothing extra, which is not what the payout function does.
+ *
+ * @param {PushState} state
+ * @returns {number} the `L` the call's premium is paid on
+ */
+export function stakeLFor(state = {}) {
+  return baseL(state) * x2Mult(stateTarget(state)?.x2);
 }
 
 const stateRho = (s) => rhoBarFor(s?.rungs ?? s?.rhoBar ?? null, num(s?.crew));
 
 /**
- * G3.2 BAG-then-answer: `0.9S + q·L_gain·ρ̄·1·W` — the `1` is `m_chain` after the bag's chain reset.
- * `L_gain` is `gainLFor`, i.e. exactly what `carryFor` would pay on that target at `m = 1`.
+ * **The COVER at a push/bag state** — `coverFor` written in the state's own two `L`s:
+ * `min(1, S / (L_loss·m·P))`. That ratio is `isDeepPile`'s own: **a pile is deep exactly when the
+ * cover is 1**, which is why every published deep-pile number survives the cover untouched.
+ */
+export function coverOf(state = {}) {
+  const { P } = carryOf(state?.call ?? BASE_CALL);
+  if (!(P > 0)) return 1;                                  // the 50 rung has no price to cover
+  const D = lossLFor(state) * chainMult(state?.chain) * P;
+  if (!(D > 0)) return 1;                                  // crew forgiveness: forgiven, not capped
+  return clamp(Math.max(0, num(state?.loose)) / D, 0, 1);
+}
+const coverAt = coverOf;
+
+/** The covered `W` on the PUSH branch — the pile as it stands. */
+const pushW = (s) => coveredW(s?.call ?? BASE_CALL, coverAt(s));
+
+/**
+ * The covered `W` on the BAG branch. **A bag empties the pile**, so the answer that follows one is
+ * made at `S = 0`: its cover is 0 and its `W` is `W(50) = 1.0` for every rung. This is the term the
+ * bag-every-beat exploit used to collect for free, and it is why BAG now costs the premium as well
+ * as the chain — the asymmetry `pushMinusBag` prices.
+ */
+const bagW = (s) => coveredW(s?.call ?? BASE_CALL, coverAt({ ...s, loose: 0, chain: chainAfterBag() }));
+
+/**
+ * **`carryFor` at a push/bag state, at `m = 1`** — `L_gain·ρ̄ + L_stake·(W_eff − 1)`, the clear
+ * branch's two terms with the chain multiplier factored out so both callers below can scale it.
+ *
+ * This is the one place the state-side model of the clear branch is written, and it is the same
+ * arithmetic `carryFor` performs: the target's worth on the GAIN set, plus the call's premium on the
+ * STAKE (verify round 2 — see `carryFor` for why the premium may not ride the gain set). `job-econ`
+ * §5 asserts the threshold below is the root of a `PUSH − BAG` rebuilt out of `carryFor`/`missFor`
+ * rather than out of this copy, so the two cannot drift.
+ * @param {PushState} state
+ * @param {(s: PushState) => number} w  `pushW` or `bagW` — which branch's covered `W`
+ */
+const clearAt = (state, w) => stateRho(state) * (gainLFor(state) + stakeLFor(state) * (w(state) - BASE_W));
+
+/**
+ * G3.2 BAG-then-answer: `0.9S + q·1·(L_gain·ρ̄ + L_stake·(W_bag − 1))` — the `1` is `m_chain` after
+ * the bag's chain reset, and `W_bag` is the call's `W` covered by the pile the bag just emptied
+ * (`bagW`, normally 1.0, which makes the premium term 0). It is exactly what `carryFor` would pay on
+ * that target at `m = 1` and `LOOSE = 0`.
  */
 export function bagThenAnswer(state = {}) {
   const S = Math.max(0, num(state.loose));
-  const { W } = carryOf(state.call ?? 50);
   const m = chainMult(chainAfterBag());                 // === 1, by construction
-  return (1 - FEE) * S + num(state.q) * gainLFor(state) * stateRho(state) * m * W;
+  return (1 - FEE) * S + num(state.q) * m * clearAt(state, bagW);
 }
 
 /**
- * G3.2 PUSH: `S + q·L_gain·ρ̄·m·W − (1−q)·min(S, L_loss·m·P)`.
- * One `L` per branch, because G2 gives the two branches different multiplier sets — see `gainLFor`.
+ * G3.2 PUSH: `S + q·m·(L_gain·ρ̄ + L_stake·(W_push − 1)) − (1−q)·min(S, L_loss·m·P)`.
+ * One `L` per branch, because G2 gives the two branches different multiplier sets — see `gainLFor` —
+ * and a third for the wager itself (`stakeLFor`), which is the loss branch's own base.
+ * `W_push` is the call's `W` covered by the pile that stands behind it (`coverFor`).
  */
 export function pushThrough(state = {}) {
   const S = Math.max(0, num(state.loose));
   const q = num(state.q);
-  const { W, P } = carryOf(state.call ?? 50);
+  const { P } = carryOf(state.call ?? 50);
   const m = chainMult(state.chain);
-  return S + q * gainLFor(state) * stateRho(state) * m * W
+  return S + q * m * clearAt(state, pushW)
     - (1 - q) * Math.min(S, lossLFor(state) * m * P);
 }
 
 /**
- * G3.2: `PUSH − BAG = 0.10·S + q·L_gain·ρ̄·W·(m − 1) − (1 − q)·min(S, L_loss·m·P)`.
+ * G3.2: `PUSH − BAG = 0.10·S + q·(m·clear_push − clear_bag) − (1 − q)·min(S, L_loss·m·P)`.
  * Positive ⟹ PUSH. Identical to `pushThrough(state) − bagThenAnswer(state)` (asserted in the tests),
  * and the BAG branch is where `m = 1` comes from.
+ *
+ * The gain term was `L_gain·ρ̄·W·(m − 1)` while both branches paid the same `W`. Under the cover they
+ * do not — the push keeps whatever premium its pile covers and the bag drops to `W(50)` — and since
+ * verify round 2 the premium is paid on the STAKE rather than on the loot, so each branch's clear is
+ * its own two-term sum. **On a bare target at `ρ̄ = 1` and a deep pile the whole thing still collapses
+ * to `L·(m·W − 1)`**, which is why no published threshold moved: `L·(m−1) + L·m·(W−1) = L·(m·W−1)`.
  */
 export function pushMinusBag(state = {}) {
   const S = Math.max(0, num(state.loose));
   const q = num(state.q);
-  const { W, P } = carryOf(state.call ?? 50);
+  const { P } = carryOf(state.call ?? 50);
   const m = chainMult(state.chain);
-  return FEE * S + q * gainLFor(state) * stateRho(state) * W * (m - 1)
+  return FEE * S + q * (m * clearAt(state, pushW) - clearAt(state, bagW))
     - (1 - q) * Math.min(S, lossLFor(state) * m * P);
 }
 
@@ -608,9 +930,12 @@ export function breakevenQ(state = {}) {
  */
 export function breakevenQExact(state = {}) {
   const S = Math.max(0, num(state.loose));
-  const { W, P } = carryOf(state.call ?? 50);
+  const { P } = carryOf(state.call ?? 50);
   const m = chainMult(state.chain);
-  const A = gainLFor(state) * stateRho(state) * W * (m - 1);
+  /* `A` is `pushMinusBag`'s own gain term, `m·W_push − W_bag`. It was `W·(m − 1)`, which is the same
+     number only when both branches pay the same `W` — under the cover the bag branch pays `W(50)`,
+     because a bag empties the pile that backed the call. The two agree at `W = 1` (call 50). */
+  const A = m * clearAt(state, pushW) - clearAt(state, bagW);
   const D = lossLFor(state) * m * P;
   if (S >= D) {
     if (!(A + D > 0)) return 0;
@@ -620,9 +945,19 @@ export function breakevenQExact(state = {}) {
   return clamp(((1 - FEE) * S) / (A + S), 0, 1);
 }
 
-/** 'push' | 'bag' — what the threshold says at this state's own `q`. Evidence, never a pre-call nudge. */
+/**
+ * 'push' | 'bag' — what the threshold says at this state's own `q`. Evidence, never a pre-call nudge.
+ *
+ * **The boundary belongs to PUSH, because `breakevenQ`'s does.** `q*` is published as *"push at
+ * `q ≥ q*`"*, so a verdict that read `> 0` disagreed with the printed number at every exact tie —
+ * and one tie is not exotic: at `S = 0, c = 0` there is nothing to bank and no chain to lose, so
+ * `PUSH − BAG` is identically 0, `breakevenQ` returns 0 ("push at any q") and this said BAG. The
+ * debrief printed the pair: *"you pushed; the threshold said bag (q* 0.00, your q̂ 0.95)"*. Bagging a
+ * pile of 0 is not a decision, and the two functions are one economy or they are evidence of
+ * nothing (round-1 finding 1, re-opened by the cover at verify round 1).
+ */
 export function pushOrBag(state = {}) {
-  return pushMinusBag(state) > 0 ? 'push' : 'bag';
+  return pushMinusBag(state) >= 0 ? 'push' : 'bag';
 }
 
 /* ------------------------------------------------------------------ G3.1's carry EV, AT A STATE */
@@ -820,7 +1155,14 @@ export function isInformative(qHat) {
 
 const MAX_BRUTE_TARGETS = 20;   // 2^19 = 524 288 vectors; a job is at most 12 targets
 
-/** Apply the end-of-job bonuses G2/G3.9 name, in the order the debrief prints them. */
+/**
+ * Apply the end-of-job bonuses G2/G3.9 name, in the order the debrief prints them.
+ *
+ * This is the REPLAY model and it applies exactly the flags it is handed, which is why both can
+ * compound here. The shipped EXIT picks one: `state.endJob` asks `exitBonusRate()`, where an
+ * honoured declaration takes `COMMIT_BONUS` and forfeits the completion (G3.9, G1 :699). No caller
+ * in the tree sets both flags on one order; if one ever does, `exitBonusRate` is the authority.
+ */
 function withBonuses(bagged, order) {
   let out = bagged;
   if (order?.completion) out *= 1 + COMPLETION;
@@ -890,9 +1232,17 @@ export function optimalOrder(order, { prefer } = {}) {
 
 /**
  * THE OTHER EXIT: **WALK at the getaway.** Answer targets `0 … n−2` under some BAG/PUSH vector, then
- * bank LOOSE at FULL value and leave the last target due — no completion bonus, because targets
- * remain (`state.endJob`). `-Infinity`-shaped `null` for a one-target job, which has no getaway beat
- * at all (`state.js advance()`).
+ * bank LOOSE at FULL value and leave the last target due. `-Infinity`-shaped `null` for a one-target
+ * job, which has no getaway beat at all (`state.js advance()`).
+ *
+ * **The completion bonus applies to this exit too (verify round 3).** This docblock used to say
+ * *"no completion bonus, because targets remain"*, and that was the model half of the getaway
+ * arbitrage `exitBonusRate` documents: the walk line was priced 10 % below a CRACK line that a
+ * deliberate miss at the stake-free 50 rung could reach for nothing. The walk is now priced at
+ * parity — it takes whatever `order.completion` the cracked line would have taken, and never
+ * `order.commit`, which belongs to a bound declaration and not to a walk (G3.9). Callers that pass
+ * no `completion` flag (`tests/job-monotone.test.mjs`'s `bestWalk`, which compares bare orders on
+ * both exits) are unaffected: the bonus is then off on both sides, as it always was.
  *
  * `optimalOrder` deliberately models only the CRACK line: G5 #2's regret line is the BAG/PUSH regret
  * *within the line the student actually took*, and mixing the two exits into one "optimum" would
@@ -924,7 +1274,8 @@ export function walkOrder(order) {
     const v = bagged + getawayBank(loose);        // the getaway bag is free, and WALK banks in full
     if (v > best) { best = v; bestD = [...d, 'walk']; }
   }
-  return { value: best, decisions: bestD };
+  /* the bonus is a constant multiplier, so it cannot move the argmax — applied once, after it */
+  return { value: withBonuses(best, { completion: order?.completion === true }), decisions: bestD };
 }
 
 /**
@@ -935,7 +1286,7 @@ export function walkOrder(order) {
  * more — common when the last target is a tier-4 at a high call — `walkOrder(order).value` is the
  * bigger number, and this `cost` is therefore an upper bound on the bag/push regret rather than the
  * regret over every exit. Both are pure; neither is hindsight beyond the order that happened.
- * `you bagged at chain 4; the threshold said push (q* 0.49, your q̂ 0.62). cost 31.`
+ * `you bagged at chain 4; the threshold said push (q* 0.49, your q̂ 0.62). cost 31 bagged.`
  *
  * Pure information, computed from the realised order: no randomness, no hindsight beyond the order
  * that actually happened, and it appears only AFTER the decisions (Global law 6).
@@ -1109,6 +1460,10 @@ export function decisionSeconds(shape) {
  * can actually serve — `landedBriefs`, NOT its nominal `briefs`) where G1 publishes them; the
  * published total otherwise — which today is exactly one cell, `RUN.full`, where G1 prints 130 s
  * without its per-phase split.
+ *
+ * There is no sixth term. The column used to carry `crew` — a between-jobs re-allocation phase no
+ * `setPhase` in `site/js` ever set, billing 25 s that G1 had already sold inside the brief window's
+ * own five options. See the `FIXED_PHASES` docblock in `data/job.js` for the measurement.
  * @param {string|object} shape
  * @param {'default'|'full'} [path='default']
  */
@@ -1117,7 +1472,7 @@ export function fixedSeconds(shape, path = 'default') {
   const cell = FIXED_PHASES[s.fixed][path];
   const p = cell.phases;
   if (!p) return cell.total;
-  return p.board + p.guard + p.brief * landedBriefs(s) + p.getaway + p.debrief + p.crew;
+  return p.board + p.guard + p.brief * landedBriefs(s) + p.getaway + p.debrief;
 }
 
 /**

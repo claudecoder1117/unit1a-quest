@@ -34,6 +34,12 @@ import { serialize, freshState, STATE_KEYS } from '../site/js/job/state.js';
 // the STUDY layer's own queue writer — the other half of the split. Round 3 derives the attribution
 // rule from the difference between what these two write, instead of maintaining it by hand.
 import { startPage } from '../site/js/page.js';
+// the GAME layer's before-snapshot writer (round 4). The STUDY layer's equivalent is a literal
+// inside run.js's own mount, not an exported function, so it is read as SOURCE below.
+import { captureJobBefore } from '../site/js/screens/run.js';
+// the SHIPPED reader of `settings.game` — the layer's master switch is asserted through the function
+// every screen calls, not through a copy of `!== false` typed into this file (round 3, finding 54).
+import * as plan from '../site/js/plan.js';
 /* ROUND 2: the budget is now measured against REAL jobs, not only against a literal. These are the
    shipped writers whose output the fixture claims to be no narrower than — driven end to end below
    in "the fixture is not NARROWER than the shipped writers". */
@@ -47,6 +53,9 @@ import { RATING } from '../site/data/job.js';
 import { applyOutcome, DAY_MS } from '../site/js/schedule.js';
 import { todayISO, addDays } from '../site/js/days.js';
 import { cards as ALL_CARDS } from '../site/data/cards.js';
+// the template registry — the corpus seeds `save.frozen` with real ids and their real
+// `templateVersion`, so a frozen-Variant review is composed from a record the app could have written.
+import { templates as TEMPLATES } from '../site/data/templates.js';
 import { isBonus } from '../site/data/source-manifest.js';
 // the 68 real Fault Index tags — the corpus seeds `errors[].tags` with them so a driven job writes
 // real `game.tags` records, which is what the budget's largest line is measured against.
@@ -54,11 +63,20 @@ import { MISCONCEPTIONS } from '../site/data/misconceptions.js';
 import { rngFrom } from '../site/js/rng.js';
 import {
   ROOT, listFiles, stripCommentsAndStrings, GAME_RUN_FIELDS, worstCasePlayer, worstCaseGame,
-  inProgressJob12, worstCaseBench, withoutGameKeys, WIDE_DOUBLE, WIDE_SIGNED_DOUBLE, WIDEST_SKILL, WIDEST_W,
+  inProgressJob12, worstCaseBench, withoutGameKeys, WIDE_DOUBLE, WIDE_SIGNED_DOUBLE, WIDEST_SKILL, WIDEST_W, WIDEST_Q,
   // round 3: the two lines that were in no fixture and no budget row — the job's own queue fields
   // and the six trophies only a job can earn.
   worstCaseJobQueue, worstCaseGameTrophies, GAME_QUEUE_FIELDS, GAME_TROPHY_IDS,
+  // round 5: the OTHER shape composePage writes into inProgress.queue — a frozen-Variant review,
+  // which carries `frozenKey` and `templateVersion` and cannot carry `rename`/`bucket`/`overdue`/`sweep`.
+  worstCaseFrozenReviewItem, FROZEN_REVIEW_FIELDS,
   JOB_QUEUE_DRAFTED, JOB_QUEUE_ITEMS, BENCH_ENTRIES,
+  // round 4 (verify): the before-snapshot's six game fields — the same defect as the queue's, one
+  // level further out (`inProgress.meta.before`, written by `screens/run.js captureJobBefore`).
+  GAME_META_FIELDS, worstCaseJobBefore,
+  // round 3, finding 55: the layer's bytes inside `save.archive[*]`, which the split cannot see
+  // because they sit in both of its halves and cancel.
+  archivedGameBytes,
 } from './_helpers.mjs';
 import { readList } from '../qa/gen-precache.mjs';
 
@@ -77,6 +95,7 @@ const BANK = ALL_CARDS.filter((c) => !isBonus(c.id));
 const CORPUS_SKILLS = ['VOC', 'NOTE', 'CLASS', 'ASN-PLP', 'ASN-ANG', 'PAIRS', 'FIG-ALG', 'BISECT-L', 'BISECT-Q',
   'SEG-ALG', 'CSARITH', 'CS-LIN', 'CS-RATIO', 'CS-QUAD', 'SYS', 'FAC1', 'FAC2', 'QUAD-SOLVE', 'QUAD-CTX'];
 const TAG_IDS = Object.keys(MISCONCEPTIONS);
+const TEMPLATE_IDS = Object.keys(TEMPLATES);
 const CLEAN = { cleared: true, firstTry: true, hints: 0, attempt: 1, clean: true };
 const MISS = { cleared: false, solutionShown: true, reason: 'third-wrong', attempt: 3, hints: 0 };
 
@@ -85,8 +104,23 @@ const MISS = { cleared: false, solutionShown: true, reason: 'third-wrong', attem
  * the board drafts its longest queues from. The round-2 corpus was half this by accident (`chance
  * (0.65)`); making it an explicit arm is what lets 89 jobs reach the structural queue maximum that
  * 6 000 ad-hoc ones do.
+ *
+ * `frozenN` (round 5, verify): seeds `save.frozen` with real frozen-Variant records, all due, the
+ * way `schedule.freezeVariant` writes them after a missed generated item. Without them the corpus
+ * composed no `kind: 'variant'` DUE at all, so `frozenKey` and `templateVersion` — the two keys
+ * `page.js:287` puts on such an entry — were as invisible to the completeness guard as `params`
+ * was. (The corpus cannot reach them by driving: the freeze happens in `screens/card.js`, not in
+ * the state machine, and a frozen Variant comes due days later.)
+ *
+ * `lowDue` (round 5, verify): the OPPOSITE arm, and the one whose absence made the queue-entry
+ * completeness guard below vacuous for two rounds. Every card due in the FUTURE, so the board is
+ * short and `composePage`'s S7 algebra floor actually fires — the floor is the only writer of
+ * `item.params`, and a queue entry that carries it is drafted into a JOB in 198 of 200 such saves.
+ * With `allOverdue` on one half and a 65 %-overdue mixture on the other, this corpus made **zero**
+ * `params` entries in 546 000 observations, so "the fixture prices every key a real queue entry
+ * carries" could not fail on the one key the study composer writes that the fixture did not price.
  */
-function seededSave(i, { allOverdue = false } = {}) {
+function seededSave(i, { allOverdue = false, lowDue = false, frozenN = 0 } = {}) {
   const rng = rngFrom('job-save-budget-corpus', i);
   const today = todayISO(new Date(NOW));
   const s = fresh(NOW - (4 + rng.int(0, 20)) * DAY_MS);
@@ -100,7 +134,9 @@ function seededSave(i, { allOverdue = false } = {}) {
     rec.cleared = true; rec.rarity = 'gold';
     rec.due = allOverdue
       ? NOW - rng.float(0.2, 12) * DAY_MS
-      : NOW + (rng.chance(0.65) ? -rng.float(0, 9) : rng.float(0.2, 12)) * DAY_MS;
+      : lowDue
+        ? NOW + rng.float(0.2, 12) * DAY_MS
+        : NOW + (rng.chance(0.65) ? -rng.float(0, 9) : rng.float(0.2, 12)) * DAY_MS;
     rec.history = Array.from({ length: 10 }, (_, h) => ({ at: NOW - (20 - h) * DAY_MS, ok: rng.chance(0.75), attempt: rng.chance(0.75) ? 1 : 2, hints: 0, ms: 9000 }));
     /* a real `errors[]` row with real tag ids on it — `state.missTagsOf` reads the LAST error for
        the item and hands its tags to `index.trigger`, so without these a driven job writes NO
@@ -113,8 +149,30 @@ function seededSave(i, { allOverdue = false } = {}) {
     });
   }
   for (const k of CORPUS_SKILLS) {
-    if (!rng.chance(0.75)) continue;
-    s.skills[k] = { m: rng.int(10, 95), n: rng.int(1, 9), lastAt: NOW - rng.int(1, 20) * DAY_MS, lastDueCorrectAt: rng.chance(0.4) ? NOW - DAY_MS : null };
+    /* the `lowDue` arm gives EVERY make a MASTERED record, and both halves of that matter:
+       `needsMet(['QUAD-SOLVE'])` is what the floor reads to choose the mode it writes into `params`
+       (an unmastered arm only ever exercises `'a1'`), and a page with no weak makes is SHORT — 12
+       items against the ~15 a mixed-mastery save composes — which is what gets the floor item
+       DRAFTED rather than left in an undrafted contract. Measured: mastered + no backlog puts
+       `params` on a real drafted queue in half the arm's jobs; unmastered + no backlog composes the
+       floor item on the page and drafts it 0 times in 20. */
+    if (!lowDue && !rng.chance(0.75)) continue;
+    s.skills[k] = lowDue
+      ? { m: 88 + rng.int(0, 10), n: 6 + rng.int(0, 6), lastAt: NOW - rng.int(1, 4) * DAY_MS, lastDueCorrectAt: NOW - DAY_MS }
+      : { m: rng.int(10, 95), n: rng.int(1, 9), lastAt: NOW - rng.int(1, 20) * DAY_MS, lastDueCorrectAt: rng.chance(0.4) ? NOW - DAY_MS : null };
+  }
+  /* frozen Variants, written exactly as `schedule.freezeVariant` writes them (`seed`,
+     `templateVersion` off the template registry, `template`, `bucket`, `lastAt`, `due`, `forCard`) —
+     the state a save is in after missing generated items. `dueList` turns each into a
+     `kind: 'frozen'` due and `composePage` into a review entry carrying `frozenKey` +
+     `templateVersion`. */
+  for (let f = 0; f < frozenN; f++) {
+    const t = TEMPLATE_IDS[rng.int(0, TEMPLATE_IDS.length - 1)];
+    const seed = rng.int(0x100000, 0xffffff).toString(16);
+    s.frozen[`${t}#${seed}`] = {
+      seed, templateVersion: TEMPLATES[t]?.version ?? 1, template: t,
+      bucket: rng.int(0, 2), lastAt: NOW - 3 * DAY_MS, due: NOW - rng.float(0.2, 6) * DAY_MS, forCard: null,
+    };
   }
   return s;
 }
@@ -269,6 +327,188 @@ describe('J10 — the v2 schema', () => {
        must survive — `closeDebrief` reads `num(L.debriefAt, 0)` and folds nothing unless it is > 0. */
     assert.equal(normalizeGame({ ledger: { debriefAt: 0 } }).ledger.debriefAt, 0, 'closeDebrief\'s own "already folded" stamp must survive');
   });
+
+  /* ----------------------------------------------------------------------------------------------
+     `settings.game` — round 3, finding 54, and the SAME drift class one level out: the layer's own
+     MASTER SWITCH. `screens/settings.js:318` writes it, `plan.gameOn`, `screens/settings.js:314,746`
+     and `screens/stats.js:223` read it, and it was declared in neither `fresh()` nor G7 — it reached
+     disk only because `fillDefaults`'s `{...d.settings, ...s.settings}` is not a whitelist, verbatim
+     the mechanism `ledger.debriefAt` and `tags[].days` were each caught for. It failed OPEN (any
+     non-`false` value left the layer on), so nothing broke — a `"false"` string out of a hand-edited
+     export or a half-written import switched the layer back ON while reading as "off" to a human.
+     The coercion keeps the fail-open direction exactly and makes the stored value a boolean.
+     Read through the SHIPPED reader (`plan.gameOn`), not through a copy of `!== false` typed here.
+     ---------------------------------------------------------------------------------------------- */
+  test('settings.game is declared, defaulted and COERCED — not an undeclared pass-through', () => {
+    assert.ok('game' in fresh(T0).settings, 'store.fresh().settings does not declare game — THE JOB has no master switch in the schema');
+    assert.equal(fresh(T0).settings.game, true, 'a fresh save has THE JOB on (G7: the layer is on unless Settings switched it off)');
+    assert.equal(plan.gameOn(fresh(T0)), true, 'the shipped reader must see a fresh save as on');
+
+    // the writer really does write it, so the schema is not documenting a dead key
+    const settingsSrc = readFileSync(join(SITE, 'js/screens/settings.js'), 'utf8');
+    assert.ok(/settings\.game\s*=/.test(settingsSrc), 'no screen writes settings.game any more — drop it from fresh(), fillDefaults and G7');
+
+    /* every non-boolean a hand-edited save, an import or a half-written write can carry. Each must
+       arrive as the BOOLEAN `true` — the same answer the readers gave it before, now stored. */
+    for (const bad of ['false', 'off', '', {}, [], [1, 2], 0, 1, NaN, null, 'true']) {
+      const out = migrate({ v: SAVE_VERSION, settings: { game: bad } }, T0);
+      assert.equal(out.settings.game, true, `settings.game: ${JSON.stringify(bad)} must normalise to the boolean true (it read as "on" before, and it is not a boolean on disk)`);
+      assert.equal(typeof out.settings.game, 'boolean', `settings.game: ${JSON.stringify(bad)} reached disk uncoerced`);
+      assert.equal(plan.gameOn(out), true, `the shipped reader disagrees with the stored value for ${JSON.stringify(bad)}`);
+    }
+    // and the one value that means OFF survives a load, a pack/unpack round trip and a re-migrate
+    const off = migrate({ v: SAVE_VERSION, settings: { game: false } }, T0);
+    assert.equal(off.settings.game, false, 'the student switched THE JOB off; the save must remember');
+    assert.equal(plan.gameOn(off), false, 'the shipped reader must see a switched-off save as off');
+    assert.equal(migrate(unpack(JSON.parse(JSON.stringify(pack(off)))), T0).settings.game, false, 'the switch did not survive a disk round trip');
+  });
+
+  /* ----------------------------------------------------------------------------------------------
+     `player.records.bestRating` — REPAIR-DECISION S3.1(c). Under the rank RATCHET, `p.rank` is a
+     stored high-water and stops being recomputable from the 50-call window, so the rating that
+     earned it is recorded and printed beside it on the audit surfaces (G9 #4's one printed
+     exception). The DEFAULT is not declared here yet: `data/job.js SAVE_DEFAULTS.player` is the
+     second copy of this schema and the two are asserted deep-equal in both directions below, so
+     declaring it in `store.freshPlayer()` alone would turn that pin red — and `data/job.js` belongs
+     to another lane this round (the one-line request is in notes/repair-save.md § Requests).
+     What ships now is the COERCION, so the field cannot reach disk as an uncoerced pass-through of
+     `over()` the moment `state.applyTarget` / `endJob` starts writing it — which is exactly how
+     `ledger.debriefAt` and `settings.game` both shipped. This test is correct under BOTH regimes and
+     the mirror pin flips it: when `SAVE_DEFAULTS.player.records` declares it, `freshPlayer()` must.
+     ---------------------------------------------------------------------------------------------- */
+  test('player.records.bestRating is coerced whenever it is present, declared or not (S3 ratchet audit record)', () => {
+    const declared = 'bestRating' in SAVE_DEFAULTS.player.records;
+    assert.equal('bestRating' in freshPlayer().records, declared,
+      'store.freshPlayer().records and data/job.js SAVE_DEFAULTS.player.records disagree about bestRating — the two copies of the schema must declare the same fields');
+
+    // a corrupt high-water can never reach the audit surfaces as a string, a NaN or an object
+    for (const bad of ['9.9', NaN, Infinity, -Infinity, null, {}, [], true]) {
+      const out = normalizePlayer({ records: { bestRating: bad } });
+      assert.equal(out.records.bestRating, 0, `bestRating: ${JSON.stringify(bad)} must normalise to 0`);
+      assert.equal(typeof out.records.bestRating, 'number', `bestRating: ${JSON.stringify(bad)} reached disk uncoerced`);
+    }
+    // a real high-water survives the load unrounded (`ratingDetail().value` rounds nothing)
+    const keep = normalizePlayer({ records: { bestRating: 9.536000000000001 } });
+    assert.equal(keep.records.bestRating, 9.536000000000001, 'a real best rating must survive the load exactly');
+    // and while it is undeclared, a save that has never held one must not grow the field
+    if (!declared) {
+      assert.ok(!('bestRating' in normalizePlayer({}).records),
+        'bestRating is not declared in either copy of the schema yet, so a save that never held one must not gain it — declare it in BOTH (see notes/repair-save.md § Requests)');
+    } else {
+      assert.equal(normalizePlayer({}).records.bestRating, 0, 'a declared bestRating must default to 0');
+    }
+  });
+
+  /* ----------------------------------------------------------------------------------------------
+     …AND IT IS THE NUMBER THAT BOUGHT THE RANK, NOT THE NUMBER THE DICE PAID (verify round 2).
+
+     The round-4 cap prices the rank off `detail.earned = min(value, ceiling)` — `ceiling` is what
+     the student's own reporting policy was WORTH on this material, `value` is what the dice paid
+     for it — so on a CAPPED window (which is most of them) the printed rating and the rank-buying
+     rating diverge, measured here by points and not by hundredths. All three writers of
+     `p.rating.value` used to record `detail.value`, so the audit record S3.1(c) exists to make the
+     held rank recomputable published a rating that had bought nothing: `2.59 · Called 3 · best
+     rating 10.00`, a pair a reviewer cannot reconcile, on the one surface G9 #4 grants an exception
+     to. No test compared the two, which is why a 7.9-point divergence shipped.
+
+     What is pinned here is the CONTRACT, driven end to end through the shipped machine:
+       (1) the record is the running maximum of `detail.earned`, at every staked target;
+       (2) it never exceeds a ceiling the window actually reached — the finding's own assertion,
+           in its time-honest form (a max over history against the max ceiling over history);
+       (3) `player.rank === max(the rank the save started at, rankFor(record))`, which IS the audit
+           the exception is published to make possible (`rankFor` is monotone and the rank is a
+           ratchet over `rankFor(earned)`, so the equality is exact, not a bound); and
+       (4) the arm is not vacuous — the corpus is asserted to reach a window where the old field
+           would have printed a rank STRICTLY ABOVE the one held.
+     ---------------------------------------------------------------------------------------------- */
+  test('records.bestRating is the high-water EARNED rating, so the held rank recomputes from it (S3 ratchet audit)', () => {
+    const N = CAPS.game.calls;
+    let staked = 0, cappedTargets = 0, divergentSaves = 0, unreconcilable = 0;
+    let widestGap = 0, sample = null;
+
+    for (let i = 0; i < 24; i++) {
+      const save = seededSave(i, { allOverdue: true });
+      const startRank = save.player.rank;
+      let maxEarned = 0, maxValue = 0, maxCeiling = 0;
+      let t = NOW;
+      const step = (ms) => (t += ms);
+      try { startJob(save, { today: todayISO(new Date(t)), now: t, shape: 'JOB12' }); } catch { continue; }
+      beginTargets(save, { now: step(6000) });
+      for (let n = 0; n < 400; n++) {
+        const g = stateOf(save);
+        if (!g || g.outcome != null) break;
+        if (g.phase === 'envelope') {
+          /* half the corpus OVER-REPORTS on every target (the highest legal rung, every time),
+             which is exactly the regime THE CAP exists for and the one where `value` and `earned`
+             separate by points rather than hundredths. */
+          const av = callsAvailable(save);
+          const want = i % 2 ? av[av.length - 1] : [95, 85, 70][n % 3];
+          lockCall(save, av.includes(want) ? want : av[av.length - 1], { now: step(5000) });
+          continue;
+        }
+        if (g.phase === 'answer') {
+          applyTarget(save, n % 4 === 3 ? MISS : CLEAN, { now: step(40000) });
+          if (save.player.rating.calls.length > 0) {
+            /* Recomputed off the window the writer just wrote, after EVERY target and not only
+               after an informative one: a blank slot still goes through `windowPush`, the writer
+               still runs, and a running maximum that skipped those beats would not be the one the
+               writer keeps. `earned` depends on the WINDOW alone and not on the floor, so this is
+               the exact number `applyTarget` consumed. */
+            const d = call.ratingDetail(save.player.rating.calls, N);
+            staked++;
+            if (d.capped) cappedTargets++;
+            maxEarned = Math.max(maxEarned, d.earned);
+            maxValue = Math.max(maxValue, d.value);
+            maxCeiling = Math.max(maxCeiling, d.ceiling);
+            assert.equal(save.player.records.bestRating, maxEarned,
+              `save ${i} target ${n}: the audit record reads ${save.player.records.bestRating} where the `
+              + `high-water EARNED rating is ${maxEarned} (the window printed ${d.value} against a ceiling `
+              + `of ${d.ceiling}) — a record written off detail.value is a rating that bought no rung`);
+          }
+          continue;
+        }
+        if (g.phase === 'payout' || g.phase === 'bagpush') { push(save, { now: step(9000) }); continue; }
+        if (g.phase === 'brief') { brief(save, {}, { now: step(20000) }); continue; }
+        if (g.phase === 'getaway') { crack(save, { now: step(25000) }); continue; }
+        break;
+      }
+      if (maxEarned === 0) continue;
+      const best = save.player.records.bestRating;
+
+      // (2) the record never exceeds a ceiling the window actually reached
+      assert.ok(best <= maxCeiling + 1e-9,
+        `save ${i}: the audit record is ${best} where the widest ceiling this window ever reached is ${maxCeiling} — `
+        + 'the record is a rating the reports could not have been worth');
+
+      // (3) the rank recomputes from the record — G9 #4's one exception, made true
+      assert.equal(save.player.rank, Math.max(startRank, call.rankFor(best)),
+        `save ${i}: Called ${save.player.rank} beside a best rating of ${best}, which buys Called ${call.rankFor(best)} `
+        + `on a save that started at Called ${startRank} — the audit record no longer recomputes the rank it is `
+        + 'published to explain');
+
+      if (maxValue > best + 1e-9) {
+        divergentSaves++;
+        if (maxValue - best > widestGap) { widestGap = maxValue - best; sample = { i, best, maxValue, rank: save.player.rank }; }
+        // (4) the negative control, as an observation rather than a comment: what the OLD field
+        // would have published beside this rank.
+        if (call.rankFor(maxValue) > save.player.rank) unreconcilable++;
+      }
+    }
+
+    assert.ok(staked >= 40, `only ${staked} staked targets across the corpus — the arm is too short to pin a running maximum`);
+    assert.ok(cappedTargets > 0,
+      `no window in the corpus ran ahead of its ceiling (${staked} staked targets) — the arm cannot tell `
+      + 'detail.value from detail.earned and is vacuous');
+    assert.ok(divergentSaves > 0,
+      'no save in the corpus separated the printed rating from the earned one — the arm is vacuous');
+    assert.ok(unreconcilable > 0,
+      `the corpus never reached a window where the high-water PRINTED rating implies a higher rank than the one `
+      + `held (${divergentSaves} divergent saves, widest gap ${widestGap.toFixed(3)}) — the arm no longer covers the `
+      + 'defect it exists for, so it would pass on a save that re-introduced detail.value');
+    console.log(`  S3.1(c) audit record: ${staked} staked targets, ${cappedTargets} capped · ${unreconcilable} of ${divergentSaves} `
+      + `divergent saves would print an unreconcilable rank off detail.value · widest gap ${widestGap.toFixed(3)} rating points`
+      + (sample ? ` (save ${sample.i}: Called ${sample.rank}, earned ${sample.best.toFixed(3)}, printed ${sample.maxValue.toFixed(3)})` : ''));
+  });
 });
 
 /* ================================================================================================
@@ -281,7 +521,27 @@ describe('J10 — v1 → v2 migration', () => {
     const after = migrate(before, T0);
 
     assert.equal(after.v, 2);
-    for (const k of V1_KEYS) assert.deepEqual(after[k], snapshot[k], `${k} changed during the v1 → v2 migration`);
+    /* Every v1 TOP-LEVEL key survives byte-identical. `settings` is the one of them `fillDefaults`
+       may legitimately add a SUB-key to: it fills every missing sub-key with its default, exactly as
+       it does for a save written before `callYourShot` existed. The fixture above carries every
+       settings key v1 had, so the only additions possible are keys DECLARED SINCE — and each of
+       those must arrive at its own `fresh()` default and take nothing with it. Asserting plain
+       byte-identity on `settings` looked stronger and was not: it held only because the fixture is
+       saturated, so a newly declared setting failed here instead of the thing that should
+       (round 4, finding 54 — `settings.game`, THE JOB's master switch). */
+    for (const k of V1_KEYS) {
+      if (k === 'settings') continue;
+      assert.deepEqual(after[k], snapshot[k], `${k} changed during the v1 → v2 migration`);
+    }
+    for (const k of Object.keys(snapshot.settings)) {
+      assert.deepEqual(after.settings[k], snapshot.settings[k], `settings.${k} changed during the v1 → v2 migration`);
+    }
+    const addedSettings = Object.keys(after.settings).filter(k => !(k in snapshot.settings));
+    assert.deepEqual(addedSettings.sort(), ['game'],
+      `the migration added the settings key(s) ${addedSettings.join(', ') || '(none)'} — a setting the layer reads must be DECLARED in fresh() and coerced in fillDefaults, not carried by the merge`);
+    for (const k of addedSettings) {
+      assert.deepEqual(after.settings[k], fresh(T0).settings[k], `settings.${k} did not arrive at its declared fresh() default`);
+    }
     const added = Object.keys(after).filter(k => !(k in snapshot));
     assert.deepEqual(added.sort(), ['game', 'player'], 'v2 adds exactly these two keys and no others');
     assert.deepEqual(after.player, SAVE_DEFAULTS.player);
@@ -522,11 +782,17 @@ describe('J10 — the measured budget (G7 "The measured budget")', () => {
    * one and `withoutGameKeys` never deleted one, so ~1.9 KB of game bytes were being charged to the
    * study half AND left out of the addition at the same time. Both ends are fixed.
    */
-  function carrier({ runFields = true, bench = true, queue = true, trophies = true } = {}) {
+  function carrier({ runFields = true, bench = true, queue = true, trophies = true, meta = true } = {}) {
     const s = fresh(T0);
     s.player = worstCasePlayer(T0, CAPS.game);
     s.game = worstCaseGame(T0, CAPS.game);
-    s.inProgress = { kind: 'job', seed: 12345, idx: 7, startedAt: T0, queue: queue ? worstCaseJobQueue(T0) : [], game: inProgressJob12(T0, CAPS.game), ...(bench ? { bench: worstCaseBench(T0) } : {}) };
+    /* ROUND 4 (verify) — the carrier carries the BEFORE-SNAPSHOT. `screens/job.js:533` calls
+       `captureJobBefore` inside `update()` on every job, so `inProgress.meta.before` reaches disk on
+       every job; neither carrier wrote an `inProgress.meta` at all, so the six fields the game layer
+       adds to it (`GAME_META_FIELDS`) were charged to the STUDY half by `withoutGameKeys` and
+       counted in no measurement — the bench's defect, the queue's defect, one level further out.
+       The fixture carries the STUDY half of the snapshot too, so `inProgress.meta` is a DELTA row. */
+    s.inProgress = { kind: 'job', seed: 12345, idx: 7, startedAt: T0, queue: queue ? worstCaseJobQueue(T0) : [], game: inProgressJob12(T0, CAPS.game), ...(bench ? { bench: worstCaseBench(T0) } : {}), ...(meta ? { meta: { before: worstCaseJobBefore(T0, CAPS.game) } } : {}) };
     s.runs = Array.from({ length: CAPS.runs }, (_, n) => ({ kind: 'job', n, seed: 'job#' + n, startedAt: T0, status: 'done', items: [], ...(runFields ? GAME_RUN_FIELDS : {}) }));
     if (trophies) Object.assign(s.trophies, worstCaseGameTrophies(T0));
     return s;
@@ -621,6 +887,142 @@ describe('J10 — the measured budget (G7 "The measured budget")', () => {
       `these trophies read game-layer state but are not in GAME_TROPHY_IDS (so withoutGameKeys charges them to the STUDY half): ${gameish.filter((x) => !GAME_TROPHY_IDS.includes(x)).join(', ') || '(none missing; some priced id no longer reads the layer)'}`);
   });
 
+  /* ------------------------------------------------------------------------------------------
+     ROUND 4 (verify) — THE SAME DERIVATION, ONE LEVEL FURTHER OUT: `inProgress.meta.before`.
+
+     Both paths write the before-snapshot into the SAME slot. `screens/run.js`'s flat-Page mount
+     writes `const snap = { ...before, tiles: tilesBefore }` — five keys; `captureJobBefore` writes
+     those five plus six of its own, and `screens/job.js` calls it inside `update()` on every job, so
+     they reach disk. `withoutGameKeys` stripped `inProgress`'s key list and the queue ENTRIES and
+     stopped there, so the six were charged to the STUDY half and priced in no row — the bench's
+     defect (round 2) and the queue fields' (round 3), a third time.
+
+     So it is DERIVED, not typed: run.js's own flat-Page literal is read as SOURCE (it is not an
+     exported function — the mount builds it inline) and diffed against what the shipped
+     `captureJobBefore` returns over a corpus of real jobs. A seventh key fails here, naming itself.
+     ------------------------------------------------------------------------------------------ */
+
+  /** The top-level keys of the object literal whose opening `{` is at `i` (strings and nesting safe). */
+  function literalKeys(src, i) {
+    const keys = [];
+    let depth = 0;
+    for (let j = i; j < src.length; j++) {
+      const c = src[j];
+      if (c === '"' || c === "'" || c === '`') {
+        const q = c; j++;
+        while (j < src.length && src[j] !== q) { if (src[j] === '\\') j++; j++; }
+        continue;
+      }
+      if (c === '{' || c === '[' || c === '(') { depth++; continue; }
+      if (c === '}' || c === ']' || c === ')') { depth--; if (depth === 0) break; continue; }
+      if (depth === 1 && c === ':') {
+        let k = j - 1;
+        while (k >= 0 && /\s/.test(src[k])) k--;
+        const end = k + 1;
+        while (k >= 0 && /[A-Za-z0-9_$]/.test(src[k])) k--;
+        const name = src.slice(k + 1, end);
+        if (name) keys.push(name);
+      }
+    }
+    return keys;
+  }
+
+  /**
+   * The keys `screens/run.js`'s FLAT PAGE path snapshots, read out of run.js's own literals.
+   *
+   * The anchor is the WRITE — `const snap = { ...before, tiles: tilesBefore }`, the statement that
+   * puts the flat Page's snapshot on `inProgress.meta.before` — and the `before = { … }` literal it
+   * spreads is then the nearest one ABOVE it. Anchoring on `before = {` alone matched
+   * `mintedTiles(before = {}, …)`'s default parameter and read the page's snapshot as empty.
+   */
+  function pageBeforeKeys() {
+    const src = readFileSync(join(ROOT, 'site/js/screens/run.js'), 'utf8');
+    const b = src.indexOf('{ ...before,');
+    assert.ok(b > 0, 'run.js no longer writes `{ ...before, … }` into inProgress.meta.before — re-derive GAME_META_FIELDS against whatever replaced it, do not hand-maintain the list');
+    const a = src.lastIndexOf('before = {', b);
+    assert.ok(a > 0, "run.js no longer builds the flat Page's before-snapshot as `before = { … }` — re-derive GAME_META_FIELDS");
+    const keys = [...literalKeys(src, src.indexOf('{', a)), ...literalKeys(src, b)];
+    assert.ok(keys.length >= 5, `the flat Page's snapshot literal parsed to ${keys.length} keys (${keys.join(', ')}) — the parse is stale, not the budget`);
+    return new Set(keys);
+  }
+
+  /** `captureJobBefore`'s snapshot on `n` real jobs — the union of its keys, and one sample. */
+  function jobBeforeCorpus(n = 24, { sealAll = false } = {}) {
+    const keys = new Set(); let checked = 0, sample = null;
+    for (let i = 0; i < n; i++) {
+      const s = seededSave(i, { allOverdue: true });
+      /* A REAL `profileId`, because `inProgress.seed` is `job|<profileId>|<day>|<n>` and
+         `store.newProfileId()` writes a 36-character UUID. This suite's corpus labels saves
+         `save-<i>`, which would measure the seed 30 B narrower than any real save's. */
+      s.profileId = `d6f2162f-4078-43a8-ba34-3d1c713c89${String(i).padStart(2, '0')}`;
+      if (sealAll) {
+        s.game.tags = Object.fromEntries(TAG_IDS.map((id) => [id,
+          { ...TAG_RECORD_DEFAULT, triggered: 11, resolved: 4, cleared: true, sealed: true, days: 3, lastDay: todayISO(new Date(NOW)) }]));
+      }
+      try { startJob(s, { now: NOW, today: todayISO(new Date(NOW)), shape: 'JOB12' }); } catch { continue; }
+      if (!s.inProgress) continue;
+      const snap = captureJobBefore(s, s.inProgress.queue);
+      if (!snap) continue;
+      checked++;
+      for (const k of Object.keys(snap)) keys.add(k);
+      if (!sample || (sealAll && (snap.tags?.length ?? 0) > (sample.tags?.length ?? 0))) sample = snap;
+    }
+    return { keys, checked, sample };
+  }
+
+  test('GAME_META_FIELDS is exactly what captureJobBefore adds to the before-snapshot that the flat Page does not', () => {
+    const pageKeys = pageBeforeKeys();
+    const { keys: jobKeys, checked } = jobBeforeCorpus();
+    assert.ok(checked >= 8, `only ${checked} of 24 seeded saves produced a job before-snapshot — the union below is not a union any more`);
+    console.log(`  before-snapshot: flat Page writes ${[...pageKeys].sort().join(', ')}`);
+    console.log(`  before-snapshot: a job writes     ${[...jobKeys].sort().join(', ')}`);
+    /* the parse has to be LIVE: every key run.js's flat literal names must be in the job's snapshot
+       too, or the two paths have diverged and the diff below is measuring a stale read of run.js. */
+    assert.deepEqual([...pageKeys].filter((k) => !jobKeys.has(k)), [],
+      'run.js\'s flat-Page snapshot literal names keys captureJobBefore does not write — the source parse above is stale, or the two paths have diverged');
+    const extra = [...jobKeys].filter((k) => !pageKeys.has(k)).sort();
+    assert.deepEqual(extra, [...GAME_META_FIELDS].sort(),
+      `captureJobBefore adds ${extra.join(', ')} to inProgress.meta.before, but withoutGameKeys() strips ${[...GAME_META_FIELDS].sort().join(', ')} — the difference is being charged to the STUDY half of the split and priced in no row. Update GAME_META_FIELDS in tests/_helpers.mjs and restate SAVE_BUDGET_KB.metaDelta`);
+  });
+
+  test('the before-snapshot fixture is no NARROWER than what a real job writes, and prices nothing it does not', () => {
+    const { sample, checked } = jobBeforeCorpus(24, { sealAll: true });
+    assert.ok(checked >= 8 && sample, `only ${checked} seeded saves produced a before-snapshot`);
+    assert.equal(sample.tags.length, CAPS.game.tags,
+      `the corpus sealed ${sample.tags.length} tags, not all ${CAPS.game.tags} — the tags line would be measured against a snapshot that is not at its cap (index-68 is a shipped trophy, so all 68 sealed is reachable by construction)`);
+    const fx = worstCaseJobBefore(T0, CAPS.game);
+    /* COMPLETENESS both ways — the fixture must price every key a real snapshot carries, and must
+       not price one it does not (dead weight in the budget is the other half of the same defect). */
+    assert.deepEqual(Object.keys(sample).sort(), Object.keys(fx).sort(),
+      'worstCaseJobBefore() is not a fixed point of captureJobBefore() — it would price a snapshot the app cannot write');
+    assert.deepEqual(Object.keys(sample.index).sort(), Object.keys(fx.index).sort(), 'the index record drifted from jobIndex.indexProgress()');
+    assert.deepEqual(Object.keys(sample.coverage).sort(), Object.keys(fx.coverage).sort(), 'the coverage record drifted from readiness.coverageCount()');
+    assert.deepEqual(Object.keys(sample.readiness).sort(), Object.keys(fx.readiness).sort(), 'the readiness record drifted');
+    assert.deepEqual(Object.keys(sample.skills[0]).sort(), Object.keys(fx.skills[0]).sort(), 'the skill-state record drifted from readiness.skillStates()');
+    assert.equal(String(sample.seed).split('|')[1]?.length, 36,
+      'the corpus save no longer carries a UUID profileId — inProgress.seed would be measured 30 B narrower than any real save writes it');
+    assert.ok(SKILL_IDS.length <= fx.skills.length,
+      `data/skills.js has ${SKILL_IDS.length} makes and the fixture prices ${fx.skills.length} skillStates entries — raise SKILL_STATES in tests/_helpers.mjs`);
+    // … and every leaf at least as wide, measured rather than asserted in a comment.
+    const W = (x) => JSON.stringify(x ?? null).length;
+    const rows = [
+      ['tags', W(sample.tags), W(fx.tags)],
+      ['index', W(sample.index), W(fx.index)],
+      ['rating', W(sample.rating), W(fx.rating)],
+      ['startedAt', W(sample.startedAt), W(fx.startedAt)],
+      ['seed', W(sample.seed), W(fx.seed)],
+      ['seedTag', W(sample.seedTag), W(fx.seedTag)],
+      ['composed', W(sample.composed), W(fx.composed)],
+      ['skills[]', Math.max(...sample.skills.map(W)), Math.max(...fx.skills.map(W))],
+      ['tiles', W(sample.tiles), W(fx.tiles)],
+    ];
+    console.log(`  before-snapshot leaves (real @ ${sample.tags.length} sealed tags vs priced):`);
+    for (const [k, real, priced] of rows) console.log(`   ${real > priced ? 'OVER' : '  ok'} ${k.padEnd(12)} real ${String(real).padStart(5)} B  priced ${String(priced).padStart(5)} B`);
+    const over = rows.filter(([, real, priced]) => real > priced).map(([k]) => k);
+    assert.deepEqual(over, [],
+      `these before-snapshot leaves are WIDER in a real save than tests/_helpers.mjs prices them: ${over.join(', ')} — widen worstCaseJobBefore() and RESTATE SAVE_BUDGET_KB.metaDelta, do not widen the assertion`);
+  });
+
   test('the inProgress.game fixture is exactly what js/job/state.js serialize() emits', () => {
     const fx = inProgressJob12(T0, CAPS.game);
     assert.deepEqual(STATE_KEYS.filter((k) => !(k in fx)), [],
@@ -657,12 +1059,23 @@ describe('J10 — the measured budget (G7 "The measured budget")', () => {
     assert.deepEqual(fx.rating.calls, win,
       'worstCasePlayer()\'s window is no longer what call.windowPush writes — rebuild it, do not re-type it');
 
-    // `w` is `round(4·q̂·(1 − q̂), 6)` and q̂ is k/n with n ≤ RATING.qHatWindow, so thirds are reachable
+    /* THE WINDOW ENTRY HAS TWO PRICED LEAVES SINCE VERIFY ROUND 2, and both are derived here rather
+       than typed. `callEntry`'s q̂ form now stores the q̂ itself (`q`) and derives the weight from it,
+       while the Mock's defined-weight form still stores `w`; `state.applyTarget` writes the derived
+       weight into `inProgress.game.calls[].w` through `call.weightOf`. q̂ is `k/n` with
+       `n ≤ RATING.qHatWindow`, so thirds are reachable on both leaves. */
     const qs = [];
     for (let n = 1; n <= RATING.qHatWindow; n++) for (let k = 0; k <= n; k++) qs.push(k / n);
-    const widestW = Math.max(...qs.map((q) => JSON.stringify(call.callEntry({ qHat: q }).w).length));
+    const entries = qs.map((q) => call.callEntry({ call: 85, ok: true, qHat: q, skill: WIDEST_SKILL, at: T0 }));
+    assert.ok(entries.some((e) => 'q' in e && e.q != null),
+      'call.callEntry no longer stores a q̂ on any window entry — re-derive what the `calls[]` leaf prices');
+    const widestQ = Math.max(...entries.map((e) => JSON.stringify(e.q).length));
+    assert.equal(JSON.stringify(WIDEST_Q).length, widestQ,
+      `call.callEntry can emit a ${widestQ}-character q; the fixture prices ${JSON.stringify(WIDEST_Q).length}`);
+    const widestW = Math.max(...entries.map((e) => JSON.stringify(call.weightOf(e)).length));
     assert.equal(JSON.stringify(WIDEST_W).length, widestW,
-      `call.callEntry can emit a ${widestW}-character w; the fixture prices ${JSON.stringify(WIDEST_W).length}`);
+      `call.weightOf can emit a ${widestW}-character w — the leaf state.applyTarget writes into `
+      + `inProgress.game.calls[]; the fixture prices ${JSON.stringify(WIDEST_W).length}`);
 
     // the longest make id there is — 50 window entries and 26 job calls are priced off it
     const longest = SKILL_IDS.reduce((a, x) => (x.length > a.length ? x : a), '');
@@ -716,11 +1129,22 @@ describe('J10 — the measured budget (G7 "The measured budget")', () => {
     const count = (k, n) => { if (!(k in counts) || n > counts[k]) counts[k] = n; };
     let jobs = 0, ended = 0, swapsTaken = 0;
     const qKeys = new Set();                            // every key a REAL job queue entry carries
+    let paramsSeen = 0, benchParamsSeen = 0;            // round 5: entries carrying the floor's `params`
+    let frozenSeen = 0;                                 // round 5: entries carrying a frozen Variant's keys
 
-    for (let i = 0; i < 80; i++) {
-      // half the corpus is a week-off catch-up (everything overdue), which is where the longest
-      // boards and therefore the longest queues and call lists come from.
-      const save = seededSave(i, { allOverdue: i % 2 === 1 });
+    for (let i = 0; i < 120; i++) {
+      // half the first 80 is a week-off catch-up (everything overdue), which is where the longest
+      // boards and therefore the longest queues and call lists come from. The last 20 are the
+      // OPPOSITE state — no backlog at all — which is the only one that composes an S7 algebra
+      // floor item, and therefore the only one that writes a queue entry carrying `params`. Round 5
+      // added it: with the first 80 alone this corpus produced none in 546 000 observations, and the
+      // completeness guard below could not fail on a key the shipped composer writes.
+      // …and the last 20 carry frozen Variants, all due, which is the only state that composes the
+      // OTHER queue-entry shape — a `kind: 'frozen'` due, which `page.js:287` writes with
+      // `frozenKey` + `templateVersion` and without `rename`/`bucket`/`overdue`/`sweep`.
+      const save = i < 80 ? seededSave(i, { allOverdue: i % 2 === 1 })
+        : i < 100 ? seededSave(i, { lowDue: true })
+          : seededSave(i, { frozenN: 6 });
       const days = i < 3 ? 4 : 1;
       for (let d = 0; d < days; d++) {
         let t = NOW + d * DAY_MS;
@@ -746,8 +1170,15 @@ describe('J10 — the measured budget (G7 "The measured budget")', () => {
           see('inProgress.queue', q);                 // the whole line, not just its widest entry
           for (const it of q) {
             see('inProgress.queue[]', it);
+            if ('params' in it) paramsSeen++;
+            if ('frozenKey' in it) frozenSeen++;
+            /* THE TWO SHAPES NEVER MEET, which is what makes it sound to price the LINE on 36
+               card-shaped entries while pricing the frozen shape's two extra KEYS separately. */
+            assert.ok(!('rename' in it && 'frozenKey' in it),
+              `a real queue entry carries BOTH \`rename\` and \`frozenKey\` (${it.id}) — the two composer branches have merged, so worstCaseJobQueue() must price the union on every entry and SAVE_BUDGET_KB must be restated on the wider line`);
             for (const k of Object.keys(it)) { qKeys.add(k); see(`inProgress.queue[].${k}`, it[k]); }
           }
+          for (const it of save.inProgress?.bench ?? []) { if ('params' in it) benchParamsSeen++; see('inProgress.bench[]', it); }
           if (g.phase === 'envelope') { const av = callsAvailable(save); const want = [95, 85, 70, 50][n % 4]; lockCall(save, av.includes(want) ? want : av[av.length - 1], { now: step(5000) }); continue; }
           /* half the corpus misses EVERYTHING: a missed review is re-queued (`page.requeueReview`,
              once each) and the queue a call is written per grows past the 12 drafted targets. */
@@ -811,9 +1242,34 @@ describe('J10 — the measured budget (G7 "The measured budget")', () => {
     assert.deepEqual(keys(real.player.rating.calls[0] ?? {}), keys(fxP.rating.calls[0]), 'a real rating-window entry has keys the G7 fixture does not price');
     /* ROUND 3 — the same completeness check for the queue entry, the record whose game fields were
        in no fixture at all. The fixture must price every key a real job's queue entry carries. */
-    const qMissing = [...qKeys].filter((k) => !(k in fxQ[0])).sort();
+    /* ROUND 5 — the fixture is TWO shapes, so the guard is against the UNION of what they price and
+       not against entry 0 alone. `worstCaseJobQueue()` is the card-shaped review/rematch;
+       `worstCaseFrozenReviewItem()` is the frozen-Variant review, which carries `frozenKey` and
+       `templateVersion` and cannot carry `rename`/`bucket`/`overdue`/`sweep`. Checking `fxQ[0]` only
+       would report the frozen shape's own keys as unpriced the moment the corpus produced one. */
+    const fxFrozen = worstCaseFrozenReviewItem(T0);
+    const fxQueueKeys = new Set([...Object.keys(fxQ[0]), ...Object.keys(fxFrozen)]);
+    const qMissing = [...qKeys].filter((k) => !fxQueueKeys.has(k)).sort();
     assert.deepEqual(qMissing, [],
       `a real job's inProgress.queue entry carries keys worstCaseJobQueue() does not price: ${qMissing.join(', ')} — price them, and if the GAME layer adds them, add them to GAME_QUEUE_FIELDS so withoutGameKeys() stops charging them to the study half`);
+    /* ROUND 5 (verify) — AND THE GUARD ABOVE IS NOT VACUOUS ON THE OPTIONAL KEYS. `params` is written
+       by `composePage`'s S7 algebra floor only, so it is present on SOME queue entries and absent
+       from most; a corpus made only of backlog saves composes no floor at all and the guard passed
+       for two rounds on a key the shipped composer writes and `worstCaseJobQueue()` did not price
+       (546 000 entry observations, zero `params`). The `lowDue` arm exists to produce them, and this
+       is the assertion that keeps it doing so: if the arm stops composing a floor — a LIMITS change,
+       a board change — this fails HERE, naming the reason, instead of the completeness check going
+       quietly blind again. Every OTHER key a queue entry carries is unconditional, so the deepEqual
+       above is non-vacuous for those by construction (`qKeys` is non-empty and `jobs >= 10`). */
+    /* the same non-vacuity pin for the frozen shape, and the dominance the LINE's pricing rests on:
+       a frozen-Variant entry at its widest must be no wider than the card-shaped entry the 36-entry
+       line is built from, or the line is priced on the wrong shape. */
+    assert.ok(qKeys.has('frozenKey') && qKeys.has('templateVersion') && frozenSeen > 0,
+      `no queue entry in the corpus carried a frozen Variant's \`frozenKey\`/\`templateVersion\` (${frozenSeen} of ${jobs} jobs) — only a \`kind: 'frozen'\` due composes that shape (site/js/page.js:287), so without the \`frozenN\` arm the completeness check above cannot see either key. Fix the arm, do not delete this assertion`);
+    assert.ok(W(fxFrozen) <= Math.max(...fxQ.map(W)),
+      `the frozen-Variant shape is now ${W(fxFrozen)} B against the card shape's ${Math.max(...fxQ.map(W))} B — inProgress.queue is priced as ${fxQ.length} card-shaped entries because that shape DOMINATED. It no longer does: price the line on the frozen shape and restate SAVE_BUDGET_KB.queueDelta and COMPOSED.md S6's study half`);
+    assert.ok(qKeys.has('params') && paramsSeen > 0,
+      `no queue entry in the corpus carried \`params\` (${jobs} jobs, ${paramsSeen} entry observations) — the S7 algebra floor (site/js/page.js:392) is the only writer of it, and without a save whose board is short enough to compose one, the completeness check above cannot see an unpriced optional key. Fix the \`lowDue\` arm, do not delete this assertion`);
 
     /* leaf → what the fixture prices it at. */
     const priced = {
@@ -831,14 +1287,21 @@ describe('J10 — the measured budget (G7 "The measured budget")', () => {
       'game.tags[]': W(Object.values(fxG.tags)[0]),
       'game.tags key': W(Object.keys(fxG.tags)[0]),
       'inProgress.bench': W(worstCaseBench(T0)),
+      /* per ENTRY as well as per line (round 5): a real bench is 1-2 entries against the fixture's
+         four, so the line total can stay green while a single entry is wider than priced. */
+      'inProgress.bench[]': Math.max(...worstCaseBench(T0).map(W)),
       'inProgress.game': W(fxI),
       ...Object.fromEntries(STATE_KEYS.map((k) => [`inProgress.game.${k}`, W(fxI[k])])),
       /* the WIDEST fixture entry per key, not entry 0's: `n` and the `result.n` inside it are
          1-digit on the first entry and 2-digit from the tenth, and a real job's tenth entry is the
          one that would otherwise come in over. */
       'inProgress.queue': W(fxQ),
-      'inProgress.queue[]': Math.max(...fxQ.map(W)),
-      ...Object.fromEntries(Object.keys(fxQ[0]).map((k) => [`inProgress.queue[].${k}`, Math.max(...fxQ.map((e) => W(e[k])))])),
+      'inProgress.queue[]': Math.max(...fxQ.map(W), W(fxFrozen)),
+      /* per key, over BOTH shapes and over whichever entries actually carry the key — `frozenKey`
+         and `templateVersion` live only on the frozen-Variant entry, `rename`/`bucket`/`overdue`/
+         `sweep` only on the card-shaped ones. */
+      ...Object.fromEntries([...fxQueueKeys].map((k) => [`inProgress.queue[].${k}`,
+        Math.max(...[...fxQ, fxFrozen].filter((e) => k in e).map((e) => W(e[k])))])),
     };
     const rows = Object.keys(priced).filter((k) => k in worst).sort();
     const over = rows.filter((k) => worst[k] > priced[k]);
@@ -860,7 +1323,7 @@ describe('J10 — the measured budget (G7 "The measured budget")', () => {
        is checked against the corpus here, so a board that starts drafting 15 targets fails on the
        DRAFTED line, naming it, rather than silently eating the derived headroom. */
     const fxLocks = fxI.bundles.reduce((a, b) => a + b.locks.length, 0);
-    console.log(`   counts: calls ${counts.calls}/${fxI.calls.length} · queue ${counts['queue.entries']}/${fxQ.length} (drafted ${counts['queue.drafted']}/${JOB_QUEUE_DRAFTED}) · locks ${counts.locks}/${fxLocks} (max per bundle ${counts.locksPerBundle}/${Math.max(...fxI.bundles.map((b) => b.locks.length))}) · bench ${counts['bench.entries']}/${BENCH_ENTRIES} · swaps taken ${swapsTaken}`);
+    console.log(`   counts: calls ${counts.calls}/${fxI.calls.length} · queue ${counts['queue.entries']}/${fxQ.length} (drafted ${counts['queue.drafted']}/${JOB_QUEUE_DRAFTED}) · locks ${counts.locks}/${fxLocks} (max per bundle ${counts.locksPerBundle}/${Math.max(...fxI.bundles.map((b) => b.locks.length))}) · bench ${counts['bench.entries']}/${BENCH_ENTRIES} · swaps taken ${swapsTaken} · entries carrying \`params\` ${paramsSeen} queue / ${benchParamsSeen} bench · frozen-Variant entries ${frozenSeen}`);
     /* NON-VACUITY, and the one that matters most: for two rounds this driver passed a STRING where
        `state.brief` wants `{ id }`, so "taking every swap" took none and every count below was the
        count of a job whose queue could not grow by a swap. */
@@ -933,30 +1396,178 @@ describe('J10 — the measured budget (G7 "The measured budget")', () => {
     const withoutTrophies = addedBy(applyCaps(carrier({ trophies: false })));
     assert.equal(added - withoutQueue, qDelta, 'the queue line must be exactly the queue delta');
     assert.equal(added - withoutTrophies, tDelta, 'the trophy line must be exactly the trophy delta');
+    /* THE BEFORE-SNAPSHOT'S SEVEN FIELDS ARE GAME BYTES TOO (round 4, verify) — the same defect a
+       fourth time, one level past the queue ENTRIES. Two assertions, because this row is a DELTA on
+       a key BOTH paths write: the delta must be the game fields (a `withoutGameKeys` that stops
+       stripping them fails the first), and it must be ONLY the game fields — a `withoutGameKeys`
+       that deleted `before`, or `meta`, outright would charge the flat Page's own five keys to this
+       layer and fail the second. */
+    const mDelta = deltaOn(s, (x) => x.inProgress.meta);
+    const withoutMeta = addedBy(applyCaps(carrier({ meta: false })));
+    assert.equal(added - withoutMeta, mDelta, 'the before-snapshot line must be exactly the inProgress.meta delta');
+    assert.ok(mDelta > KB,
+      `the job's before-snapshot fields are worth ${mDelta} B of the addition — withoutGameKeys() is charging them to the study half again (screens/run.js captureJobBefore adds tags/index/rating/startedAt/seed/seedTag/composed to the five keys the flat Page path writes)`);
+    const studyKept = pack(withoutGameKeys(s)).inProgress.meta.before;
+    assert.deepEqual(Object.keys(studyKept).sort(), ['coverage', 'readiness', 'skills', 'tiles', 'xp'],
+      'withoutGameKeys() must leave the flat Page\'s own five snapshot keys in the STUDY half — stripping `before` or `meta` outright would charge the study layer\'s own bytes to the game layer');
   });
 
-  test('COMPOSED S6\'s restated arithmetic closes: the study BOUND + the addition < 528 KB', () => {
-    /* COMPOSED.md S6 used to state "≈ 210 KB worst case, < 250 KB" from an estimate that priced a
-       card at 300 B; `state.test.mjs` measures the saturated study layer and asserts it under T01's
-       500 000-char bound, and notes/T01.md open issue 1 asked the integrator to accept that or name
-       the caps to cut. It was accepted: the caps are product rules and the total is a fifth of the
-       5 MB quota.
+  /* ---------------------------------------------------------------------------------------------
+     ROUND-2 VERIFY (save-budget finding 9) — S6 IS CLOSED AGAINST A MEASURED SAVE, NOT THREE
+     CONSTANTS.
 
-       ROUND 3 — THE STUDY TERM IS NOW T01'S BOUND, NOT A TYPED-IN MEASUREMENT. This test used to
-       add the game delta to a hardcoded `480 * KB`, a figure `state.test.mjs` had long since moved
-       past: with a REAL job queue on the worst-case carrier it measures 498 463 chars, so the "480"
-       understated the total by 18 KB and the headline closed on a number nothing checked. Summing
-       the two BOUNDS instead — T01's 500 000 for the study half, `SAVE_BUDGET_KB.totalAdded` for the
-       addition — makes this a real bound rather than a stale reading, and both halves are asserted
-       where they are measured (`state.test.mjs` "a save with EVERY cap saturated…"). */
-    const S6_STUDY_BOUND = 500_000;               // T01's, asserted in state.test.mjs
+     What stood here was `500_000 + SAVE_BUDGET_KB.totalAdded * 1024 < 528 * 1024` — 540 550.4 <
+     540 672, a literal plus a literal against a literal, with 121.6 B of margin and no measurement
+     in the closing assertion at all (the `added` it measured was used only on the line above). It
+     could not fail for the thing it exists to catch, and it could not see the case that breaks it:
+     the 500 000 term is T01's BOUND, and `tests/state.test.mjs` already asserts that the same
+     carrier carrying a LIVE before-snapshot is 4 843 chars OVER it.
+
+     So the closure is now a measurement on a carrier that saturates BOTH halves at once — the study
+     layer at every `store.CAPS` line (the same recipe `state.test.mjs`'s carrier uses, asserted
+     saturated below rather than assumed) and the game layer at every `CAPS.game` line, with the
+     page-label block the shipped `startPage` writes and the FULL before-snapshot `captureJobBefore`
+     writes. Measured on this tree:
+
+         study half   505 671 chars   (T01's bound 500 000 — over by 5 671, notes/repair-save.md D)
+         addition      40 333 chars   (SAVE_BUDGET_KB.totalAdded 39.7 KB = 40 652.8 — inside it)
+         TOTAL        546 004 chars = 533.2 KB against COMPOSED S6's 528 KB — OVER by 5 332
+
+     (round 4 verify read 504 843 / 40 225 / 545 068, OVER by 4 396; round 5 priced `params` — 828 B
+     of STUDY bytes on the queue — and `tellOff`, which is where the +828 / +108 came from.)
+
+     THE OVERRUN IS THE SAME 5.3 KB IN BOTH LINES, and it is one thing: the before-snapshot's STUDY
+     half (`skills` alone is 3.6 KB of `readiness.skillStates()`) is written by the flat Page route
+     too, so it belongs inside T01's bound and does not fit there. It is pinned here in both
+     directions — it must still be over (or Request D has been answered and this arm becomes the
+     plain `total < S6_BUDGET` assertion), and it may not grow.
+     --------------------------------------------------------------------------------------------- */
+  describe('COMPOSED S6, measured on a save that saturates BOTH halves', () => {
     const S6_BUDGET = 528 * KB;                   // COMPOSED.md S6, restated at the round-3 save audit
-    const s = applyCaps(carrier());
-    const added = JSON.stringify(pack(s)).length - JSON.stringify(pack(withoutGameKeys(s))).length;
-    const total = S6_STUDY_BOUND + SAVE_BUDGET_KB.totalAdded * KB;
-    console.log(`  against COMPOSED S6: study bound ${(S6_STUDY_BOUND / KB).toFixed(1)} KB + added ${(SAVE_BUDGET_KB.totalAdded).toFixed(1)} KB = ${(total / KB).toFixed(1)} KB of ${S6_BUDGET / KB} KB (this carrier's addition measures ${(added / KB).toFixed(2)} KB)`);
-    assert.ok(added <= SAVE_BUDGET_KB.totalAdded * KB, 'the carrier is over the published addition');
-    assert.ok(total < S6_BUDGET, `${(total / KB).toFixed(1)} KB ≥ ${S6_BUDGET / KB} KB — restate COMPOSED.md S6 and say so in notes/save-fix.md, do not widen the assertion`);
+    const T01_STUDY_BOUND = 500_000;              // T01's, asserted in state.test.mjs
+
+    /** `page.startPage`'s own label block — the keys every live page and every live job carries. */
+    const PAGE_META = (() => {
+      const s0 = fresh(T0 - 40 * DAY_MS);
+      s0.settings.testDate = '2026-09-30';
+      return startPage(s0, { now: T0 }).meta;
+    })();
+
+    const SHEETS = ['ang', 'wp', 'asn', 'qz', 'fac', 'voc', 'not', 'def', 'fact', 'cls', 'doc', 'quad', 'bonus'];
+
+    /**
+     * THE WHOLE SAVE AT ITS CAPS. The study half is filled past every `store.CAPS` line and then
+     * `applyCaps` cuts it back to them, so the fixture cannot quietly sit under a cap; the game half
+     * is `_helpers.mjs`'s worst case, the same one every row of G7's table is measured on.
+     */
+    function s6Carrier() {
+      const s = fresh(T0);
+      for (let i = 0; i < 140; i++) {
+        s.cards[`${SHEETS[i % SHEETS.length]}-${String(i).padStart(2, '0')}`] = {
+          attempts: 12, cleared: true, rarity: 'silver', foil: false,
+          foilProgress: Array.from({ length: CAPS.foilProgress + 4 }, (_, k) => ({ day: `2026-09-${String(10 + k).padStart(2, '0')}`, via: 'T-wp-07#a91f2c' })),
+          setupTried: true, bucket: 3, lastAt: T0 + i, due: T0 + i * 1000, hintsUsed: 3, solutionShown: false, bestMs: 123456, placed: false,
+          work: 'w'.repeat(CAPS.cardWork + 500),
+          history: Array.from({ length: CAPS.history + 5 }, (_, k) => ({ at: T0 + k * 100000, ok: k % 2 === 0, attempt: 2, hints: 1, ms: 123456 })),
+        };
+      }
+      for (let i = 0; i < CAPS.runs + 5; i++) {
+        s.runs.push({
+          kind: 'mock', n: i, seed: 'mock#' + i, startedAt: T0, submittedAt: T0 + 2400000, limitMs: 2400000, tabAway: 3, status: 'done',
+          items: Array.from({ length: 20 }, () => ({ id: 'T-wp-07#a91f2c1', skill: 'CS-RATIO', tier: 3, raw: 'x = 3 or x = -1/2 and 174.5', credit: 0.4, ms: 123456, flagged: true, work: 'k'.repeat(CAPS.workChars + 1000) })),
+          score: 81, pred: 88, splits: Array.from({ length: 20 }, (_, k) => 12345 + k), flagged: false,
+          ...GAME_RUN_FIELDS,
+        });
+      }
+      for (let i = 0; i < CAPS.errors + 50; i++) s.errors.push({ item: 'T-wp-07#a91f2c1', seed: 'a91f2c1', t: T0 + i, got: 'x = 3 or x = -1/2', tags: ['gave-complement', 'stopped-early'], cleared: i % 3 === 0 });
+      for (const k of SKILL_IDS) s.skills[k] = { m: 72.123456789, n: 19, lastAt: T0, lastDueCorrectAt: T0, placedAt: T0 };
+      for (let i = 0; i < CAPS.frozen + 100; i++) s.frozen['T-wp-07#' + i.toString(16).padStart(6, '0')] = { seed: 'a91f2c' + i, templateVersion: 3, bucket: i % 3, due: T0 + i * 3600000, forCard: 'wp-07' };
+      for (let i = 0; i < 60; i++) s.variants['T-tpl-' + i] = { clearsGold: 12, goldDays: ['2026-09-17', '2026-09-18', '2026-09-19'] };
+      for (let i = 0; i < CAPS.daily + 60; i++) s.daily[addDays('2026-01-01', i)] = { xp: 612, clears: 14, goalMet: true, mockDone: true };
+      for (let i = 0; i < CAPS.forecastLog + 60; i++) s.forecastLog.push({ day: addDays('2026-01-01', i), r: 73 });
+      for (let i = 0; i < 40; i++) s.trophies['sheet-gold:AP-' + i] = { at: T0 };
+      Object.assign(s.trophies, worstCaseGameTrophies(T0));
+      for (let i = 0; i < 30; i++) s.counters['counter-name-' + i] = 1234;
+      s.settings.testDate = '2026-09-22'; s.placement = { done: true, at: T0 }; s.jumps = { M10: true, M9: true };
+      s.player = worstCasePlayer(T0, JOB_CAPS.game ?? CAPS.game);
+      s.game = worstCaseGame(T0, CAPS.game);
+      s.inProgress = {
+        kind: 'job', seed: 123456789, idx: 7, hearts: 3, xp: 120, startedAt: T0,
+        queue: worstCaseJobQueue(T0), game: inProgressJob12(T0, CAPS.game), bench: worstCaseBench(T0),
+        meta: { ...PAGE_META, before: worstCaseJobBefore(T0, CAPS.game) },
+      };
+      return s;
+    }
+
+    test('the carrier really is the worst case: every capped line is AT its cap, and both halves are on it', () => {
+      const s = applyCaps(s6Carrier());
+      assert.equal(s.runs.length, CAPS.runs, 'runs[] is not at its cap');
+      assert.equal(s.errors.length, CAPS.errors, 'errors[] is not at its cap');
+      assert.equal(Object.keys(s.frozen).length, CAPS.frozen, 'frozen is not at its cap');
+      assert.equal(Object.keys(s.daily).length, CAPS.daily, 'daily is not at its cap');
+      assert.equal(s.forecastLog.length, CAPS.forecastLog, 'forecastLog is not at its cap');
+      for (const rec of Object.values(s.cards)) {
+        assert.equal(rec.history.length, CAPS.history, 'a card history is not at its cap');
+        assert.equal(rec.work.length, CAPS.cardWork, 'a card work buffer is not at its cap');
+      }
+      // the GAME half is on it too, and the before-snapshot carries BOTH of its halves
+      assert.equal(s.inProgress.game.calls.length ?? 0, s.inProgress.game.calls.length, 'the job state is missing');
+      assert.deepEqual(Object.keys(s.inProgress.meta.before).filter((k) => GAME_META_FIELDS.includes(k)).sort(),
+        [...GAME_META_FIELDS].sort(), 'the before-snapshot is missing its game fields');
+      for (const k of ['skills', 'readiness', 'xp', 'coverage', 'tiles']) {
+        assert.ok(k in s.inProgress.meta.before, `the before-snapshot is missing the flat Page's own ${k}`);
+      }
+      assert.ok(Object.keys(s.inProgress.meta).length > GAME_META_FIELDS.length,
+        'the page-label block startPage writes is not on the carrier');
+    });
+
+    test('S6 CLOSES, OR IT DOES NOT: the measured total against 528 KB', () => {
+      const s = applyCaps(s6Carrier());
+      const total = JSON.stringify(pack(s)).length;
+      const study = JSON.stringify(pack(withoutGameKeys(s))).length;
+      const added = total - study;
+      const over = total - S6_BUDGET;
+      console.log(`  COMPOSED S6, measured: ${(total / KB).toFixed(1)} KB total = ${(study / KB).toFixed(1)} KB study `
+        + `+ ${(added / KB).toFixed(1)} KB addition, against ${S6_BUDGET / KB} KB `
+        + `(${over > 0 ? `OVER by ${over} chars` : `${-over} chars to spare`}); study half vs T01's ${T01_STUDY_BOUND}: `
+        + `${study - T01_STUDY_BOUND > 0 ? `over by ${study - T01_STUDY_BOUND}` : `${T01_STUDY_BOUND - study} to spare`}`);
+
+      /* …and the OTHER quantity, printed beside it and labelled, because G7 published the two as one
+         sentence for two rounds and cited this file as printing a closure it has never printed
+         (round-5 verify, spec-fidelity + save-budget). One is a measurement on a carrier; this one
+         is arithmetic on two published BOUNDS and nothing is measured in it at all. */
+      const bounds = T01_STUDY_BOUND + SAVE_BUDGET_KB.totalAdded * KB;
+      console.log(`  the two BOUNDS (arithmetic, NOT a measurement): T01's ${T01_STUDY_BOUND} + G7's `
+        + `${SAVE_BUDGET_KB.totalAdded} KB = ${bounds} B of COMPOSED S6's ${S6_BUDGET} B — `
+        + `${(S6_BUDGET - bounds).toFixed(1)} B to spare`);
+
+      // the identity: the two halves are measured on ONE save, and they are the whole of it
+      assert.equal(study + added, total, 'the split does not account for every byte of the save');
+      // the ADDITION is inside the figure G7 publishes — that half of the budget holds
+      assert.ok(added <= SAVE_BUDGET_KB.totalAdded * KB,
+        `the game layer adds ${(added / KB).toFixed(2)} KB against the published ${SAVE_BUDGET_KB.totalAdded} KB`);
+
+      /* THE RATCHET. The overrun is the before-snapshot's study half (notes/repair-save.md Request
+         D); until that is ruled on, S6's 528 KB is not a bound on the worst case and this file says
+         so with the measurement rather than closing on three constants. */
+      assert.ok(over > 0,
+        `the measured worst case is ${(total / KB).toFixed(1)} KB and now FITS COMPOSED S6's ${S6_BUDGET / KB} KB `
+        + `with ${-over} chars to spare — Request D has been answered: replace this ratchet with `
+        + '`assert.ok(total < S6_BUDGET)` and restate the figure in notes/repair-tests.md');
+      assert.ok(over <= 8 * KB,
+        `the measured worst case is ${over} chars over COMPOSED S6's ${S6_BUDGET / KB} KB, against the 5 332 measured at `
+        + 'round-5 verification (4 396 at round 2; +828 B when `params` was priced, +108 B for `tellOff` and the '
+        + 'bench\'s copy of `params`) — the overrun is growing and nothing has ruled on it yet');
+      assert.ok(study > T01_STUDY_BOUND,
+        `the study half is ${study} against T01's ${T01_STUDY_BOUND} and now fits — fold the snapshot into the `
+        + 'carrier, answer Request D, and rewrite both halves of this arm');
+      /* …and the old arithmetic is kept as what it was: a statement about two BOUNDS, which closes
+         only because the study term is a bound the live carrier exceeds. */
+      assert.ok(T01_STUDY_BOUND + SAVE_BUDGET_KB.totalAdded * KB < S6_BUDGET,
+        'the two published bounds no longer sum to under S6 — restate COMPOSED.md S6');
+      assert.ok(total > T01_STUDY_BOUND + SAVE_BUDGET_KB.totalAdded * KB,
+        'the measured total is now under the sum of the two bounds — the constant-only closure would be sound again');
+    });
   });
 
   test('every line of G7\'s budget table is AT OR UNDER its stated figure', () => {
@@ -979,6 +1590,10 @@ describe('J10 — the measured budget (G7 "The measured budget")', () => {
       ['inProgress.game', kb(p.inProgress.game), SAVE_BUDGET_KB.inProgress],
       ['inProgress.bench', kb(p.inProgress.bench), SAVE_BUDGET_KB.bench],
       ['inProgress.queue delta', deltaOn(s, (x) => x.inProgress.queue) / KB, SAVE_BUDGET_KB.queueDelta],
+      /* ROUND 4 — the third DELTA row, and the third time the split stopped one level short of the
+         writers: `inProgress.meta.before` is written by both paths, and the seven fields
+         `captureJobBefore` adds to it were charged to the STUDY half and priced nowhere. */
+      ['inProgress.meta delta', deltaOn(s, (x) => x.inProgress.meta) / KB, SAVE_BUDGET_KB.metaDelta],
       ['trophies delta', deltaOn(s, (x) => x.trophies) / KB, SAVE_BUDGET_KB.trophies],
       ['runs[] delta', (JSON.stringify(pack(s).runs).length - JSON.stringify(pack(withoutGameKeys(s)).runs).length) / KB, SAVE_BUDGET_KB.runsDelta],
     ];
@@ -1050,6 +1665,53 @@ describe('J10 — the measured budget (G7 "The measured budget")', () => {
     const added = JSON.stringify(pack(s)).length - JSON.stringify(pack(withoutGameKeys(s))).length;
     console.log(`  an untouched game layer costs ${added} B`);
     assert.ok(added < 600, `${added} B for two empty keys`);
+  });
+
+  /* ----------------------------------------------------------------------------------------------
+     ROUND 3, FINDING 55 — THE SCOPE OF THE BOUND, MEASURED.
+     `game` is an ARCHIVED key, so a unit handoff files a whole saturated copy of the layer under
+     `save.archive[<old unit>]` and resets the live one. That copy sits in BOTH halves of the split
+     (`archive` is a kept key and nothing inside it is stripped), so it cancels: `addedBy()` reports
+     the same number with a 27 KB archived unit underneath it as without one. Nothing was wrong with
+     the arithmetic — the archive HAS to cancel, or the split would charge an archived unit's ~227 KB
+     of study cards to the layer — but the published figure was a bound on LIVE keys per unit while
+     the document read as a bound on the layer's whole footprint. Both facts are now asserted here,
+     and the per-unit scope is stated in G7 (notes/repair-save.md § Spec corrections).
+     ---------------------------------------------------------------------------------------------- */
+  test('the bound is per-unit and LIVE: an archived unit carries a second copy the split cannot see', () => {
+    const U1B = Object.freeze({ id: 'u1b', skills: ['VOC', 'NOTE', 'FAC2'] });
+    const live = applyCaps(carrier());
+    const handed = archiveUnit(structuredClone(live), U1B, T0 + 30 * DAY_MS);
+
+    // 1. the handoff really happened, on a SATURATED carrier — not on an empty `game`
+    assert.equal(handed.unitId, 'u1b');
+    assert.deepEqual(handed.game, SAVE_DEFAULTS.game, 'the live game key must be reset by the handoff');
+    assert.equal(Object.keys(handed.archive['u1a'].game.tags).length, CAPS.game.tags, 'the archived copy is not saturated — this test would measure nothing');
+
+    // 2. the second copy, priced by the same attribution rule the split uses
+    const archived = archivedGameBytes(handed);
+    const archivedToday = archivedGameBytes(archiveUnit(structuredClone(applyCaps(carrier({ runFields: false }))), U1B, T0 + 30 * DAY_MS));
+    const liveAdded = addedBy(live);
+    console.log(`  after ONE handoff: live ${addedBy(handed)} B · archived copy ${archived} B = ${(archived / KB).toFixed(2)} KB (${(archivedToday / KB).toFixed(2)} KB without the reserved runs[] fields) · a re-saturated unit on top of it = ${((archived + liveAdded) / KB).toFixed(2)} KB of game bytes on disk`);
+    assert.ok(archived > 20 * KB, `the archived copy measures ${archived} B — this assertion is meant to be measuring a saturated unit`);
+    /* The ceiling, derived from G7's own rows rather than invented: `player` and `trophies` are KEPT
+       keys, so they are the two lines of the table an archive entry can never hold; every other line
+       is archived with the unit. An archived copy that exceeds that is a line nobody priced. */
+    const archiveCeiling = (SAVE_BUDGET_KB.totalAdded - SAVE_BUDGET_KB.player - SAVE_BUDGET_KB.trophies) * KB;
+    assert.ok(archived <= archiveCeiling,
+      `an archived unit carries ${(archived / KB).toFixed(2)} KB of game bytes against a ceiling of ${(archiveCeiling / KB).toFixed(2)} KB (totalAdded − player − trophies, the two KEPT lines) — re-measure G7's archive note before shipping this`);
+
+    // 3. THE BLIND SPOT ITSELF: the split reports the same addition with the archive and without it
+    const withoutArchive = { ...structuredClone(handed), archive: {} };
+    assert.equal(addedBy(handed), addedBy(withoutArchive),
+      'the archived copy no longer cancels in the split — addedBy() has become a statement about the archive too, and every per-line figure in G7 would have to be re-measured');
+    assert.ok(addedBy(handed) < SAVE_BUDGET_KB.totalAdded * KB,
+      'a handed-off save has an empty live game key; its addition cannot exceed the bound');
+
+    // 4. and the number the document may claim: LIVE keys, per unit, one archived copy each
+    const units = Object.keys(handed.archive).length;
+    assert.ok(liveAdded + archived <= (1 + units) * SAVE_BUDGET_KB.totalAdded * KB,
+      `one unit live (${(liveAdded / KB).toFixed(2)} KB) plus ${units} archived (${(archived / KB).toFixed(2)} KB) exceeds ${1 + units} × the per-unit bound`);
   });
 });
 

@@ -94,6 +94,29 @@ test('FINAL: the CSS last-resort break stays underneath softWrap (defence in dep
   assert.match(polish, /\.weak-name \{ overflow-wrap: anywhere; \}/, '.weak-name lost its overflow-wrap guard');
 });
 
+test('FINAL: the BLITZ card\'s cap is typographic, so it can never clip its own answers', () => {
+  // Verify round 1 (integrator). `.blitz-card`'s `max-height` is a CLIP, and its `min-height`
+  // (`min(36vh, 320px)`) replaces the grid item's automatic content-based minimum, so nothing else
+  // floors the box at its content. With the cap in px, the content scales with the root font and the
+  // cap does not: at 320x568 with `html{font-size:20px}` the content needed 623 px against a 560 px
+  // box and `.blitz-answers` (`align-self: end`) hung 64 px below the card, over `.blitz-hint` —
+  // 8 BLOCKERs from `node qa/layout-audit.mjs --only job,run,home --engine both`, both engines, both
+  // themes. In `rem` the cap is measured in the same unit as the content it caps: 35rem is the same
+  // 560 px below 768 px that this rule has always been, and it grows with the type.
+  const screens = read('site/css/screens.css');
+  // anchored: `.run-empty, .blitz-card { … }` above it paints the surface and carries no cap
+  const rule = /^\.blitz-card \{([^}]*)\}/m.exec(screens);
+  assert.ok(rule, '.blitz-card sizing rule is gone from screens.css');
+  const cap = /max-(?:height|block-size):\s*([^;]+);/.exec(rule[1]);
+  assert.ok(cap, '.blitz-card lost its height cap entirely');
+  assert.match(
+    cap[1].trim(), /rem$/,
+    `.blitz-card's cap is "${cap[1].trim()}" — a cap in px clips the answer row onto .blitz-hint under text zoom; keep it in rem`,
+  );
+  // and the cap must still be the 560 px this screen was designed at, below 768 px (html is 16 px there)
+  assert.equal(Number.parseFloat(cap[1]) * 16, 560, 'the cap changed size; 35rem === the shipped 560 px at a 16 px root');
+});
+
 test('FINAL: the layout auditor is wired as a guard, not just a script in a folder', async (t) => {
   const pkg = JSON.parse(read('package.json'));
 

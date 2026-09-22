@@ -38,9 +38,13 @@ import {
 } from '../../data/blueprint.js';
 // J11 — THE BIG SCORE (COMPOSED-GAME G7, G12 #40d). The Mock has **no call, no stake, no crew and no
 // chain** — a test is a test. The one thing it contributes to the game layer is the prediction slider
-// it already had, scored by `job/call.js credit()` and entered in the rating window as ONE informative
-// call at `w = 1.0`. `job/call.js` is pure arithmetic over `data/job.js`; it adds no DOM and no stake.
-import { credit as callCredit, callEntry, windowPush, ratingDetail } from '../job/call.js';
+// it already had, scored by `job/call.js credit()` and entered in the rating window as ONE call whose
+// weight obeys the same `4q̂(1−q̂)` law every other call obeys (THE WEIGHT, below — it was a defined
+// `w = 1.0`). `job/call.js` is pure arithmetic over `data/job.js`; it adds no DOM and no stake.
+import {
+  credit as callCredit, callEntry, windowPush, ratingDetail,
+  weightFor, INFORMATIVE_MIN, QHAT_WINDOW,
+} from '../job/call.js';
 import { CAPS as JOB_CAPS } from '../../data/job.js';
 
 /* ------------------------------------------------------------------ lazy modules */
@@ -330,7 +334,8 @@ export function submitRun(save, n, { M, now = Date.now(), auto = false, today = 
   dailyRow(save, today).mockDone = true;
 
   applyMisses(save, run, { now, today });
-  applyMockCall(save, run, { now });        // J11: the prediction slider's one informative call, w = 1.0
+  applyMockCall(save, run, { now });        // J11: the prediction slider's one call, weighed by the
+                                            // history that existed BEFORE this paper (THE WEIGHT)
                                             // (the day the call belongs to is `run.submittedAt`'s own)
   return run;
 }
@@ -441,34 +446,89 @@ export function missRows(save, run) {
 
 /* ------------------------------------------------------------------ J11: the prediction as one call */
 
-/**
- * G7 / G12 #40d — the Mock's prediction has **no make**, therefore no `q̂`, therefore no
- * `w = 4q̂(1−q̂)`. The weight is DEFINED rather than undefined: `w = 1.0`, one informative call.
- */
-export const MOCK_CALL_W = 1.0;
-
-/* ---- the eligibility gate (J13 r1, the call-propriety blocker) -----------------------------------
+/* ---- THE WEIGHT (verify r1 — the call-propriety BLOCKER, twice reported) -------------------------
  *
- * A quadratic score is strictly proper only when the OUTCOME IS EXOGENOUS. The Mock's prediction is
- * scored against the Mock's own realised score, and a student who answers nothing scores exactly 0 —
- * so `p = o` was attainable by doing nothing at all. Predict 0, submit a blank paper, repeat: ten
- * blank Mocks took the rating from 5.00 to 9.00 through the single largest per-slot contribution in
- * the system (`w·c = 1.0 × 10.00`, above anything a real call can pay), with zero mathematics done
- * and zero study state touched. G3.7's five anti-farming brakes do not reach this channel and
- * G12 #40d only says why `w` is DEFINED as 1.0 — never what that weight may buy.
+ * WHAT WAS WRONG. G7 / G12 #40d reasoned that the Mock's prediction has **no make**, therefore no
+ * `q̂`, therefore no `w = 4q̂(1−q̂)` — and DEFINED the weight as `w = 1.0`. With `c = 10 − 40(p−o)²`
+ * that made one Mock slot worth `w·c = 10.00`: the single largest per-slot contribution in the
+ * system and **4.00×** the best value any honest job call can express on the REACHABLE q̂ grid
+ * (2.4980 at q̂ = 6/7 — `call.informativeQHats` is that grid; the reachable values are `h/of` for
+ * `of = min(10, sittings)`, NOT `k/10`, and this comment cited the decile best 2.2680 at q̂ = 0.9
+ * until verify r3. The continuous ceiling is 2.4998 — all three measured with
+ * `call.wTimesEcDiscrete`). The weight was not derived from any measurement at all.
  *
- * The fix is at the root of the propriety argument rather than in the arithmetic: the prediction
- * scores only when the outcome was NOT the student's to hand themselves. Three conditions, all about
- * effort and none about the score itself — a genuinely weak student who correctly predicts 20 still
- * gets the full credit, because that is exactly the metacognition the rating is for:
+ * The J13 r1 repair added three EFFORT conditions and said in its own words that they were "all
+ * about effort and none about the score itself". Effort is not exogeneity, and the channel stayed
+ * open: `itemAttempted` counts a WRONG answer as an attempt, so a paper of nonsense typed for 6:40
+ * satisfies every condition, scores 0, and a prediction of 0 is then exactly right — credit 10.00 at
+ * w = 1.00, a full slot. Driven through the shipped `applyMockCall` on a `fresh()` save before this
+ * repair: rating 5.00 → 9.00 and Called 2 → **Called 5 in ten sittings**, zero jobs played, zero
+ * cards studied; twelve sittings reach 9.80. The S3 ratchet then floors the rank there — the 95 rung
+ * and guardMult 0.75 — for the life of the save.
+ *
+ * WHY A BIGGER GATE IS NOT THE FIX. A Mock's outcome is the student's own work, so it cannot be made
+ * exogenous: everything from 0 up to their true ability is theirs to choose, and any floor drawn
+ * across that range ("score > 0", "above a blank paper") is beaten by aiming just above the floor.
+ * Worse, a gate ON the realised score truncates the outcome space, and a truncated quadratic score
+ * is not proper — the fix would break the property it is defending.
+ *
+ * WHAT SHIPS. The propriety argument is repaired on the axis that can carry it — the WEIGHT, which
+ * is read BEFORE the outcome and never from it:
+ *
+ *   1. ŝ, THE EXOGENOUS MEASUREMENT (`mockPriorMean`): the mean score fraction of the last
+ *      `MOCK_CALL_WINDOW` PRIOR sittings — `r !== run`, submitted no later than this one, retries
+ *      excluded. Exactly the trailing-10 shape `q̂` already uses, and it cannot see this paper, so
+ *      `c` stays strictly proper in `pred`: the report that maximises it is still the true one.
+ *   2. THE SAME LAW (`mockCallWeight`): `w = min(4ŝ(1−ŝ), MOCK_CALL_W)`, gated by `INFORMATIVE_MIN`
+ *      exactly as a job call is. No prior sitting → `weightFor(null) = 0` → a BLANK slot, on
+ *      call.js's own reading that "a make with no attempt history cannot carry a calibration
+ *      measurement". A trailing mean outside `INFORMATIVE_BAND` (≤ 6.7 % or ≥ 93.3 %) is not a thing
+ *      to be uncertain about, so its forecast pays 0 — and THAT is what closes the channel: hand
+ *      yourself a blank paper and ŝ = 0 for as long as you keep doing it.
+ *   3. PARITY (`MOCK_CALL_W = INFORMATIVE_MIN`): the smallest weight the window will count, so the
+ *      Mock's best slot is `0.25 × 10.00 = 2.50` against the honest continuous ceiling 2.4998 and
+ *      the reachable-grid best **2.4980 at q̂ = 6/7** (verify r3: this line cited 2.2680, the best
+ *      DECILE, but `qHatDetail` divides by the sittings the make has, so 6/7 is reachable and pays
+ *      2.4980). One Mock is now worth about one job call instead of 4.00 of them, and the cap is
+ *      within 0.1 % of the reachable best rather than 10 % above it. (2.50 is the FLOOR of what any
+ *      counting slot can pay — `INFORMATIVE_MIN × c_max` — so a cap at 2.4980 exactly is not
+ *      expressible without clipping `c`, and clipping `c` flattens its top and gives up STRICT
+ *      propriety. This file will not make that trade.)
+ *
+ * WHAT THE MOCK CHANNEL ALONE CAN REACH, as a bound rather than as a boast (pinned in
+ * `tests/job-week.test.mjs` "THE BOUND THE GATE IS NOT"): the rating is `5 + 2·Σ(w·c)/50`, so a
+ * PERFECT daily forecast buys at most `2 × 2.50 / 50` = 0.1 rating a slot — **at least 15 weighed
+ * slots for Called 3, 27 for Called 4, 39 for Called 5**, i.e. 16 / 28 / 40 daily sittings, because
+ * the first paper has no history to be weighed against. Every one of them has to score inside the
+ * informative band, one a day, one a seed. That is the bound this file can prove on its own; the
+ * ladder is slower in the shipped app, because `ratingDetail` prices the rank off `earned`, the
+ * honest expectation a window of slots carries (call.js, round-4 verify), and a Mock slot's `p = 1`
+ * expects less than it paid: measured end to end, Called 3 on sitting 22, Called 4 on 38 and Called
+ * 5 NOT REACHED inside the 50-slot window. A paper with no mathematics on it scores 0, sits outside
+ * the band and reaches NOTHING, at any n — measured to 60 consecutive sittings. COMPOSED-GAME.md G4's "attendance cannot produce it" is still stronger than what this file
+ * can prove — the bound above is what it can prove; see notes/repair-week.md "Requests".
+ *
+ * ---- the eligibility gate (J13 r1) ----------------------------------------------------------------
+ *
+ * The three effort conditions stay, as a COST on the tank rather than as the propriety argument:
  *
  *   1. half the paper is attempted          (a blank or near-blank paper is not a forecast)
  *   2. the sitting took 20 s an item        (`Submit it as it stands` seconds after Start is not one)
  *   3. one scoring Mock a day, one a seed   (the hard gate `daily[today].mockDone` never was)
  *
- * `run.retry` already covered the replay route. Nothing here changes `mockCall`: the credit, the
- * propriety and `w = 1.0` are untouched, and `tests/job-week.test.mjs` still proves all three.
+ * `run.retry` already covered the replay route. A genuinely weak student who sits the paper and
+ * correctly predicts 20 still gets the full credit — that is exactly the metacognition the rating is
+ * for — and it is weighed at 0.25 like everybody else's.
  */
+
+/** The Mock's weight CEILING: the smallest weight the rating window counts (`INFORMATIVE_MIN`, 0.25). */
+export const MOCK_CALL_W = INFORMATIVE_MIN;
+
+/** The trailing window ŝ is measured over — the same 10 sittings `q̂` uses. */
+export const MOCK_CALL_WINDOW = QHAT_WINDOW;
+
+/** The most one Mock slot can ever contribute to `Σ(w·c)`: `MOCK_CALL_W × c(p, p)` = 2.50. */
+export const MOCK_CALL_SLOT_MAX = MOCK_CALL_W * callCredit(1, true);
 /** Half the paper must carry a non-blank answer. */
 export const MOCK_CALL_MIN_ANSWERED = 0.5;
 /** …and the sitting must have taken at least this long per item (20 items → 6:40 of a 40-minute paper). */
@@ -485,6 +545,52 @@ function itemAttempted(item) {
 function calledRuns(save, run) {
   const runs = Array.isArray(save?.runs) ? save.runs : [];
   return runs.filter(r => r !== run && isMockRun(r) && isObj(r.call));
+}
+
+/**
+ * The PRIOR sittings this paper's weight is measured from, oldest → newest, at most `window` of them.
+ * A sitting counts when it is a done Mock/Baseline that is not this run, is not a retry (a replayed
+ * seed is not a fresh measurement, exactly as it is not XP and not a PB) and carries a finite score.
+ * A run with no clock on it is kept — the identity test already excludes the paper being scored, and
+ * dropping undated history would hand the tank a way to empty its own window.
+ */
+export function mockPriorRuns(save, run, { window = MOCK_CALL_WINDOW } = {}) {
+  const runs = Array.isArray(save?.runs) ? save.runs : [];
+  const at = Number(run?.submittedAt);
+  const n = Math.max(1, Math.trunc(Number(window) || MOCK_CALL_WINDOW));
+  const prior = runs.filter((r) => {
+    if (r === run || !isMockRun(r) || r.status !== 'done' || r.retry === true) return false;
+    /* a real number, not `Number(null) === 0`: a run with no score on it is not a measurement, and
+       counting it as a zero would be a guess in the one place this file must not guess */
+    if (typeof r.score !== 'number' || !Number.isFinite(r.score)) return false;
+    const t = Number(r.submittedAt);
+    return !Number.isFinite(at) || !Number.isFinite(t) || t <= at;
+  });
+  return prior.slice(-n);
+}
+
+/**
+ * `ŝ` — the mean score FRACTION over those sittings, or `null` when there are none. This is the
+ * Mock's `q̂`: the one estimate of "what will this paper score" that exists before the paper is sat,
+ * and therefore the only one a proper scoring rule may weigh the prediction by (THE WEIGHT, above).
+ */
+export function mockPriorMean(save, run, opts = {}) {
+  const prior = mockPriorRuns(save, run, opts);
+  if (!prior.length) return null;
+  let sum = 0;
+  for (const r of prior) sum += clamp(Number(r.score) / 100, 0, 1);
+  return sum / prior.length;
+}
+
+/**
+ * The weight `ŝ` buys: `min(4ŝ(1−ŝ), MOCK_CALL_W)`, and 0 below `INFORMATIVE_MIN` — the same gate a
+ * job call passes. `null` / no prior sitting weighs 0 (`weightFor` reads a missing q̂ as 0), so a
+ * first-ever paper and a paper whose history sits outside `INFORMATIVE_BAND` both write BLANK slots:
+ * a slot is still a call (round-2 `windowPush`), it just pays exactly nothing.
+ */
+export function mockCallWeight(sHat) {
+  const w = Math.min(weightFor(sHat), MOCK_CALL_W);
+  return w >= INFORMATIVE_MIN ? w : 0;
 }
 
 /**
@@ -525,20 +631,35 @@ export function mockCallEligible(save, run, { now = Date.now(), today = null } =
  * (The raw `pred` and `score` stay on the run — `calibration(run)` still prints them.)
  *
  * A `retry` (same seed, replayed) earns no call, exactly as it earns no XP and no PB.
- * @returns {null|{p, o, err, w, credit, entry:{p, ok, w, skill, at}}}
+ *
+ * `opts.sHat` is the exogenous weight source (`mockPriorMean`), and it is the ONLY thing that
+ * decides what this call is worth: `w = mockCallWeight(sHat)`, 0 when there is no prior measurement
+ * or the history is outside the informative band. `credit` is the raw calibration credit either
+ * way — `10 − 40(p−o)²`, the same strictly proper quadratic — and `contribution` is `w · credit`,
+ * which is what the rating window actually adds up.
+ * @returns {null|{p, o, err, sHat, w, weighed, credit, contribution, entry:{p, ok, w, skill, at}}}
  */
-export function mockCall(run, { now = null } = {}) {
+export function mockCall(run, { now = null, sHat = null } = {}) {
   if (!isObj(run) || run.retry === true) return null;
   const pred = Number(run.pred), score = Number(run.score);
   if (!Number.isFinite(pred) || !Number.isFinite(score)) return null;
   const p = clamp(pred / 100, 0, 1);
   const o = clamp(score / 100, 0, 1);
   const err = Math.abs(p - o);
+  const w = mockCallWeight(sHat);
+  /* the credit is read off the error-equivalent call, never off `entry.p` — a blank slot nulls `p`,
+     and `credit(null, true)` is −30, not the 10 a perfect forecast earned */
+  const credit = callCredit(1 - err, true);
   const entry = callEntry({
-    p: 1 - err, ok: true, w: MOCK_CALL_W, skill: null,
+    p: 1 - err, ok: true, w, skill: null,
     at: Number.isFinite(now) ? now : (Number.isFinite(run.submittedAt) ? run.submittedAt : null),
   });
-  return { p, o, err, w: MOCK_CALL_W, credit: callCredit(entry.p, entry.ok), entry };
+  return {
+    p, o, err, sHat: Number.isFinite(sHat) ? sHat : null,
+    /* `w > 0 ?` rather than `w * credit`: an unweighed call pays 0, and `0 × a negative credit` is
+       `-0`, which is a different number to every `===` in the tree */
+    w, weighed: w > 0, credit, contribution: w > 0 ? w * credit : 0, entry,
+  };
 }
 
 /**
@@ -549,20 +670,44 @@ export function mockCall(run, { now = null } = {}) {
  * J13 r1: gated by `mockCallEligible` — a blank paper, a seconds-long sitting, a second Mock in one
  * day and a seed that has already scored earn NO entry at all. An unfilled slot contributes 0 and
  * pulls the rating toward exactly 5.00 (G3.1), which is the right answer for a forecast nobody made.
+ *
+ * Verify r1: what the eligible call is WORTH is `mockCallWeight(mockPriorMean(save, run))` — a
+ * measurement taken before this paper existed (THE WEIGHT, above). A tank's history weighs 0, so its
+ * prediction takes its slot and pays exactly nothing, however precisely it called the score it chose.
  */
 export function applyMockCall(save, run, { now = null, today = null } = {}) {
   if (!isObj(save?.player?.rating) || isObj(run?.call)) return null;
   if (save?.settings?.game === false) return null;                   // the layer is off in one tap
   const elig = mockCallEligible(save, run, { now: Number.isFinite(now) ? now : Date.now(), today });
   if (!elig.ok) return null;
-  const mc = mockCall(run, { now });
+  const mc = mockCall(run, { now, sHat: mockPriorMean(save, run) });
   if (!mc) return null;
   const rating = save.player.rating;
   rating.calls = windowPush(Array.isArray(rating.calls) ? rating.calls : [], mc.entry, { N: JOB_CAPS.calls });
-  const detail = ratingDetail(rating.calls, JOB_CAPS.calls);
+  /* THE RATCHET (S3, REPAIR-DECISION §S3.1(b)). The third writer of `player.rank`. `ratingDetail`
+     floors the computed rank on the rank already held, and this call site is the reason the two
+     display reads that already pass `{rank}` (`screens/settings.js`, `screens/stats.js`) were dead
+     on arrival: a Mock overwrote `p.rank` with the bare recomputation first, so the floor they
+     passed was a rank this line had already demoted. Rank gates the 95 rung and guardMult — tools —
+     and this layer never removes a tool you own, so a Mock may raise the rank and may not lower it.
+     `p.rank` is already a persisted, range-coerced 1..5 field (`store.js`), so no save migration. */
+  const detail = ratingDetail(rating.calls, JOB_CAPS.calls, { rank: save.player.rank });
   rating.value = detail.value;
   rating.n = detail.n;
   save.player.rank = detail.rank;
+  /* S3.1(c)'s audit record. A Mock is one of the three writers of `p.rating.value` and the one that
+     can RAISE the rank, so it is exactly the case where a floored rank has to keep the rating that
+     bought it (`store.js` coerces the field on load; `records` is always an object after migrate).
+     The number that BOUGHT it is `detail.earned = ceiling` — what `rankFor` consumed
+     under THE CAP — not `detail.value`, which is what the dice paid; see the note at
+     `js/job/state.js applyTarget`, the writer this one is required to agree with. */
+  if (isObj(save.player.records)) {
+    const best = +save.player.records.bestRating;
+    save.player.records.bestRating = Math.max(Number.isFinite(best) ? best : 0, detail.earned);
+  }
+  /* the same five keys as before (G7's save budget). `credit` is the CALIBRATION credit and `w` is
+     what the window weighed it by, so what this sitting actually paid the rating is `w × credit` —
+     0 for every unweighed call, and `p` is null on exactly those. */
   run.call = { p: mc.entry.p, w: mc.w, credit: Math.round(mc.credit * 100) / 100, pred: run.pred, score: run.score };
   return { ...mc, rating: detail.value, rank: detail.rank, eligible: elig };
 }

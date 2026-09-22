@@ -991,6 +991,12 @@ stale reading is nothing. It now computes `500 000 (T01's study bound) + SAVE_BU
   slack: study 1537 chars of 500000 · game 262 B of 37990
 ```
 
+> **HISTORICAL (annotated at round 5).** The first line above was real output *when this note was
+> written*: the S6 test then PRINTED its constant-only closure. The round-4 repair replaced that
+> test with one that measures a carrier saturating both halves, and deleted the printer with it, so
+> no test on the tree emits this line any more — do not re-quote it as fresh output. The measured
+> line the suite prints now is in notes/repair-save.md § "Round 5 (verify)".
+
 `COMPOSED.md:330`'s `Size < 520 KB` was arithmetically `500 000 + 31.6 KB`, so **any** correct
 increase in the addition breaks it. Restated to **< 528 KB** with the measured split, marked as an
 out-of-lane one-liner.

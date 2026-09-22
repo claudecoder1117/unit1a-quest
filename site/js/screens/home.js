@@ -17,15 +17,13 @@ import { housekeep, dueList } from '../schedule.js';
 // J11 — TONIGHT'S BOARD, painted in two passes (G7). `data/job.js` has ZERO imports and `job/econ.js`
 // imports only xp / schedule / data-job, so neither puts a byte of data/cards.js (233 KB) or
 // data/templates.js (311 KB) on Home's static graph — which is the whole point of home-r2's rule.
-// `PUBLISHED.shapeTable` rather than `econ.shapeTable()`: J7's `job-index.test.mjs` forbids a static
-// `../job/*` import in Home, and PUBLISHED is not a second source of truth — `job-econ.test.mjs`
-// COMPUTES every one of its cells from the constants and asserts the table, so a constant that moves
-// moves this line too. (tests/job-week.test.mjs re-pins the two here.)
-import { WEEK, SHAPES, BOARD, WINGS, WING_IDS, WING_OF_SKILL, COPY, PUBLISHED } from '../../data/job.js';
-const shapeTable = (id) => {
-  const p = PUBLISHED.shapeTable[SHAPES[id] ? id : 'JOB'];
-  return { wallS: { default: p.wallS[0], full: p.wallS[1] }, split: { default: p.split[0], full: p.split[1] }, targets: p.targets };
-};
+// NO SHAPE TABLE HERE (r3). Home used to carry a `PUBLISHED.shapeTable` shim so pass 1 could print
+// `~N min` and the projected split from the published row. It cannot: the row is the brochure, and
+// the board the student takes is 2–6 minutes and 9–13 points away from it (see the board header
+// below). `SHAPES[id].targets` is still read — for the row-count reserve, which is not a promise
+// about tonight's clock. The 22:00 refusal is the only place the table still decides anything in
+// pass 1, it lives in `plan.refuseFor`, and `render()` re-decides it against `board.endsAt`.
+import { WEEK, SHAPES, BOARD, WINGS, WING_IDS, WING_OF_SKILL, COPY } from '../../data/job.js';
 // home r2 (visual QA): page.js and plan.js are LAZY. page.js drags data/cards.js (233 KB) + data/templates.js →
 // every js/gen/* (311 KB) onto Home's static graph, and a cold 3G-class open measured 7.7 s to the CTA against
 // S9 #1's "< 1 s". Home now paints the hero, today's stats, the weak spots and the fallback plan pills from
@@ -173,12 +171,28 @@ function planStrip(state, today, D) {
    J11 — TONIGHT'S BOARD, in two passes (COMPOSED-GAME G5 "the week", G7 "Home paints the board in
    two passes", G10 #21 "the test wins").
 
-   PASS 1 is static: `store` + `schedule.dueList` + `save.game.log` + `data/job.js`'s constants. It
-   paints the week state, the row frame, the wing labels, `~N min`, the end time and the projected
-   split. Everything it CANNOT know without `data/cards.js` — a contract's label, its wing, its lock
-   count, its posted value, the per-wing supply numeral, the idle-crew count — is a `--muted`
-   placeholder occupying its final width, so pass 2 changes ink and never geometry. There is no spinner
-   and no `aria-busy` on the panel: pass 1 is a real, readable board, not a loading state.
+   PASS 1 is static: `store` + `schedule.dueList` + `data/job.js`'s constants. It paints the week
+   state, the row frame and the counts the SAVE alone settles (the dues, the days cold, whether a
+   cold-crew box is possible). Everything it CANNOT know without `data/cards.js` — a contract's
+   label, its wing, its lock count, its posted value, the per-wing supply numeral, the idle-crew
+   count, AND the whole of the meta line (the shape, `~N min`, `ends HH:MM`, the projected split) —
+   is a `--muted` placeholder occupying its final width, so pass 2 changes ink and never geometry.
+   There is no spinner and no `aria-busy` on the panel: pass 1 is a real, readable board, not a
+   loading state.
+
+   NO PROJECTION IN PASS 1 (r3, finding "Home's pass-1 board prints the brochure's split"). Pass 1
+   used to print `PUBLISHED.shapeTable`'s row — the brochure — under the board's own
+   `~N % game · projected` / `your last N jobs` sentence, and a raw `Σ tGame / Σ (tGame + tAnswer)`
+   over the last five log entries when the ledger had them: the round-1 estimator `job/board.js`
+   deleted for being shape-blind. Measured over 16 (seed × ledger) boards on this tree, pass 1 and
+   the pass 2 that replaces it disagreed by up to **13 points of split** and **6 minutes** (a 1.46×
+   wall clock), and on 2 of the 16 they did not even name the same SHAPE (pass 1 guessed JOB where
+   `board.shapeFor` posts a VAULT for a ready boss). The brochure row is worse still per shape: RUN
+   publishes ~7 min · 51 % against real boards of 10–12 min · 29–33 %. G1 statement 1 is "the board
+   prints your own number, not the brochure's", so pass 1 now prints NO number it cannot derive from
+   the student's own draft, and `fillBoard` is the only producer of `.b-shape`, `.b-min`, `.b-ends`
+   and `.b-split`. When `weekGate` itself names the shape (review / school) that name IS derivable
+   and pass 1 prints it; otherwise the shape is pass 2's too.
 
    PASS 2 (`fillBoard`) runs after `job/board.js` resolves and writes the numerals in place.
 
@@ -268,36 +282,34 @@ export function weekGate(save, { now = Date.now(), today = todayISO(new Date(now
 /**
  * boardModel(save, opts) → everything pass 1 can print, and the shape of everything it cannot.
  * Pure, DOM-free, exported so `tests/job-week.test.mjs` can assert it without a browser.
+ *
+ * `minutes`, `wallS`, `endsAt`, `ends`, `split`, `projection` and `projectionSource` are ALWAYS
+ * `null` here, and that is the contract, not an omission: every one of them is a property of
+ * TONIGHT'S DRAFT (its tiers, the windows that really land, the student's own measured rate), and
+ * pass 1 has neither the draft nor `job/board.js`. `sizingShape` is the row-count estimate's own
+ * guess and is deliberately NOT printed; `shapeName` is non-null only when `weekGate` itself named
+ * the shape. See the header for the 13-point / 6-minute measurement that removed them.
  */
 export function boardModel(save, { now = Date.now(), today = todayISO(new Date(now)) } = {}) {
   const gate = weekGate(save, { now, today });
   const dues = dueList(save, { now, today });
   const cold = dues.reduce((m, d) => Math.max(m, Math.floor(d.overdue || 0)), 0);
-  const shape = gate.shape ?? (gate.kind === 'morning' ? 'RUN' : 'JOB');
-  const t = shapeTable(SHAPES[shape] ? shape : 'JOB');
-  /* the projection reads the student's OWN last-5 jobs when the ledger has them (G1 statement 1).
-     A ZERO-TARGET WALK IS NOT ONE. `endJob` writes a log entry for every job, walks included, and a
-     walk's entry has `tAnswer = 0` — so three walks printed `~100 % game · your last 3 jobs`, a
-     sentence with the student's name on a measurement nobody took. `job/board.js jobsOnRecord` is
-     the same predicate (`targets > 0`) and the same sentence ("your last N jobs"); pass 1 and pass 2
-     printed different populations into the same node until this filter agreed with it.
-     Pass 1 may not import `job/*` (see the header), so the form stays this module's own — only the
-     population is now the board's. */
-  const log = (save?.game?.log ?? []).filter((e) =>
-    Number.isFinite(e?.tGame) && Number.isFinite(e?.tAnswer) && Number(e?.targets ?? 0) > 0).slice(-5);
-  const g = log.reduce((s, e) => s + e.tGame, 0), a = log.reduce((s, e) => s + e.tAnswer, 0);
-  const measured = log.length > 0 && g + a > 0;
-  const split = Math.round(measured ? (100 * g) / (g + a) : t.split.default);
-  const wallS = t.wallS.default;
-  const endsAt = now + Math.round(wallS * 1000);
+  /* SIZING ONLY. The board the student takes is `board.shapeFor`'s, which reads a ready boss (VAULT)
+     and the composed queue's length (JOB12) — neither of which pass 1 can see, and it guessed wrong
+     on 2 of 16 measured boards. It survives here because the row RESERVE has to be decided in pass 1
+     (`BOARD.postedMax` rows of `BOARD_ROW_PX`), and a row count inside a fixed reserve moves no
+     geometry. It is never printed: `.b-shape` takes `shapeName`, which is null unless the week
+     itself settled the shape. */
+  const sizingShape = gate.shape ?? (gate.kind === 'morning' ? 'RUN' : 'JOB');
   const rows = [];
-  const n = Math.max(1, postedCountEstimate(dues.length + SHAPES[shape].targets));
+  const n = Math.max(1, postedCountEstimate(dues.length + SHAPES[sizingShape].targets));
   for (let i = 0; i < n; i++) rows.push({ id: BOARD_IDS[i], label: null, wing: null, locks: null, cold: null, posted: null, minutes: null });
   return {
-    gate, shape, rows, reserve: BOARD.postedMax,
+    gate, shape: sizingShape, sizingShape, rows, reserve: BOARD.postedMax,
+    shapeName: gate.shape && SHAPES[gate.shape] ? SHAPES[gate.shape].name : null,
     dues: dues.length, cold,
-    minutes: Math.ceil(wallS / 60), wallS, endsAt, ends: timeHM(new Date(endsAt)),
-    split, projection: COPY.projection({ split, jobs: log.length }), projectionSource: measured ? 'ledger' : 'projected',
+    minutes: null, wallS: null, endsAt: null, ends: null,
+    split: null, projection: null, projectionSource: null,
     supply: WINGS.map((w) => ({ wing: w.id, locks: null })),
     coldCrew: { idle: null, dues: dues.length, minutes: null, manned: mannedCount(save) },
     line: lineFor(gate, { now, minutes: NIGHT_MIN }),
@@ -329,19 +341,50 @@ export function lineFor(gate, { now = Date.now(), minutes = NIGHT_MIN } = {}) {
     case 'closed': return COPY.closed({ minutes, ends });
     case 'night': return COPY.night({ minutes, ends });
     case 'morning': return COPY.morning();
-    case 'review': return 'REVIEW BOARD · every contract is dues · no vault · no guard · flat ladder';
-    case 'school': return 'School window · RUN only · Mon–Fri 07:00–14:15';
+    /* r3: these two were typed here as literals while `COPY.reviewBoard` and `COPY.schoolWindow`
+       sat in `data/job.js` with ZERO call sites — G6's "one string table" with two sources of
+       truth in it, and the lint reads only the table. The words live in the table. */
+    case 'review': return COPY.reviewBoard();
+    case 'school': return COPY.schoolWindow();
     // G2's terminus. The one line the game has that says the game is over, and it is the board's own.
     case 'quiet': return COPY.quiet({ readiness: gate.readiness ?? 0, due: gate.due ?? 0 });
     default: return '';
   }
 }
 
-/** A numeral that occupies its final width in pass 1 and takes ink in pass 2. */
-function numeral(cls, chars, text = null) {
-  const n = h(`span.${cls}.mono`, { style: { display: 'inline-block', minWidth: `${chars}ch`, textAlign: 'right' } });
-  if (text == null) { n.dataset.pending = '1'; n.classList.add('muted'); n.textContent = '·'.repeat(Math.max(1, chars - 1)); }
-  else n.textContent = String(text);
+/**
+ * The WORDS of a `data/job.js COPY` line, split at the numerals a two-pass board has to reserve.
+ *
+ * r3: `COPY.coldCrew`, `COPY.supply` and `COPY.boardTitle` had **zero call sites** under `site/js`
+ * while this screen re-typed their text as DOM nodes. G6 promises one string table and the copy lint
+ * reads only the table, so a second copy of a line living in a screen is invisible to it. The
+ * numerals cannot be plain text (pass 1 reserves their width, pass 2 inks them), so the line is
+ * split at them and the fragments are appended around the numerals in order — the words stay in the
+ * table and nothing here re-types them. `fields.length + 1` fragments for `fields.length` numerals;
+ * `tests/job-week.test.mjs` pins that shape, so a template change fails loudly instead of quietly
+ * dropping a phrase.
+ * @param {(o: object) => string} fn a COPY template
+ * @param {string[]} fields its numeric fields, in the order they appear in the sentence
+ */
+export function copyParts(fn, fields) {
+  const marks = fields.map((_, i) => String.fromCharCode(1 + i));
+  const args = Object.fromEntries(fields.map((k, i) => [k, marks[i]]));
+  return String(fn(args)).split(new RegExp(`[${marks.join('')}]`));
+}
+
+/** A numeral that occupies its final width in pass 1 and takes ink in pass 2.
+ *  `align` is `left` for the meta line's phrases, whose reserve is the LONGEST sentence pass 2 can
+ *  write (`~100 % game · your last 5 jobs`): right-aligned, the slack would print as a gap in the
+ *  middle of the line instead of at the end of it. */
+function numeral(cls, chars, text = null, align = 'right') {
+  const n = h(`span.${cls}.mono`, { style: { display: 'inline-block', minWidth: `${chars}ch`, textAlign: align } });
+  if (text == null) {
+    n.dataset.pending = '1'; n.classList.add('muted'); n.textContent = '·'.repeat(Math.max(1, chars - 1));
+    /* `.muted` is a single class and `css/screens.css` inks `.board-meta .b-shape` through a
+       two-class selector, so the class alone loses the cascade on the meta line. The placeholder
+       says what it is inline, which no stylesheet can out-specify; `setNumeral` clears it. */
+    n.style.color = 'var(--muted)';
+  } else n.textContent = String(text);
   return n;
 }
 /** Pass 2 writes a numeral in place: same node, same width, ink instead of dots. */
@@ -350,6 +393,7 @@ function setNumeral(node, text) {
   node.textContent = String(text);
   delete node.dataset.pending;
   node.classList.remove('muted');
+  node.style.color = '';
 }
 
 /**
@@ -361,7 +405,7 @@ function boardPanel(model) {
   const sec = h('section.card.home-board', {
     'aria-labelledby': 'board-h',
     dataset: { kind: model.gate.kind, pass: '1', post: String(model.gate.post) },
-  }, h('h2#board-h.fs-3', model.gate.kind === 'review' ? 'REVIEW BOARD' : "Tonight's Board"));
+  }, h('h2#board-h.fs-3', COPY.boardTitle({ review: model.gate.kind === 'review' })));   // r3: COPY had no caller
 
   if (!model.gate.post) {
     sec.append(h('p.board-line.muted.fs-1', model.line || ''));
@@ -385,15 +429,23 @@ function boardPanel(model) {
   }
   sec.append(list);
 
+  /* THE META LINE IS PASS 2'S (r3). Every cell of it is a property of tonight's DRAFT, so pass 1
+     reserves its width and prints nothing: `~N min` and `ends HH:MM` are `board.endsAt`'s, and the
+     split is `board.projection`'s own sentence. `.b-shape` takes the name only when `weekGate`
+     settled the shape itself (review / school); on an ordinary evening `board.shapeFor` may post a
+     VAULT off a ready boss, which pass 1 cannot see. Widths are the longest final string each node
+     can hold: `JOB-12` (6), `~100 min` (8), `ends 22:04` (10), `~100 % game · your last 5 jobs` (29). */
   sec.append(h('p.board-meta.mono.fs-1',
-    h('span.b-shape', SHAPES[model.shape].name), ' · ',
-    h('span.b-min', `~${model.minutes} min`), ' · ',
-    h('span.b-ends', `ends ${model.ends}`), ' · ',
-    h('span.b-split', model.projection)));
+    numeral('b-shape', 6, model.shapeName, 'left'), ' · ',
+    numeral('b-min', 8, null, 'left'), ' · ',
+    numeral('b-ends', 10, null, 'left'), ' · ',
+    numeral('b-split', 29, null, 'left')));
 
   const supply = h('ul.board-supply.fs-1.muted', { 'aria-label': 'Supply today', style: { listStyle: 'none', margin: '0', padding: '0' } });
+  const sw = copyParts(COPY.supply, ['wing', 'locks']);
   for (const s of model.supply) {
-    supply.append(h('li.board-sup', { dataset: { wing: s.wing } }, h('span.b-sup-w', s.wing), ' ', numeral('b-sup-n', 2), h('span.b-of', ' locks available today')));
+    supply.append(h('li.board-sup', { dataset: { wing: s.wing } },
+      sw[0] || null, h('span.b-sup-w', s.wing), sw[1] ?? ' ', numeral('b-sup-n', 2), h('span.b-of', sw[2] ?? '')));
   }
   sec.append(supply);
 
@@ -402,10 +454,11 @@ function boardPanel(model) {
   // already says one is possible — a manned crew and something due. Pass 2 then writes ink into it
   // and never takes the box away again (the 48 px pass-1→pass-2 collapse, notes/J13.md Request 1).
   if (model.coldCrew.manned > 0 && model.coldCrew.dues > 0) {
+    const cc = copyParts(COPY.coldCrew, ['idle', 'dues', 'minutes']);
     sec.append(h('p.board-crew.fs-1', { dataset: { pending: '1' } },
-      numeral('b-crew-n', 2), h('span', ' crew idle on their own reviews · '),
-      h('span.b-crew-dues.mono', String(model.coldCrew.dues)), h('span', ' dues · clear them first — '),
-      numeral('b-crew-min', 2), h('span', ' minutes')));
+      cc[0] || null, numeral('b-crew-n', 2), h('span', cc[1] ?? ''),
+      h('span.b-crew-dues.mono', String(model.coldCrew.dues)), h('span', cc[2] ?? ''),
+      numeral('b-crew-min', 2), h('span', cc[3] ?? '')));
   }
   return sec;
 }
@@ -441,14 +494,14 @@ export function fillBoard(panel, save, { now = Date.now(), today = todayISO(new 
   });
   for (let i = board.contracts.length; i < rows.length; i++) rows[i].hidden = true;
 
+  /* the meta line, in the nodes pass 1 reserved: `setNumeral`, not `textContent`, because after r3
+     all four of them ARRIVE pending and the dots have to stop being dots. */
   const meta = panel.querySelector('.board-meta');
   if (meta) {
-    const min = meta.querySelector('.b-min'), ends = meta.querySelector('.b-ends'), split = meta.querySelector('.b-split');
-    if (min) min.textContent = `~${Math.ceil((board.endsAt - board.now) / 60000)} min`;
-    if (ends) ends.textContent = `ends ${board.ends}`;
-    if (split) split.textContent = board.projection;
-    const shape = meta.querySelector('.b-shape');
-    if (shape) shape.textContent = SHAPES[board.shape]?.name ?? board.shape;
+    setNumeral(meta.querySelector('.b-min'), `~${Math.ceil((board.endsAt - board.now) / 60000)} min`);
+    setNumeral(meta.querySelector('.b-ends'), `ends ${board.ends}`);
+    setNumeral(meta.querySelector('.b-split'), board.projection);
+    setNumeral(meta.querySelector('.b-shape'), SHAPES[board.shape]?.name ?? board.shape);
   }
 
   for (const li of panel.querySelectorAll('.board-sup')) {

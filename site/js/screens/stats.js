@@ -234,27 +234,103 @@ function kvRows(rows) {
 }
 
 /**
+ * THE RATCHET'S AUDIT RECORD, AND WHAT "NO RECORD" LOOKS LIKE ON DISK (G9 #4, round-3 verify 1).
+ *
+ * `player.records.bestRating` is DECLARED in both copies of the save schema with a default of 0
+ * (`data/job.js` SAVE_DEFAULTS, `store.js freshPlayer`) and `store.normalizePlayer` coerces every
+ * value — absent, string, NaN, ±Infinity, object — to that same 0. So `Number.isFinite(bestRating)`
+ * is TRUE on every fresh save and on every migrated save, and the guard that used to stand here
+ * printed `best rating 0.00` beside a live 5.00 rating on a save that has never recorded anything.
+ * Under a declared field, 0 is not a reading: it is the absence of one.
+ *
+ * `> 0` is the whole rule, and it is safe in both directions: both writers (`job/state.js`
+ * `applyTarget` and `endJob`, and `screens/mock.js applyMockCall`) raise the high-water off
+ * `ratingDetail().value`, and an unmeasured window alone already reads `RATING.base` = 5.00; the one
+ * value it hides is a genuine high-water of exactly 0.00 — a single catastrophic staked call — which
+ * prints nothing until the next call lifts it. That under-reports by one line; it never invents one.
+ *
+ * Kept identical to `screens/settings.js hasBestRating` — the two audit surfaces must agree, and
+ * `tests/job-meta-constants.test.mjs` asserts they do, value by value.
+ */
+export const hasBestRating = (v) => Number.isFinite(v) && v > 0;
+
+/**
+ * The ledger headline's four parts — the audit line G9 #4 owes the student, built here rather than
+ * inline so `tests/job-meta-constants.test.mjs` can run THE SHIPPED BUILDER over a real save instead
+ * of grepping this printer's source for a guard it never evaluates (which is exactly how
+ * `best rating 0.00` shipped green).
+ *
+ * THE RANK IS READ, NOT RE-DERIVED (round 3). `rankFor(value)` is not the rank the game grants: the
+ * 95 call and the guard multiplier are gated on `player.rank`, and the two part company the moment
+ * the window holds no measurement. A student who mastered their makes has a window of fifty
+ * non-informative calls — `value === 5.00` with `measured === false` — and re-deriving the name from
+ * that value prints `Called 2` at them for getting better. `opts.rank` is the hook
+ * `call.ratingDetail` documents for exactly this; `held` reports that it fired.
+ *
+ * @param {object} save
+ * @returns {{rating: object, value: string, rank: string, best: string|null, calls: string}}
+ */
+export function ledgerRatingParts(save) {
+  const player = save?.player ?? {};
+  const rec = player.records ?? {};
+  const rating = ratingDetail(player.rating?.calls ?? [], RATING.N, { rank: player.rank });
+  const bestRating = rec.bestRating;
+  return {
+    rating,
+    value: n2(rating.value),
+    rank: rankOf(rating.rank).name,
+    /* THE CAPPING QUANTITY, PRINTED (verify round 2). The rank is the band of what the student's
+       own REPORTS were worth (`ratingDetail().ceiling`), floored by the rank held — not the band
+       of the rating beside it. `offBand` is true exactly when those two bands differ, in either
+       direction, and this panel prints the legend `RANK_THRESHOLDS` builds, so without this part
+       the student reads two numbers that contradict each other and nothing to reconcile them.
+       `tests/job-call.test.mjs` §7 drives this builder and asserts the ceiling is in the string. */
+    worth: rating.offBand ? ` · your calls were worth ${n2(rating.ceiling)}` : null,
+    best: hasBestRating(bestRating) ? ` · best rating ${n2(bestRating)}` : null,
+    /* THE TAIL IS THE COPY TABLE'S OWN WORDS, MINUS ITS RANK PREFIX. `COPY.ratingLine` is the
+       DEBRIEF's whole line and LEADS WITH THE HELD RANK (SPEC-CORRECTIONS I-4, REPAIR-DECISION
+       S3.1(d)); this panel has already printed the rank in its own span — G9 #4 publishes the order
+       `Called 5 · best rating 9.90` — so it asks the table for the same sentence with an empty rank
+       and drops the separator the empty prefix leaves behind. Round-3 verify 1 found this call
+       omitting `rank` ENTIRELY: every student on an unmeasured window read
+       `undefined · rating unchanged · no measurement · 0/50 informative calls`, and no test in the
+       suite could see it, because no test ever ran this builder. */
+    calls: ` · ${COPY.ratingLine({ rank: '', rating: n2(rating.value), n: rating.n, N: rating.N }).replace(/^\s*·\s*/, '')}`,
+  };
+}
+
+/** The same headline as the one string the student reads — what the tests assert on. */
+export function ledgerRatingLine(save) {
+  const p = ledgerRatingParts(save);
+  return `${p.value} ${p.rank}${p.worth ?? ''}${p.best ?? ''}${p.calls}`;
+}
+
+/**
  * Panel 1 — the LEDGER (G5 #7, G7). The records, both Elo numbers, the live rating with its rank and
  * its `n/50` informative-call line, and the Backchecks held. Every number is `save.player`'s own.
  */
 function ledgerPanel(save) {
   const player = save.player ?? {};
   const rec = player.records ?? {};
-  /* THE RANK IS READ, NOT RE-DERIVED (round 3). `rankFor(value)` is not the rank the game grants:
-     the 95 call and the guard multiplier are gated on `player.rank`, and the two part company the
-     moment the window holds no measurement. A student who mastered their makes has a window of
-     fifty non-informative calls — `value === 5.00` with `measured === false` — and re-deriving the
-     name from that value prints `Called 2` at them for getting better. `opts.rank` is the hook
-     `call.ratingDetail` documents for exactly this; `held` reports that it fired. */
-  const rating = ratingDetail(player.rating?.calls ?? [], RATING.N, { rank: player.rank });
+  /* The headline — rank read not re-derived, audit line printed only when the record is real. Both
+     rules live on `ledgerRatingParts` above, with the reason 0 is not a record. */
+  const parts = ledgerRatingParts(save);
+  const rating = parts.rating;
   const elo = player.elo ?? {};
   const bc = backchecksOf(save);
   const jobs = Array.isArray(save.game?.log) ? save.game.log.length : 0;
   return h('div.st-ledger',
     h('p.st-ledger-rating',
-      h('b.mono.fs-3', n2(rating.value)),
-      h('span.fs-1', ` ${rankOf(rating.rank).name}`),
-      h('span.muted.fs-1', ` · ${COPY.ratingLine({ rating: n2(rating.value), n: rating.n, N: rating.N })}`)),
+      h('b.mono.fs-3', parts.value),
+      h('span.fs-1', ` ${parts.rank}`),
+      parts.worth ? h('span.muted.fs-1', parts.worth) : null,
+      parts.best ? h('span.muted.fs-1', parts.best) : null,
+      h('span.muted.fs-1', parts.calls)),
+    rating.offBand
+      ? h('p.fs-1.muted', 'The rank is not the band your rating sits in. The rating is what your calls SCORED; '
+        + 'the rank is what they were WORTH — the same fifty slots priced at w·E[c] on the material you made them '
+        + 'on, which no run of luck can move, floored by the rank you already hold.')
+      : null,
     h('p.fs-1.muted', rating.n === 0
       ? 'The window takes informative calls only — a call on material you already know cold (or cannot do at all) never enters it, and an empty slot scores neutral, so the rating sits at 5.00 until you stake on something you half-know.'
         + (rating.held ? ' The rank beside it is the one your ledger holds: a window with nothing in it measures nothing, and an unmeasured window does not demote you.' : '')
@@ -317,15 +393,49 @@ function crewGrid(save) {
           h('td.mono', String(r.forgives)),
           h('td.fs-1.muted', r.lapsed ? 'lapsed — pays STEADY' : r.chainHold ? `holds the chain at ${r.minChain}+` : 'ladder as authored'),
         )))))
-      : h('p.muted.fs-1', 'No crew manned yet. Re-allocation is free and unlimited between jobs and inside every '
-        + 'brief window, so a build mistake costs one job and never an evening.'),
+      /* WHERE CREW IS ACTUALLY ALLOCATED (round 3, crew-alignment). This line used to say
+         "re-allocation is free and unlimited between jobs and inside every brief window". There is
+         no between-jobs control anywhere in `site/js`: `crew.allocate` has exactly one caller
+         chain — `screens/job.js setCrewRank → takeBrief → state.brief` — and this grid is a
+         read-only table. The brief grid also offers only the makes still on the board (measured
+         over 200 drafted JOB-10s: 4.7 of 19 makes at brief 1, 2.0 at brief 2), so the promise was
+         false twice over.
+
+         VERIFY-2 (crew, findings 2 + 3): the replacement was still false, in the two halves it kept.
+         "Free and unlimited inside every brief window" — `state.brief` applies at most one
+         `actions.crew` and then calls `setPhase(… 'envelope')`, and `setCrewRank` takes the window
+         on the first press, so a crew change costs the window's single action. "A build mistake
+         costs one job" — `save.game.crew` persists across jobs, and the median make is served on
+         15.7 % of drafted boards, so an unwanted point waits ~6 jobs for a night that can hand it
+         back. What this line says now is what the machine does: one change per window, on the makes
+         the window offers (which since verify-2 is the board's makes PLUS the ones already manned,
+         `crew.reallocatable`). */
+      : h('p.muted.fs-1', 'No crew manned yet. Crew is allocated in a brief window — one rank change '
+        + 'per window, over the makes on tonight\'s board plus the ones you are already manning. '
+        + 'This grid is the read-out, not the control.'),
     h('p.fs-1.muted', `${MAKES.length - manned.length} of ${MAKES.length} makes bare. `
       + `At the ceiling the cap still bites: ${MANNED_MAX} manned costs ${MANNED_MAX * COSTS.STEADY} points and the `
       + `remaining ${CAPACITY_MAX - MANNED_MAX * COSTS.STEADY} buy ${CREW.maxBuildAtCeiling.held} HELD upgrades `
       + `— ${CREW.maxBuildAtCeiling.held} HELD, ${CREW.maxBuildAtCeiling.steady} STEADY, and ${CREW.maxBuildAtCeiling.bare} `
       + 'makes always bare. There is no level at which the board is covered.'),
+    /* NOTHING LEGALISES IT FOR YOU (round 3, spec-fidelity). This line used to read "the next job
+       will legalise it". `crew.legalize(save)` exists and has no caller anywhere under `site/js`,
+       so no job legalises anything; the only repair that does run is `effectiveRankOf`'s read-time
+       downgrade, which stops the ladder over-forgiving but never frees the point. The student has
+       to re-allocate, and the panel now says that instead. */
     Object.keys(crew).length && !budget.legal
-      ? h('p.fs-1.warn', 'This allocation is over budget and the next job will legalise it.')
+      ? h('p.fs-1.warn', `This allocation is over budget — ${budget.spent} points spent against a capacity of `
+        + `${budget.capacity}. Until you re-allocate it in a brief window the surplus buys nothing: the ladder `
+        + 'pays each make the rung it can actually hold.')
+      : null,
+    /* And the other half of the same silence: a make whose mastery a Mock or Boss miss took away
+       keeps its stored rank and pays the lower one, so the difference is a capacity point that is
+       spent and cannot pay for itself. `budgetFor` measures it as `wasted`; nothing printed it. */
+    Number.isFinite(budget.wasted) && budget.wasted > 0
+      ? h('p.fs-1.warn', `${budget.lapsed.map(m => skillById[m]?.name ?? m).join(', ')} lapsed — the make is no `
+        + `longer mastered, so it pays the lower rung and ${budget.wasted} of your ${budget.spent} spent point`
+        + `${budget.wasted === 1 ? '' : 's'} buys nothing. Re-allocate in the next brief window to get `
+        + `${budget.wasted === 1 ? 'it' : 'them'} back.`)
       : null,
   );
 }

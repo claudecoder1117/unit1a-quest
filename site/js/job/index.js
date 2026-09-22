@@ -254,6 +254,15 @@ function resolvedCleanly(save, opts) {
  * `opts.day` is required to move `days`. With no day the resolution still counts and still clears the
  * tell, but the seal cannot advance and `reason` says `no-day` — callers pass `days.todayISO()`.
  *
+ * `days` counts THREE DISTINCT DAYS, which on a record that stores a count plus one date (G7) means
+ * three FORWARD day-changes. A day EARLIER than `lastDay` is not a new distinct day, so it restarts
+ * the window at itself (`resolved = 1, days = 1`) exactly the way a re-trigger does. Without that, an
+ * alternating pair of dates — A, B, A, B — reached `days = 3` on **two** distinct days and sealed,
+ * which is the whole collection (68 cells, `index-25`, `index-68`, the certificate) for one clock
+ * change; and re-anchoring `lastDay` without restarting would leave the same alternation open. The
+ * restart is also why a clock that ran AHEAD and was corrected is self-healing: the first real day
+ * re-anchors the window instead of stalling behind a date the student cannot reach again.
+ *
  * A clear that was NOT clean counts for nothing: the record is left exactly as it was, `changed` is
  * false, `reason` is `not-clean`, and the fault stays live at ×1.25 until it is met and beaten
  * outright. `resolvedCleanly()` above is how that is decided — `opts.clean` when the caller passes it,
@@ -274,7 +283,10 @@ export function resolve(save, tag, opts = {}) {
   const r = { ...from };
   r.cleared = true;
   r.resolved = from.resolved + 1;
-  if (day && day !== from.lastDay) { r.days = from.days + 1; r.lastDay = day; }
+  if (day && day !== from.lastDay) {
+    if (from.lastDay && day < from.lastDay) { r.resolved = 1; r.days = 1; r.lastDay = day; }
+    else { r.days = from.days + 1; r.lastDay = day; }
+  }
   const justSealed = sealsOn(r);
   if (justSealed) r.sealed = true;
   const tags = { ...tagsOf(save), [tag]: r };
@@ -621,10 +633,15 @@ export function capTags(tags) {
   return out;
 }
 
+/* The default export is the namespace, not a curated subset of it: `import job from './index.js'` and
+   `import * as job from './index.js'` must answer the same questions, or a caller that picks the wrong
+   form reads `undefined` off a function this module documents as the single definition of its hook
+   (`tellHookFor`). `tests/job-index.test.mjs` §1 pins the two key sets equal. */
 export default {
-  TAGS, TAG_COUNT, AREAS, AREA_IDS, SEAL, MILESTONES, STATES, REFUSALS,
+  TAGS, TAG_COUNT, AREAS, AREA_IDS, MISCONCEPTIONS, FAULT_INDEX, BACKCHECK,
+  SEAL, MILESTONES, STATES, REFUSALS,
   freshTag, tagsOf, recordOf, sealsOn, stateOf, isSealed, sealedOf, isLive, tellMultiplierOf,
   trigger, resolve, sealedLine, areaRollup, indexProgress,
-  tellFor, tellDetail, tellsFor, makeName,
+  tellFor, tellDetail, tellsFor, tellHookFor, makeName, areaOfTag, wingOfTag,
   backchecksOf, canSpend, spend, canMint, mint, capTags,
 };

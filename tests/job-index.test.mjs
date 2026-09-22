@@ -33,10 +33,10 @@ import { DAY_MS } from '../site/js/schedule.js';
 import { templates } from '../site/data/templates.js';
 import { WINGS, BACKCHECK, FAULT_INDEX, TAG_RECORD_DEFAULT } from '../site/data/job.js';
 import { settle, tellFor as tellMultOf } from '../site/js/job/econ.js';
-import { callEntry, windowPush } from '../site/js/job/call.js';
+import { callEntry, windowPush, weightOf } from '../site/js/job/call.js';
 import { trophies, trophyById, GAME_WING_IDS } from '../site/data/trophies.js';
 import { check as trophyCheck, makeCtx } from '../site/js/trophies.js';
-import { fresh } from '../site/js/store.js';
+import { fresh, migrate, SAVE_VERSION } from '../site/js/store.js';
 import { readiness } from '../site/js/readiness.js';
 
 const read = (p) => readFileSync(join(ROOT, p), 'utf8');
@@ -89,6 +89,18 @@ describe('J7 — the Fault Index is 68 entries in 11 areas', () => {
     }
   });
 
+  test('the default export IS the namespace — the two import forms answer the same questions', () => {
+    /* `screens/job.js` imports `{ tellHookFor }`, `screens/run.js` imports `* as jobIndex`, and
+       `screens/home.js` imports the module lazily. A curated default export that silently omits
+       `tellHookFor` — the function this module's own docblock calls "the single definition of it" —
+       hands `undefined` to whichever surface picks the default form. */
+    const named = Object.keys(index).filter((k) => k !== 'default').sort();
+    const def = Object.keys(index.default).sort();
+    assert.deepEqual(def, named, 'the default export and the namespace disagree');
+    assert.equal(index.default.tellHookFor, index.tellHookFor, 'the board hook is on both forms');
+    assert.equal(typeof index.default.tellHookFor({ game: {}, errors: [] }, CARD_INDEX), 'function');
+  });
+
   test('a record is exactly G7 shape — `days` is a COUNT, never an array', () => {
     assert.deepEqual(index.freshTag(), { ...TAG_RECORD_DEFAULT });
     assert.deepEqual(Object.keys(index.freshTag()).sort(), ['cleared', 'days', 'lastDay', 'resolved', 'sealed', 'triggered']);
@@ -121,6 +133,39 @@ describe('J7 — sealed requires 3 clean resolutions on 3 DISTINCT days with no 
     for (const d of ['2026-09-15', '2026-09-15', '2026-09-16']) s = index.resolve(s, 'dropped-gcf', { day: d }).save;
     const r = index.recordOf(s, 'dropped-gcf');
     assert.deepEqual({ resolved: r.resolved, days: r.days, sealed: r.sealed }, { resolved: 3, days: 2, sealed: false });
+  });
+
+  test('alternating two dates can never seal — `days` counts three DISTINCT days, not three changes', () => {
+    /* The record stores a COUNT plus one date (G7), so "3 distinct days" can only be enforced as 3
+       FORWARD day-changes. Before this was enforced, A, B, A reached `days = 3` on TWO distinct days
+       and sealed — 68 cells, `index-25`, `index-68` and the completion certificate for one backwards
+       clock move, with no re-trigger and no play in between. */
+    const A = '2026-09-15', B = '2026-09-16';
+    let s = index.trigger(emptySave(), 'dropped-gcf').save;
+    const seen = [];
+    for (const d of [A, B, A, B, A, B]) { const r = index.resolve(s, 'dropped-gcf', { day: d }); s = r.save; seen.push(r.record.sealed); }
+    assert.deepEqual(seen, [false, false, false, false, false, false],
+      'alternating two dates sealed a tag — that is two distinct days, not three');
+    assert.equal(index.recordOf(s, 'dropped-gcf').days <= 2, true, 'two dates produced more than two days');
+    assert.deepEqual(index.sealedOf(s), [], 'the certificate counted a day the student never played');
+
+    /* the backwards day RESTARTS the window at itself, the way a re-trigger does */
+    let w = index.trigger(emptySave(), 'middle-term').save;
+    for (const d of [A, B]) w = index.resolve(w, 'middle-term', { day: d }).save;
+    assert.deepEqual({ ...index.recordOf(w, 'middle-term') },
+      { resolved: 2, triggered: 1, days: 2, lastDay: B, cleared: true, sealed: false });
+    const back = index.resolve(w, 'middle-term', { day: A });
+    assert.deepEqual({ resolved: back.record.resolved, days: back.record.days, lastDay: back.record.lastDay },
+      { resolved: 1, days: 1, lastDay: A }, 'a day earlier than lastDay did not restart the window');
+    assert.equal(back.changed, true, 'the resolution itself still counted and still cleared the tell');
+    assert.equal(index.tellMultiplierOf(back.save, 'middle-term'), 1);
+
+    /* and it is self-healing, not a stall: a clock that ran AHEAD and was corrected can still seal */
+    let ahead = index.trigger(emptySave(), 'sign-flip').save;
+    ahead = index.resolve(ahead, 'sign-flip', { day: '2030-01-01' }).save;      // the wrong clock
+    for (const d of [A, B, '2026-09-17']) ahead = index.resolve(ahead, 'sign-flip', { day: d }).save;
+    assert.equal(index.recordOf(ahead, 'sign-flip').sealed, true,
+      'a corrected clock stalled the seal behind a date the student cannot reach again');
   });
 
   test('a re-trigger inside the window resets the count — that is what "no re-triggers" means in the record', () => {
@@ -532,14 +577,30 @@ describe('J7 — tellFor names a tag for all 19 makes, from save.errors, with no
     assert.equal(rec.wing, 'ALGEBRA');
   });
 
-  test('a resolved or sealed tag leaves the tell pool the same tick', () => {
+  test('a resolved tag drops BEHIND every live one the same tick; a SEALED one leaves the pool', () => {
+    /* The title used to say a resolved tag "leaves the tell pool", which is not what this module
+       does and not what the assertion below shows: `tellDetail` keeps a cleared-but-unsealed tag,
+       ranked behind every live one, because `state.applyTarget` resolves the tag the tell names and
+       a seal needs three of those (index.js header, §2b). Only SEALING removes it, and that half was
+       never asserted here — so it is asserted here now. */
     const save = emptySave();
     save.errors.push(errline('fac-01', ['dropped-gcf'], { t: AT }));
     save.errors.push(errline('fac-01', ['middle-term'], { t: AT }));
     assert.equal(index.tellFor(save, 'FAC2', CARD_INDEX).tag, 'dropped-gcf', 'catalogue order breaks the 1–1 tie');
     const resolved = index.resolve(save, 'dropped-gcf', { day: '2026-09-15' }).save;
     resolved.errors = save.errors;
-    assert.equal(index.tellFor(resolved, 'FAC2', CARD_INDEX).tag, 'middle-term', 'the resolved tag is out of the pool');
+    assert.equal(index.tellFor(resolved, 'FAC2', CARD_INDEX).tag, 'middle-term', 'the resolved tag still outranked a live one');
+    assert.deepEqual(index.tellDetail(resolved, 'FAC2', CARD_INDEX).candidates.map((c) => [c.tag, c.live]),
+      [['middle-term', true], ['dropped-gcf', false]], 'the resolved tag left the pool — resolution #2 is now unreachable');
+
+    /* sealing is the only thing that removes it: three clean resolutions on three forward days */
+    let sealed = resolved;
+    for (const d of ['2026-09-16', '2026-09-17']) sealed = index.resolve(sealed, 'dropped-gcf', { day: d }).save;
+    sealed.errors = save.errors;
+    assert.equal(index.isSealed(sealed, 'dropped-gcf'), true, 'three clean forward days did not seal it');
+    assert.deepEqual(index.tellDetail(sealed, 'FAC2', CARD_INDEX).candidates.map((c) => c.tag), ['middle-term'],
+      'a SEALED tag is still in the tell pool');
+    assert.ok(save.errors.some((e) => (e.tags ?? []).includes('dropped-gcf')), 'the error log was cleaned — the test is vacuous');
   });
 
   test('ties break by the most recent trigger, then by catalogue order — never by a random number', () => {
@@ -594,7 +655,11 @@ describe('J7 — a Backcheck changes the STAKE ONLY', () => {
     const w2 = windowPush([], withShield);
     assert.equal(JSON.stringify(w1), JSON.stringify(w2));
     assert.equal(w1.length, 1, 'the miss enters the window either way');
-    assert.ok(w1[0].w >= 0.25 && w1[0].ok === false);
+    /* `weightOf`, not `.w`: since verify round 2 a q̂-derived slot stores the q̂ and the weight is
+       derived from it (`call.callEntry` — the rank cap has to know what material the call was made
+       on, and `w = K·q̂(1−q̂)` is two-to-one). The claim is unchanged: the miss enters the window
+       weighing what the evidence says, shielded or not. */
+    assert.ok(weightOf(w1[0]) >= 0.25 && w1[0].ok === false);
     // and the file that spends it never mentions the rating
     assert.ok(!/callEntry|windowPush|ratingFrom/.test(bare(INDEX_SRC)), 'spend() must not be able to touch the rating window');
   });
@@ -821,7 +886,15 @@ describe('J7 — every probability visible in the game has a Settings panel prin
     assert.match(SETTINGS, /st\.settings\.game = v/, 'the switch writes it');
     assert.match(SETTINGS, /\.\.\.\(game \? \[callCard\(\), guardCard\(\), ladderCard\(\), postedCard\(\), ratingCard\(s\)\] : \[\]\)/,
       'with the layer off the five panels go with it');
-    assert.equal(fresh(AT).settings.game, undefined, 'no store change is needed: absent is on');
+    /* `settings.game` is now DECLARED and coerced in `store.js` (it was an undeclared pass-through
+       key, the drift `ledger.debriefAt` was caught for). What this test has to pin is not that the
+       store leaves it alone — it no longer does — but the DIRECTION of the coercion, because every
+       reader is `settings.game !== false`: absent must still come back ON, and only a literal
+       `false` may switch the layer off. */
+    assert.equal(fresh(AT).settings.game, true, 'a fresh save does not have the layer on');
+    assert.equal(migrate({ v: SAVE_VERSION }, AT).settings.game, true, 'a save with no switch came back OFF');
+    assert.equal(migrate({ v: SAVE_VERSION, settings: { game: false } }, AT).settings.game, false,
+      'the one switch that kills the layer stopped working');
   });
 
   test('Global law 6 holds: the EV-max table is in Settings and nowhere a call is made', () => {

@@ -149,6 +149,15 @@ export const CALL_LEVELS = deep([
   { id: 95, label: '95', p: 0.95, W: 2.2, P: 5.0, creditClear: 9.9, creditMiss: -26.1, minRank: 3, key: '4' },
 ]);
 
+/**
+ * The bottom rung: the call every rank may make, and the rung a stakes-off target is priced at.
+ * `job/state.js` used to carry its own `CALL_DEFAULT = 50` while `job/call.js` and `job/econ.js`
+ * both derived the same rung from `CALL_LEVELS[0]` — three expressions of one constant, one of them
+ * a literal that would not have moved with the ladder. Single-sourced here at integration;
+ * `state.js` re-exports it so its own importers are unaffected.
+ */
+export const CALL_DEFAULT = CALL_LEVELS[0].id;
+
 /** The same ladders keyed by call id, for O(1) lookup. */
 export const CARRY_LADDER = deep(Object.fromEntries(CALL_LEVELS.map((c) => [c.id, { W: c.W, P: c.P }])));
 export const RATING_LADDER = deep(Object.fromEntries(CALL_LEVELS.map((c) => [c.id, { clear: c.creditClear, miss: c.creditMiss }])));
@@ -191,10 +200,41 @@ export const RATING = freeze({
   N: 50, base: 5, scale: 2, min: 0, max: 10,
   weightK: 4, informativeMin: 0.25,
   informativeQHatBand: freeze([0.067, 0.933]),
-  /** q̂ is the first-try rate on that make over the trailing 10 attempts (G3.1). */
+  /**
+   * q̂ is the CLEAR rate on that make over the trailing 10 sittings (G3.1); the attempt a clear
+   * arrived on decides ρ, never the forecast.
+   *
+   * This line used to name the **first-attempt** rate over the trailing 10 *attempts*, which was the
+   * **document** being stale, not the code: `call.js:686` counts a CLEAR over trailing SITTINGS, and
+   * it does so deliberately, because `econ.settle` settles `W`/`P` on the clear event (it reads
+   * `rung`). Re-pointing q̂ at the first-attempt rate would make one button forecast two different
+   * events — a student would honestly call 50 on m60 material they clear 92 % of the time.
+   * Corrected per `designs/REPAIR-DECISION.md` §S1.1 item 1 and §S1.5 (finding 15); this file is the
+   * `econ` lane's, so the S1 ticket's own edit to it lands here. The matching authority line is
+   * COMPOSED-GAME.md G3.1, and `job-meta-constants.test.mjs`'s phrase lint is extended to both by
+   * §S1.3 item 2 so the stale reading cannot return to either. (The phrase the old line used is not
+   * quoted here on purpose: `job-copy.test.mjs` lints this file's comments too, and that lint is
+   * exactly what should refuse to carry the wording it is meant to keep out.)
+   */
+  // q̂ = the CLEAR rate over the trailing 10 SITTINGS (the line above, outside the block comment the
+  // J7 phrase lint strips, so the file states it on either reading of the lint).
   qHatWindow: 10,
-  /** The Mock's prediction slider has no make, so its weight is DEFINED at 1.0 (G12 #40d). */
-  mockWeight: 1.0,
+  /**
+   * The Mock's weight CEILING — the same number as `informativeMin`, and it IS
+   * `screens/mock.js MOCK_CALL_W`: the smallest weight the rating window will count, so one Mock
+   * slot can never pay more than `0.25 × 10 = 2.50` of `Σ(w·c)`.
+   *
+   * IT IS A CEILING, NOT A DEFINED WEIGHT, and this line said otherwise for four rounds. The Mock
+   * has no MAKE, so it has no `q̂` — but its weight is MEASURED all the same:
+   * `mockCallWeight(ŝ) = min(4ŝ(1−ŝ), mockWeight)` over ŝ, the mean score fraction of the trailing
+   * `qHatWindow` papers, and **0** with no prior paper or with ŝ outside the informative band. So a
+   * first-ever Mock is worth exactly 0.00 of rating and a perfect forecast 0.10, not the 0.40 that
+   * `1.0` implied — a 4× overstatement, rendered verbatim by `screens/settings.js`. Nothing in
+   * `screens/mock.js` ever read this constant (`grep -rn mockWeight site/`), which is how it drifted.
+   * `tests/job-call.test.mjs` now drives `applyMockCall` and asserts this constant IS `MOCK_CALL_W`.
+   * (Verify r3, call-propriety BLOCKER; the same correction as notes/repair-week.md Request (a).)
+   */
+  mockWeight: 0.25,
   /** the `calibrated` trophy's window (G7 data/trophies.js) */
   calibratedWindow: 20, calibratedBrierMax: 0.10,
 });
@@ -363,10 +403,37 @@ export const CREW_MATRIX = deep({
  * student who taps the primary button are two different sessions.
  *   `brief` is PER WINDOW; multiply by `econ.landedBriefs(shape)` — the windows the shape can really
  *   open — NOT by `shape.briefs`. The two differ for VAULT alone; see SHAPES.
- *   `crew` is the between-jobs re-allocation phase (skipped on the default path).
- * JOB / JOB12 / VAULT all use the `JOB` column. `total` (160 default / 282 full) is the TWO-window
- * sum, which is what JOB and JOB12 reproduce; a 7-target VAULT lands one window and sums to 140/232.
+ * JOB / JOB12 / VAULT all use the `JOB` column. `total` (160 default / 257 full) is the TWO-window
+ * sum, which is what JOB and JOB12 reproduce; a 7-target VAULT lands one window and sums to 140/207.
  * RUN is lighter.
+ *
+ * **Every key of `phases` is a phase the state machine can actually enter, and until verify round 2
+ * one of them was not.** The full column carried a sixth cell, `crew: 25`, and `PHASE_ORDER` carried
+ * a `'crew'` phase to hold it — both survivors of a *between-jobs* crew screen this layer never
+ * shipped. Two independent things are wrong with that cell and the repair is the same for both:
+ *
+ *   1. **No code path could ever enter it.** `grep -rn "setPhase(.*crew" site/js` → 0; `phase =
+ *      'crew'` appears nowhere in `js/job/state.js`. The crew move is an ACTION inside the brief
+ *      window (`screens/job.js setCrewRank → takeBrief → state.brief` → `crew.allocate`, the only
+ *      caller chain there is), so its seconds have always banked into `ph.brief`. G2 says so in
+ *      words — "re-allocation is free and unlimited inside every brief window … there is no
+ *      between-jobs crew control anywhere in `site/js`" (G12 #54 is the correction that moved it).
+ *   2. **It was a DOUBLE charge.** G1 publishes the brief window as "50 s at full use, five real
+ *      options, no padding", and the third of those five options is *re-rank one crew slot*. G1's
+ *      own decision table charges the same way — "brief windows (skip, or up to 5 options each) |
+ *      2 | 10", no crew row — so `DECISIONS.briefOptionsMax = 5` already counts the crew re-rank
+ *      inside the window. Only the SECONDS table billed it twice.
+ *
+ * Measured, the cell cost exactly what it claimed: driving the canon walkthrough through the shipped
+ * machine, the published full column came out 1.2–1.7 points high on the three shapes whose `crew`
+ * cell was 25 (JOB 49.8 against 51.3, JOB12 39.1/40.3, VAULT 32.6/34.1) and Δ 0.0 on RUN, whose cell
+ * was 0 — and `tests/job-split.test.mjs` §2 recorded the deficit as a tolerance ("the crew phase is
+ * not creditable") instead of closing it. **Nothing about the running game changes here**: a real
+ * full-use student always spent those seconds inside a brief window and the ledger always banked
+ * them there. What changes is that the published column is now the one the app can produce, so
+ * `PUBLISHED.shapeTable`'s and `PUBLISHED.nominalHeadlineSplit`'s full cells are the MEASUREMENT
+ * (49.8 / 39.1 / 32.6 and 45.6 / 35.7 / 28.4), reproduced exactly rather than within a band.
+ * `'crew'` is dropped from `PHASE_ORDER`/`GAME_PHASES` below for reason 1.
  *
  * KNOWN GAP, recorded rather than invented: G1 publishes RUN's full-use FIXED TOTAL (130 s) but not
  * its per-phase split. `full.total` is therefore the constant, and `full.phases` is null. J8 owns the
@@ -374,18 +441,18 @@ export const CREW_MATRIX = deep({
  */
 export const FIXED_PHASES = deep({
   JOB: {
-    default: { phases: { board: 18, guard: 12, brief: 20, getaway: 25, debrief: 65, crew: 0 }, total: 160 },
-    full: { phases: { board: 55, guard: 12, brief: 50, getaway: 25, debrief: 65, crew: 25 }, total: 282 },
+    default: { phases: { board: 18, guard: 12, brief: 20, getaway: 25, debrief: 65 }, total: 160 },
+    full: { phases: { board: 55, guard: 12, brief: 50, getaway: 25, debrief: 65 }, total: 257 },
   },
   RUN: {
-    default: { phases: { board: 12, guard: 12, brief: 20, getaway: 20, debrief: 40, crew: 0 }, total: 104 },
+    default: { phases: { board: 12, guard: 12, brief: 20, getaway: 20, debrief: 40 }, total: 104 },
     /* G1 publishes this cell as a TOTAL only (130 s). The allocation was derived in
        `tests/job-split.test.mjs` (notes/J1.md open issue 1 → notes/J8.md Request 3) and is moved
        here so the data file is the single source: the growth over the default column, +26 s, goes to
        the two optional surfaces a RUN actually has — the board draft and its one brief window — in
        the 37:30 ratio the JOB column grows them in (board 18→55, brief 20→50). Its total is still
        G1's 130, which `tests/job-split.test.mjs` §1.4 asserts. */
-    full: { phases: { board: 26, guard: 12, brief: 32, getaway: 20, debrief: 40, crew: 0 }, total: 130 },
+    full: { phases: { board: 26, guard: 12, brief: 32, getaway: 20, debrief: 40 }, total: 130 },
   },
 });
 
@@ -396,11 +463,19 @@ export const FIXED_PHASES = deep({
  */
 export const PHASE_MEANS_DEFAULT = freeze({ board: 18, guard: 12, brief: 20, getaway: 25, debrief: 65 });
 
-/** The order the phases run in, for the two wall-clock accumulators (G1 statement 2). */
-export const PHASE_ORDER = freeze(['board', 'guard', 'envelope', 'call', 'answer', 'payout', 'bagpush', 'brief', 'getaway', 'debrief', 'crew']);
+/**
+ * The order the phases run in, for the two wall-clock accumulators (G1 statement 2).
+ *
+ * `'crew'` was the eleventh entry until verify round 2 and nothing in `site/js` ever set it — the
+ * crew move is an ACTION inside the `brief` phase (`state.brief` → `crew.allocate`), so its seconds
+ * always banked into `ph.brief`. It is gone from both lists, and with it the only cell of
+ * `FIXED_PHASES` that charged seconds to a phase the machine cannot enter. `state.tick` validates
+ * against this list, so `tick(save, 'crew')` is now the error it always should have been.
+ */
+export const PHASE_ORDER = freeze(['board', 'guard', 'envelope', 'call', 'answer', 'payout', 'bagpush', 'brief', 'getaway', 'debrief']);
 
 /** The phases that count as GAME time; `answer` is the only one that counts as ANSWER time. */
-export const GAME_PHASES = freeze(['board', 'guard', 'envelope', 'call', 'payout', 'bagpush', 'brief', 'getaway', 'debrief', 'crew']);
+export const GAME_PHASES = freeze(['board', 'guard', 'envelope', 'call', 'payout', 'bagpush', 'brief', 'getaway', 'debrief']);
 export const ANSWER_PHASES = freeze(['answer']);
 
 /**
@@ -593,8 +668,49 @@ export const CAPS = freeze({ calls: 50, log: 30, tags: 68, bundles: 5, heat: 10 
  * trophies 0.19 · runs[] delta 5.35 → **36.84 KB** added, of which 31.46 KB is what the app writes
  * TODAY (`subtotal`: the `runs[]` line is reserved — no shipped path writes a run record from a job
  * yet). See notes/save-fix.md.
+ *
+ * Round 4 found the SAME defect one level further out again: `inProgress.meta.before`, the
+ * before-snapshot. `screens/run.js:856` writes the flat Page's five keys into it; `captureJobBefore`
+ * writes those five PLUS seven of its own (`tags, index, rating, startedAt, seed, seedTag,
+ * composed`) and `screens/job.js` calls it inside `update()` on every job, so they reach disk.
+ * `withoutGameKeys` had stripped `inProgress`'s key list and the queue ENTRIES and stopped there, so
+ * 2.4 KB was charged to the STUDY half and counted in no row — and neither carrier wrote an
+ * `inProgress.meta` at all, so it was measured in NEITHER half, exactly as the bench, the queue
+ * fields and the trophies had been. The list is no longer hand-maintained: `job-save.test.mjs`
+ * derives it by diffing run.js's own flat-Page literal against what `captureJobBefore` returns over
+ * a corpus of real jobs (that diff is what found `composed`, added in the same round).
+ * Measured (round 5, with `params` and `tellOff` priced): player 3.95 · game 14.83 ·
+ * inProgress.game 6.29 · bench 1.94 · queue delta 4.39 · meta delta 2.40 · trophies 0.19 ·
+ * runs[] delta 5.35 → **39.39 KB** added, of which 34.04 KB is what the app writes TODAY.
+ * See notes/repair-save.md.
  */
-export const SAVE_BUDGET_KB = freeze({ player: 4.0, game: 14.9, inProgress: 6.3, bench: 1.9, queueDelta: 4.4, trophies: 0.2, runsDelta: 5.4, subtotal: 31.5, totalAdded: 37.1 });
+/* Every figure is the MEASURED byte count rounded up to 0.1 KB — `tests/job-save.test.mjs` asserts
+   each line at or under its figure, the lines summing to `totalAdded`, and `subtotal` between the
+   measurement and `totalAdded − runsDelta`. `subtotal` moved 31.5 → 31.6 at integration: S3.1(c)'s
+   `player.records.bestRating` shipped, which costs the saturated carrier 34 B (`player` 3.92 →
+   3.95 KB, subtotal 31.46 → 31.53 KB, totalAdded 36.84 → 36.88 KB). No per-line ceiling moved —
+   only the subtotal's rounding step was exhausted. Restating a row means restating G7's table row
+   with it; the spec correction is filed in designs/SPEC-CORRECTIONS.md.
+   ROUND 4 (verify) adds the `metaDelta` row — `inProgress.meta.before`'s seven game fields, 2 459 B
+   measured on the saturated carrier — and restates the two summary rows with it: subtotal
+   31.6 → 34.0, totalAdded 37.1 → 39.6 (the line ceilings still sum to the headline, which
+   `job-save.test.mjs` asserts). COMPOSED S6's restated arithmetic then closes at
+   500 000 + 39.6 KB = 540 550 B of 528 KB = 540 672 B — 122 B to spare, so the NEXT line that moves
+   restates COMPOSED.md S6 too. Spec correction filed in designs/SPEC-CORRECTIONS.md.
+   ROUND 5 (verify) — AND THAT NEXT LINE MOVED. `bench` 1.9 → 2.0 and, with it, subtotal 34.0 → 34.1
+   and totalAdded 39.6 → 39.7. Two keys the fixtures did not price were found on the SHIPPED
+   writers: `params` (the S7 algebra floor's, `site/js/page.js:392`, persisted by `freezeVariant`
+   and re-emitted on every later due of that frozen Variant, so a worst-case queue carries it on
+   every entry — 92 B of it lands on `inProgress.bench`, which is wholly the layer's) and `tellOff`
+   (`js/job/state.js` EXTRA_KEYS' tenth, 17 B on `inProgress.game`). Both were charged to no row and
+   priced in no fixture. COMPOSED S6's two-bound arithmetic now closes at
+   500 000 + 39.7 KB = 540 652.8 B of 540 672 B — **19 B**, and the closure is arithmetic on two
+   BOUNDS, not a measurement: the saturated carriers are 1 KB (state.test.mjs) and 5.3 KB
+   (job-save.test.mjs) past it in the STUDY half, which is T01's bound to move, not this layer's.
+   The margin is now thinner than a single unpriced key, so the next line that moves cannot be
+   absorbed here at all — it restates COMPOSED.md S6. Spec correction filed in
+   designs/SPEC-CORRECTIONS.md; see notes/repair-save.md round 5. */
+export const SAVE_BUDGET_KB = freeze({ player: 4.0, game: 14.9, inProgress: 6.3, bench: 2.0, queueDelta: 4.4, metaDelta: 2.5, trophies: 0.2, runsDelta: 5.4, subtotal: 34.1, totalAdded: 39.7 });
 
 /**
  * G7's save-schema delta, v1 → v2. TWO top-level keys, because store.js archives top-level keys only
@@ -606,7 +722,13 @@ export const SAVE_DEFAULTS = deep({
     rating: { calls: [], value: 5.0, n: 0 },
     rank: 2,
     elo: { player: 1000, house: 1000 },
-    records: { bestBag: 0, bestChain: 0, bestRating20: 0, cleanJobs: 0, cracked: 0, walked: 0, cleanGetaway: false },
+    /* `bestRating` — REPAIR-DECISION S3.1(c), the rank ratchet's audit record. Under a rank FLOOR
+       `player.rank` stops being recomputable from the 50-call window, so the high-water RATING that
+       bought the rank is stored beside it and printed on Settings/Stats (`· best rating 9.90`).
+       Declared HERE and in `store.js freshPlayer()` in the same change — `tests/job-save.test.mjs`
+       deep-equals the two copies of this schema in both directions (notes/repair-save.md Request A,
+       notes/repair-meta.md Request 1, notes/repair-state.md Request 4, all landed at integration). */
+    records: { bestBag: 0, bestChain: 0, bestRating20: 0, bestRating: 0, cleanJobs: 0, cracked: 0, walked: 0, cleanGetaway: false },
   },
   game: {
     crew: {},
@@ -683,7 +805,13 @@ export const STATES = deep({
  * make, the tell and the number and stops.
  */
 export const COPY = deep({
-  clear: ({ loose, chain, credit, w }) => `+${loose} loose · chain ${chain} · rating ${credit >= 0 ? '+' : '−'}${Math.abs(credit)} ×${w}`,
+  /* `· weight ${w}`, NOT `×${w}` (round 3 verification, player-feel, MAJOR — filed from this table's
+     one caller, `screens/job.js payoutLineOf`, as Request 3 in notes/repair-screen.md in two
+     consecutive rounds). `credit` is fed the MEASURED move of `player.rating.value` over the target,
+     and `Δrating = 2·w·c/N` — the move ALREADY contains `w`. So the `×` claimed a product that is
+     not any quantity in the system: `rating +0.23 ×0.89` invites 0.205, which is nothing. The two
+     facts stay, side by side, with no operator asserting a relation between them. */
+  clear: ({ loose, chain, credit, w }) => `+${loose} loose · chain ${chain} · rating ${credit >= 0 ? '+' : '−'}${Math.abs(credit)} · weight ${w}`,
   ladder: ({ attempt, crew, rho, loose }) => `attempt ${attempt} · crew ${crew} forgives one · ρ ${rho} · +${loose} loose`,
   miss: ({ make, tell, loose, chain }) => `${make} · tell: ${tell} · −${loose} loose · chain ${chain}`,
   bag: ({ bagged, fee, chainBefore }) => `bagged ${bagged} · fee ${fee} · chain ${chainBefore} → 0`,
@@ -694,8 +822,37 @@ export const COPY = deep({
   vault: ({ make, grade, hits, of, q }) => `${make} grade ${grade} · your last ${of}: ${hits}/${of} · crack breaks even at ${q}`,
   walk: ({ bagged, rating, rank, thinking, deciding, decisions }) => `bagged ${bagged} · rating ${rating} (${rank}) · ${thinking} thinking / ${deciding} deciding · ${decisions} decisions`,
   /** `did` is the past tense of what the student actually did: 'bagged' | 'pushed'. */
-  regret: ({ did, chain, said, qStar, qHat, cost }) => `you ${did} at chain ${chain}; the threshold said ${said} (q* ${qStar}, your q̂ ${qHat}). cost ${cost}.`,
-  regret2: ({ envelope, called, evMax, cost }) => `envelope ${envelope}: you called ${called}, EV-max was ${evMax}. cost ${cost} rating.`,
+  /* VERIFY r2 (player-feel), the other half of finding 40's block: this `cost` had NO UNIT while
+     `regret2` directly under it printed `cost 3.5 credit.`, so the debrief read
+     `… cost 35.` / `… envelope 2: … cost 3.5 credit.` as two consecutive paragraphs under one
+     heading, and a reader compares 35 with 3.5. They are not comparable: this one is
+     `econ.regretLine`'s `optimal − actual`, both terms out of `playOrder`, whose docstring is
+     "replay a realised order … and return the final BAGGED" — the unit of the `BAGGED 455` hero
+     four inches above it. The remedy is the word, exactly as it was for `regret2`. */
+  regret: ({ did, chain, said, qStar, qHat, cost }) => `you ${did} at chain ${chain}; the threshold said ${said} (q* ${qStar}, your q̂ ${qHat}). cost ${cost} bagged.`,
+  /* FINDING 40 (BLOCKER), landed at integration: `cost` is a CREDIT gap — the `c` of `c(p, o)` —
+     and the word was `rating`. One credit point is not one rating point: a slot contributes
+     `RATING.scale·w·c / RATING.N = w·c/25` to the rating, so the sentence overstated the rating cost
+     by 25–64× on the four cases notes/repair-run.md Request 1 measured (`cost 1.4 rating` for 0.0216
+     rating points). The remedy is the WORD, not the number: converting to rating points puts every
+     real case under `jobRegret`'s own `Math.round(cost*10)/10 > 0` gate, which would delete G5 #2's
+     teaching line entirely. `call.regretOf().ratingCost` is the converted figure for any surface
+     that wants it. G5 #2's worked line moves with this — designs/SPEC-CORRECTIONS.md. */
+  regret2: ({ envelope, called, evMax, cost }) => `envelope ${envelope}: you called ${called}, EV-max was ${evMax}. cost ${cost} credit.`,
+  /* VERIFY r3 (call-propriety), and the reason there are now TWO call-regret lines: ONE WORD CANNOT
+     NAME BOTH RUNGS. `regret2`'s `EV-max` is the rung `screens/settings.js` publishes under that
+     same word (`evMaxBands()`, the CARRY argmax) everywhere the two ladders agree — which is
+     everywhere outside G3.1's two disagreement bands, so the sentence above is true as published
+     (G5 #2's worked line is at q̂ = .75, where `honestCall === argmaxCall === 70`). INSIDE the two
+     bands they are different rungs, and the debrief prices the honest one because that is the
+     currency it prints (`screens/run.js DEBRIEF_CALL_LADDER`): printing it under Settings' word
+     told a student who had followed Settings' table that their own call was the mistake — at
+     q̂ = 8/9 the table says 95 and the debrief said "EV-max was 85. cost 0.1 credit". In the bands
+     the line names BOTH rungs in Settings' own words (*"the money says call 95, the rating says
+     call 85"*) and does not use the word EV-max at all, because G3.1 calls the bands "the only
+     place in the game where the player must choose what they are playing for" and the debrief is
+     where that choice is finally teachable (Global law 6: evidence after the decision). */
+  regret2Split: ({ envelope, called, money, rank, cost }) => `envelope ${envelope}: you called ${called}. the money said ${money}, the rating said ${rank}. cost ${cost} credit against ${rank}.`,
   /* Home's resume link when a JOB is live. `startJob` writes `inProgress.kind = 'page'`, so without
      this the student is sent back to the flat page with the stakes still on the disk (notes/J5c.md
      §7, notes/J6.md §7 — both flagged it, neither owned `plan.js`). */
@@ -739,9 +896,19 @@ export const COPY = deep({
     : `~${split} % game · projected`),
   guardColdStart: ({ n }) => `no data — uniform 1/${n}`,
   guardSupport: ({ n }) => `guard: ${n} wings on the board`,
+  /* The brief's ONE ATOMIC SUBMIT label (S5.3 item 4, notes/repair-screen.md Request 1). It was a
+     screen literal in `screens/job.js` with a `typeof COPY.repressMove === 'function'` guard around
+     it; the words live here now, beside every other printed line the layer owns. */
+  repressMove: () => 'Move one token · the guard redraws',
   supply: ({ wing, locks }) => `${wing} ${locks} locks available today`,
   leftOnPage: ({ left }) => `${left} left on Today's Page`,
-  repeat: () => 'repeat · scope 0.5',
+  /* `0.5` was typed here while `SCOPE_MIRROR.repeat` is the single source of the same number —
+     interpolated at integration so the copy cannot outlive a change to the scope table. (This entry
+     still has no call site: `tests/job-copy.test.mjs` §10 pins the dead list by name and count, and
+     G3.7(3)'s anti-grind story wants it on the second board of an evening — notes/repair-tests.md
+     Request 2, notes/repair-meta.md Request 6. Routing it or deleting it is a product decision and
+     is recorded as still-open in the integration note.) */
+  repeat: () => `repeat · scope ${SCOPE_MIRROR.repeat}`,
   dryBoard: () => 'low-value board: variants only',
   coldCrew: ({ idle, dues, minutes }) => `${idle} crew idle on their own reviews · ${dues} dues · clear them first — ${minutes} minutes`,
   walkConfirm: ({ amount }) => `Bag ${amount} first?`,
@@ -753,7 +920,17 @@ export const COPY = deep({
   refuse: ({ ends, minutes }) => `that ends at ${ends} — take the ${minutes}-minute RUN instead?`,
   night: ({ minutes, ends }) => `No board tonight · Night Before · ~${minutes} min · ends ${ends}`,
   morning: () => 'Go.',
-  ratingLine: ({ rating, n, N }) => `rating ${rating} · ${n}/${N} informative calls`,
+  /* REPAIR-DECISION S3.1(d), landed at integration (notes/repair-week.md Request 4: Home's board
+     line no longer prints a rating at all, so this is the whole of the fix). TWO changes, both copy:
+     the line LEADS WITH THE HELD RANK — after the S3 ratchet `player.rank` is a floor and is no
+     longer recomputable from the window, so it is the number the student actually holds — and where
+     `n === 0` it prints the words instead of a bare `5.00`. `rating 5.00 · 0/50 informative calls`
+     beside `Called 5` was the app reporting measured cowardice at a student playing the best they
+     ever have: 5.00 has two causes and an empty window is the other one. The wording is shipped
+     copy, promoted here from `screens/job.js payoutLineOf`'s blank-slot branch. */
+  ratingLine: ({ rank, rating, n, N }) => (Number(n) > 0
+    ? `${rank} · rating ${rating} · ${n}/${N} informative calls`
+    : `${rank} · rating unchanged · no measurement · ${n}/${N} informative calls`),
   deflation: () => 'posted falls as you master the material. That is the point.',
   collapsedBoard: ({ wing, tokens, loose, mult, chain }) => `${wing} ⟨${tokens}⟩ · loose ${loose} · ×${mult} · chain ${chain}`,
   commitWalk: ({ minutes }) => `WALK AT ${minutes}`,
@@ -836,12 +1013,18 @@ export const PUBLISHED = deep({
    * **CONDITIONAL, and the condition is not in the formula: the pile must be able to pay the loss.**
    * G2's miss branch is `−min(LOOSE, L·m·P·wing_pen)`, so this table is the ladder a player faces
    * only on a DEEP pile (`S ≥ L·m·P`, G3.2). At `S = 0` — which is where a BAG leaves you — every
-   * rung's miss term is 0, the clear branch is strictly increasing in `W`, and the highest call the
-   * rank allows is weakly dominant. The argmax column below is therefore the deep-pile argmax, NOT
-   * an unconditional one; `econ.evMaxCallAt(state)` is the argmax at a real state, and
-   * `job-econ.test.mjs §3b` pins both, including the `S = 0` dominance hole. (Round-1 critic finding
-   * 4; the hole itself lives in G2's published cap, so closing it is a spec decision — see
-   * `notes/econ-fix.md`.)
+   * rung's miss term is 0, so a clear branch that paid the full `W` would make the highest call the
+   * rank allows **weakly dominant** at every `q`. That was the shipped economy until verify round 1,
+   * and bag-every-beat collected it: +95.6 % over honest play at q = 0.50, on 16/16 seeds.
+   *
+   * **The COVER closes it** (`econ.coverFor`): the `min(LOOSE, ·)` that truncates the price truncates
+   * the premium with it — `W_eff = W(50) + (W_call − W(50))·min(1, LOOSE/|nominal miss|)`. On a deep
+   * pile the cover is 1 and **this table is exactly the ladder the player faces**; at `S = 0` it is 0,
+   * every rung pays `W = 1.0`, no rung is preferred, and the call is settled by the strictly proper
+   * rating instead. The argmax column below is still the deep-pile argmax, because that is the only
+   * state in which the rungs differ at all; `econ.evMaxCallAt(state)` is the argmax at a real state,
+   * and `job-econ.test.mjs §3b` pins both ends. (Round-1 critic finding 4, closed at verify round 1 —
+   * see `notes/repair-econ.md`.)
    */
   evTable: {
     0.50: { 50: 0.50, 70: 0.40, 85: -0.10, 95: -1.40 },
@@ -853,6 +1036,68 @@ export const PUBLISHED = deep({
   },
   carryIndifference: [0.600, 0.7778, 0.88235],
   ratingIndifference: [0.600, 0.775, 0.900],
+  /**
+   * **The carry ladder's cuts on the GUARDED wing** — `q/(1−q) = wing_pen·ΔP/ΔW` at `wing_pen = 2`.
+   *
+   * `carryIndifference` above is the `wing_pen = 1`, `ρ̄ = 1` case, and since verify round 2 it is
+   * EXACT there at every scope, wing, cold, tell, ×2, chain and pile depth: G2's clear branch pays
+   * the call's premium on the STAKE (`L · ×2`) rather than on the gain set, so dressing a target no
+   * longer buys upside without downside. The guard is the one multiplier left out of that stake, on
+   * purpose — putting it in would double a bold call's PRIZE inside the guard as well as its price
+   * and invert the guard outright (a guarded tier-1 at rank 1, chain 3, call 85 would out-earn the
+   * safe wing at any `q > 0.870`). So the guarded wing runs the stricter ladder below instead.
+   *
+   * It is published because a deviation from `carryIndifference` is exactly what the round-2 critic
+   * found unpublished, and because the DIRECTION is the safety property: these cuts are ABOVE the
+   * rating ladder's at every rung, so inside the guard money asks for more certainty than rank does
+   * and a lie is never the best-paid report. `job-econ.test.mjs` §3c sweeps both wings.
+   */
+  carryIndifferenceGuarded: [0.750, 0.875, 0.9375],
+
+  /**
+   * G1 "CRACK / WALK" — **the getaway's two exits, measured** (econ lane, verify round 3).
+   *
+   * `before` is the shipped machine as it stood: the getaway's call row contains the stake-free 50
+   * rung (`CALL_LEVELS[0].P === 0`, so `econ.missFor` returns 0 on it), and answering the vault —
+   * even by missing it — made `targetsLeft === 0` and paid `COMPLETION` on the whole bagged pile,
+   * which WALK was refused. `CRACK@50 → deliberate miss` therefore banked `×1.10` of WALK **on 200
+   * of 200 getaways**, worst branch ×1.0976, and the min-maxer cracked at `q = 0` on every shape.
+   * `after` is the same sweep against `econ.exitBonusRate`, which prices the getaway WALK at
+   * parity: the miss branch is EXACTLY equal, and CRACK is ahead only on a clear.
+   *
+   * 50 seeds × 4 shapes, both branches driven to a terminal debrief, the BEFORE column read off the
+   * walk debrief's own `baseBagged` (the pre-bonus pile — which is what the old rule banked, to the
+   * integer) and the AFTER column off its `finalBagged`. Reproduced in `tests/job-econ.test.mjs` §8.
+   */
+  getawayParity: {
+    seedsPerShape: 50, getaways: 200,
+    before: { RUN: 1.1001, JOB: 1.1000, JOB12: 1.1002, VAULT: 1.1004, all: 1.1002, ahead: 200, worst: 1.0976 },
+    after: { all: 1.0000, ahead: 0, worst: 1.0000 },
+    /** the same 200 getaways, every branch, AFTER — `mean` is Σcrack / Σwalk, `ahead`/`behind` are counts */
+    branches: {
+      '50-miss': { mean: 1.0000, ahead: 0, behind: 0 },
+      '50-clear': { mean: 1.3244, ahead: 200, behind: 0 },
+      '70-miss': { mean: 0.7987, ahead: 0, behind: 200 },
+      '70-clear': { mean: 1.4054, ahead: 200, behind: 0 },
+      '85-miss': { mean: 0.4912, ahead: 0, behind: 200 },
+      '85-clear': { mean: 1.4716, ahead: 200, behind: 0 },
+    },
+    /**
+     * The rung's own break-even against walking, `q* = |miss| / (clear + |miss|)` = `P/(W + P)` on a
+     * bare vault: **0** at the free rung, which is exactly why CRACK weakly dominates WALK and why
+     * the getaway's live decision is the CALL. As FRACTIONS, not decimals, for the same reason
+     * `CALL_INDIFFERENCE` is — 3/10, 10/19, 25/36 are 0.300, 0.5263, 0.6944 at 4 dp, and the middle
+     * one written as a decimal would trip the G11 rejected-band lint on its own leading digits.
+     * Recomputed from `carryFor`/`missFor` on an uncovered pile in `job-econ.test.mjs` §8.
+     */
+    crackQStarBare: { 50: 0, 70: 3 / 10, 85: 10 / 19, 95: 25 / 36 },
+    /**
+     * The same threshold on a pile too shallow to back the top rung's premium: the cover lowers it
+     * (a premium the pile cannot pay is a premium not charged), so a shallow pile makes the bold
+     * call CHEAPER to attempt, never dearer. Only the 95 rung moves at a 300 pile on a tier-4 vault.
+     */
+    crackQStarCovered300: { 95: 0.6787 },
+  },
 
   /** G3.1 — `w = 4q̂(1−q̂)` */
   weights: { 0.5: 1.00, 0.8: 0.64, 0.9: 0.36, 0.933: 0.25, 0.97: 0.116 },
@@ -888,12 +1133,65 @@ export const PUBLISHED = deep({
   deepQAsPrinted: { 2: { 85: 0.796 } },
 
   /** G3.2 — the two worked push/bag rows */
+  /**
+   * G3.2's two worked rows. **Recomputed for the COVER** (econ lane, verify round 1): the gain term
+   * is `m·W_push − W_bag`, not `W·(m − 1)`, because a bag empties the pile that backs the next call
+   * and `W_bag` falls to `W(50) = 1.0`. Row 1 was `−40` and row 2 `+90.96` while both branches paid
+   * the same `W`; the decisions (BAG, PUSH) are unchanged, which is the point — the cover re-prices
+   * the margin, not the verdict.
+   */
   workedRows: [
-    { S: 300, chain: 0, L: 70, call: 85, q: 0.5, rhoBar: 1, pushMinusBag: -40, decision: 'BAG' },
-    { S: 300, chain: 6, L: 70, call: 85, q: 0.8, rhoBar: 1, pushMinusBag: 90.96, decision: 'PUSH' },
+    { S: 300, chain: 0, L: 70, call: 85, q: 0.5, rhoBar: 1, pushMinusBag: -12, decision: 'BAG' },
+    { S: 300, chain: 6, L: 70, call: 85, q: 0.8, rhoBar: 1, pushMinusBag: 133.2, decision: 'PUSH' },
   ],
   /** G3.2 — the shallow pile at c = 0 is exactly 0.9 for every L */
   shallowQAtChain0: 0.9,
+  /**
+   * G3.2's shallow-pile walk, **with the two parameters the numeral needs**. `0.900 → 0.143` is
+   * `econ.shallowQStar` over chains 0…8 at `S = 12`, `L = 18`, call 95 — and the c = 8 endpoint is a
+   * function of both: 0.042 at `L = 70`, 0.683 at `S = 200`. That is a **16× spread**, so the pair
+   * "0.900 → 0.143" is not reproducible from a document that names neither. `econ.js shallowQStar`'s
+   * docblock names them; G3.2 prints the numeral bare, which is the finding.
+   * Recomputed from `shallowQStar` cell by cell in `job-econ.test.mjs` §5 — including the spread, so
+   * the numeral cannot be re-published as parameter-free. (Round 3, econ-math MINOR.)
+   */
+  shallowQWalk: {
+    call: 95, S: 12, L: 18,
+    chains: [0, 1, 2, 3, 4, 5, 6, 7, 8],
+    q: [0.900, 0.542, 0.388, 0.302, 0.247, 0.209, 0.181, 0.160, 0.143],
+    /** the c = 8 endpoint over the realistic states the same one-line claim covers */
+    endAtChain8: [
+      { S: 12, L: 18, q: 0.143 }, { S: 50, L: 18, q: 0.397 }, { S: 100, L: 18, q: 0.551 },
+      { S: 200, L: 18, q: 0.683 }, { S: 12, L: 6, q: 0.326 }, { S: 12, L: 70, q: 0.042 },
+    ],
+  },
+  /**
+   * G3.2's **printed `q*`** table — `econ.breakevenQ` on a bare target at `S = 200`, `L = 18`,
+   * `ρ̄ = 1`. Seventeen of the eighteen cells are the deep root G3.2 prints under the table,
+   * `(L·m·P − 0.10·S) / (L_gain·ρ̄·(m·W − 1) + L·m·P)`. **The eighteenth is not, and that is why this
+   * object exists**: at call 95, c = 8, `L_loss·m·P = 234 > S = 200`, so the pile is SHALLOW and the
+   * cell is `0.9·S/(A + S) = 0.650`. The deep root reads **0.671** there, so a reader recomputing the
+   * last cell from the stated formula misses by 0.021 with nothing in the document to tell them why.
+   *
+   * **Every cell moved at verify round 1** (the COVER, `econ.coverFor`): the gain term is
+   * `m·W_push − W_bag` rather than `W·(m − 1)`, because a bag empties the pile that backs the next
+   * call, so `W_bag = W(50) = 1.0`. Pushing therefore keeps a premium bagging forfeits, and every
+   * printed threshold falls. The branch census is unchanged — `isDeepPile` is the cover's own ratio.
+   * The published value is right; the formula caption is the thing that owes a footnote.
+   * `job-econ.test.mjs` §5 recomputes all 18 cells from `breakevenQ`, proves each cell's branch from
+   * `econ.isDeepPile`, and pins the census at exactly one shallow cell. (Round 3, econ-math MINOR.)
+   */
+  printedQ: {
+    S: 200, L: 18, rhoBar: 1,
+    chains: [0, 1, 2, 4, 6, 8],
+    rows: {
+      70: [0.000, 0.000, 0.000, 0.000, 0.061, 0.107],
+      85: [0.317, 0.362, 0.391, 0.426, 0.447, 0.460],
+      95: [0.627, 0.640, 0.649, 0.660, 0.666, 0.650],
+    },
+    /** every cell `breakevenQ` takes the SHALLOW branch on, with the deep root it is NOT */
+    shallowCells: [{ call: 95, chain: 8, lossLmP: 234, deepRootWouldBe: 0.671 }],
+  },
   /** G3.3 — the fee's proof of work */
   feeProof: { S: 50.76, L: 6, call: 70, chain: 0, feeTerm: 5.076, lossTerm: 3.6 },
 
@@ -908,7 +1206,7 @@ export const PUBLISHED = deep({
   ],
 
   /** G1 — the fixed-phase totals and the whole shape table */
-  fixedTotals: { JOB: { default: 160, full: 282 }, RUN: { default: 104, full: 130 } },
+  fixedTotals: { JOB: { default: 160, full: 257 }, RUN: { default: 104, full: 130 } },
   /**
    * G1's shape table — **NOMINAL. It is a function of `SHAPES[id].tierMix`, and `tierMix` is a
    * design-time budget, not a description of a draft.** `composeBundles` does not build a queue out
@@ -926,16 +1224,23 @@ export const PUBLISHED = deep({
    * `split` here is `gameS / wallS` with the debrief read **inside** `gameS`. That is a THIRD basis:
    * the debrief headline and the board's projection both put the debrief read in neither term
    * (G1 statement 2), which is 5–6 points lower on every shape — see `nominalHeadlineSplit`.
+   *
+   * **The FULL cells moved by 25 s in verify round 2 and the DEFAULT cells did not.** The full
+   * column used to bill a `crew` phase the state machine cannot enter, for seconds G1 had already
+   * sold inside the brief window's five options — see `FIXED_PHASES`. The three shapes on the JOB
+   * column each drop 25 s of `gameS` and `wallS`, and their full split falls to what the shipped
+   * machine has always measured (JOB 51.3 → 49.8, JOB12 40.3 → 39.1, VAULT 34.1 → 32.6). RUN's
+   * `crew` cell was 0, so its row is untouched — which is exactly the pattern the deficit had.
    */
   shapeTable: {
     RUN: { targets: 6, answerS: 180, decisionS: 84, gameS: [188, 214], wallS: [368, 394], split: [51.1, 54.3] },
-    JOB: { targets: 10, answerS: 420, decisionS: 160, gameS: [320, 442], wallS: [740, 862], split: [43.2, 51.3] },
-    JOB12: { targets: 12, answerS: 750, decisionS: 224, gameS: [384, 506], wallS: [1134, 1256], split: [33.9, 40.3] },
+    JOB: { targets: 10, answerS: 420, decisionS: 160, gameS: [320, 417], wallS: [740, 837], split: [43.2, 49.8] },
+    JOB12: { targets: 12, answerS: 750, decisionS: 224, gameS: [384, 481], wallS: [1134, 1231], split: [33.9, 39.1] },
     /* VAULT takes the JOB fixed column, but only ONE of its two brief windows can land (the second
        falls after target 8 of a 7-target shape — see SHAPES.VAULT and `econ.landedBriefs`), so its
-       `brief` cell is charged once, not twice: 140 s default / 232 s full rather than 160 / 282.
+       `brief` cell is charged once, not twice: 140 s default / 207 s full rather than 160 / 257.
        Round 2 (split-honesty) — the published row used to claim a surface the shape cannot serve. */
-    VAULT: { targets: 7, answerS: 750, decisionS: 156, gameS: [296, 388], wallS: [1046, 1138], split: [28.3, 34.1] },
+    VAULT: { targets: 7, answerS: 750, decisionS: 156, gameS: [296, 363], wallS: [1046, 1113], split: [28.3, 32.6] },
   },
   /**
    * The same four rows on the basis the APP prints — the debrief read in neither term of the split
@@ -944,7 +1249,7 @@ export const PUBLISHED = deep({
    * not a surprise: a nominal JOB is 43.2 % game by the table's definition and **37.8 %** by the
    * one the board prints. Recomputed in `job-shape-measured.test.mjs` from `FIXED_PHASES`.
    */
-  nominalHeadlineSplit: { RUN: [45.1, 49.2], JOB: [37.8, 47.3], JOB12: [29.8, 37.0], VAULT: [23.5, 30.1] },
+  nominalHeadlineSplit: { RUN: [45.1, 49.2], JOB: [37.8, 45.6], JOB12: [29.8, 35.7], VAULT: [23.5, 28.4] },
   /**
    * **What the board ACTUALLY posts — measured, not derived.** `[min, median, max]` over the 50
    * seeded saves `tests/job-board.test.mjs` builds, at clock 19:30, taking each board's own
@@ -965,18 +1270,22 @@ export const PUBLISHED = deep({
    * 0 of 45 on split.)
    */
   shapeTableDrafted: {
+    /* The `full` bands each fell by the same 25 s in verify round 2, for the reason the nominal
+       row's did: the fixed column billed a `crew` phase the machine cannot enter. The `default`
+       bands are untouched — that column's `crew` cell was 0 — which is the signature of the defect
+       rather than a coincidence. Re-measured, not adjusted. */
     JOB: {
       n: 45, targets: [10, 10, 11], answerS: [510, 690, 1260], decisionS: [176, 200, 254],
-      wallS: { default: [854, 1046, 1674], full: [976, 1168, 1796] },
-      split: { default: [24.7, 34.0, 40.3], full: [29.8, 40.9, 47.7] },
-      headline: { default: [21.7, 29.8, 35.4], full: [27.2, 37.4, 44.0] },
+      wallS: { default: [854, 1046, 1674], full: [951, 1143, 1771] },
+      split: { default: [24.7, 34.0, 40.3], full: [28.9, 39.6, 46.4] },
+      headline: { default: [21.7, 29.8, 35.4], full: [26.1, 36.0, 42.4] },
       overSessionCeiling: 1,
     },
     VAULT: {
       n: 5, targets: [7, 7, 7], answerS: [390, 450, 810], decisionS: [128, 138, 166],
-      wallS: { default: [658, 728, 1116], full: [750, 820, 1208] },
-      split: { default: [27.4, 38.2, 40.7], full: [32.9, 45.1, 48.0] },
-      headline: { default: [22.9, 32.1, 34.2], full: [29.1, 40.4, 43.1] },
+      wallS: { default: [658, 728, 1116], full: [725, 795, 1183] },
+      split: { default: [27.4, 38.2, 40.7], full: [31.5, 43.4, 46.2] },
+      headline: { default: [22.9, 32.1, 34.2], full: [27.5, 38.4, 40.9] },
       overSessionCeiling: 0,
     },
   },

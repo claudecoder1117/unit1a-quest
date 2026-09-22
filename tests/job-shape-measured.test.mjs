@@ -24,7 +24,7 @@ import assert from 'node:assert/strict';
 import { read } from './_helpers.mjs';
 
 import { postBoard } from '../site/js/job/board.js';
-import { shapeTable } from '../site/js/job/econ.js';
+import { shapeTable, breakevenQ, shallowQStar, r3 } from '../site/js/job/econ.js';
 import { fresh } from '../site/js/store.js';
 import { applyOutcome, recordRematch, DAY_MS, HOUR_MS } from '../site/js/schedule.js';
 import { rngFrom } from '../site/js/rng.js';
@@ -85,7 +85,10 @@ function costOf(board) {
   }
   /* only the brief windows that can land in a draft this long — `econ.landedBriefs`' own clamp */
   const landed = Math.min(shape.briefs ?? 0, BOARD.briefAfterTargets.filter((n) => n < queue.length).length);
-  const fixed = (p) => p.board + p.guard + p.brief * landed + p.getaway + p.debrief + p.crew;
+  /* no `crew` term — the column's sixth cell was a between-jobs phase the machine cannot enter, and
+     a double charge besides (the crew re-rank is one of the brief window's five published options).
+     Verify round 2, split-honesty; see `FIXED_PHASES` in data/job.js. */
+  const fixed = (p) => p.board + p.guard + p.brief * landed + p.getaway + p.debrief;
   const out = { shape: board.shape, targets: queue.length, answerS, decisionS, boardSplit: board.split, tiers: {} };
   for (const it of queue) out.tiers[it.tier] = (out.tiers[it.tier] ?? 0) + 1;
   for (const path of ['default', 'full']) {
@@ -261,16 +264,101 @@ describe('G3.2 · the escalation direction is not attributed to the app', () => 
       'COMPOSED-GAME.md claims the app scopes the threshold’s direction; site/js/screens/settings.js states it flat');
   });
 
-  test('the one place the app states the direction is still unscoped — so the document may not lean on it', () => {
-    /* A guard, not a demand: the Settings copy is fine as copy and the fix is a Request in
-       notes/econ-fix.md. What must stay true is the PAIRING — if the copy is ever scoped, this test
-       fails and G3.2's paragraph about it is stale and has to be rewritten. */
-    const hits = SETTINGS.match(/chain deepens[\s\S]{0,120}?threshold falls/g) ?? [];
-    assert.equal(hits.length, 1, 'expected exactly one statement of the direction in Settings');
-    const scoped = /shallow|S\s*<|pile can pay|deep pile/i.test(hits[0]);
-    assert.equal(scoped, false,
-      'the Settings sentence is now scoped — good; update COMPOSED-GAME G3.2, which currently says it is not');
-    assert.ok(/does not scope|scopes nothing|with no scope/i.test(DOC),
-      'G3.2 must record that the app’s only statement of the direction is unscoped');
+  test('G3.2 describes the app’s copy correctly — the pairing, asserted in BOTH directions', () => {
+    /* THE INVARIANT IS THE PAIRING, not the copy. G3.2 makes a claim ABOUT `screens/settings.js`, so
+       the claim and the copy have to move together; `scoped` is MEASURED off the shipped file, never
+       assumed. Round 3 wrote this one-directionally (`scoped === false`), which pinned the defect's
+       presence: it would have failed the moment the screen lane applied this lane's own Request to
+       scope the sentence — a red suite for someone else's correct fix, and an assertion no repair
+       could satisfy. Both directions are asserted here instead, and exactly one arm fires, so a
+       mismatch between the document and the copy still fails whichever side moves.
+       (Round 4, repair-econ: the pairing is kept, the one-way pin is not.) */
+    const hits = SETTINGS.match(/chain deepens[\s\S]{0,160}?threshold falls/g) ?? [];
+    assert.ok(hits.length <= 1,
+      `expected at most one statement of the direction in Settings, found ${hits.length} — G3.2 says there is exactly one place`);
+    const claimsUnscoped = /does not scope|scopes nothing|with no scope/i.test(DOC);
+
+    if (hits.length === 0) {
+      assert.equal(claimsUnscoped, false,
+        'Settings no longer states the direction at all, so G3.2 may not describe what that sentence says — rewrite the paragraph');
+      return;
+    }
+    /* Read the scope off the SENTENCE the claim lives in, not off the matched fragment: a scope
+       would most naturally be written in front of "as the chain deepens" (*"At a fixed pile, as the
+       chain deepens…"*), which the fragment cannot see — the round-3 form would have called that
+       copy unscoped. A ±character window is the other trap: two lines above this copy sits
+       `shallowQStar(...)`, an identifier, so `/shallow/` over a window reads a scope that no student
+       can see. Hence the sentence bounds, and `shallow` only when it is a word. */
+    const idx = SETTINGS.indexOf('chain deepens');
+    const from = SETTINGS.lastIndexOf('. ', idx) + 1;
+    const stop = SETTINGS.indexOf('. ', idx);
+    const sentence = SETTINGS.slice(from, stop < 0 ? SETTINGS.length : stop + 1);
+    assert.ok(sentence.includes('threshold falls'),
+      'the sentence bounds lost the claim itself — fix the slice before trusting either arm below');
+    const scoped = /\bshallow(?![A-Za-z])|S\s*<|fixed pile|pile can pay|deep pile|once the pile/i.test(sentence);
+    if (scoped) {
+      assert.equal(claimsUnscoped, false,
+        `the Settings sentence is now scoped — good; COMPOSED-GAME G3.2 still says it is not: ${JSON.stringify(hits[0].slice(0, 90))}`);
+    } else {
+      assert.ok(claimsUnscoped,
+        'G3.2 must record that the app’s only statement of the direction is unscoped — it may not lean on a scope the copy does not carry');
+    }
+    /* and in NEITHER state may the document hand the scoping back to the app */
+    assert.equal(DOC.includes('and the app says so'), false,
+      'the attribution is back in COMPOSED-GAME.md — the app states the direction, it does not scope it');
+  });
+});
+
+/* =========================================================================================
+   4. G3.2's q* numerals are the shipped function's own answers (round 4, econ-math MINORs)
+
+   The two MINORs in this lane are both *"a numeral published without the parameters that produce
+   it"*: the shallow pair `0.900 → 0.143` (no `S`, no `L` — the c = 8 end runs 0.042 … 0.683 over
+   realistic states) and the printed-`q*` table, whose last call-95 cell is the SHALLOW root while the
+   caption states the deep one. The arithmetic is pinned in `job-econ.test.mjs` §5 against
+   `PUBLISHED.printedQ` / `PUBLISHED.shallowQWalk`; what is pinned HERE is the other half — that the
+   numerals the AUTHORITY prints are those same shipped answers, parsed out of the document rather
+   than retyped, so the table cannot drift from the function it claims to tabulate.
+   ========================================================================================= */
+
+describe('G3.2 · the published q* numerals are the shipped ones, cell by cell', () => {
+  const DOC = read('COMPOSED-GAME.md');
+
+  test('every cell of the printed-q* table in G3.2 is `breakevenQ` at the parameters the table states', () => {
+    const { S, L, chains, rows } = P.printedQ;
+    for (const call of [70, 85, 95]) {
+      const row = new RegExp(`\\|\\s*printed \`q\\\\?\\*\`, call ${call}\\s*\\|([^\\n]+)\\|`).exec(DOC);
+      assert.ok(row, `G3.2 no longer prints a "printed q*, call ${call}" row — re-derive it from PUBLISHED.printedQ`);
+      const cells = row[1].split('|').map((s) => s.trim()).filter((s) => s.length).map(Number);
+      assert.equal(cells.length, chains.length,
+        `call ${call}: the document prints ${cells.length} chain columns, PUBLISHED.printedQ has ${chains.length}`);
+      cells.forEach((cell, i) => {
+        const where = `call ${call}, c = ${chains[i]}`;
+        assert.equal(cell, rows[call][i], `${where}: the document and PUBLISHED.printedQ disagree`);
+        assert.equal(r3(breakevenQ({ loose: S, chain: chains[i], L, call })), cell,
+          `${where}: the published numeral is not what breakevenQ returns at S = ${S}, L = ${L}, ρ̄ = 1`);
+      });
+    }
+  });
+
+  test('the 0.900 → 0.143 pair is `shallowQStar` at PUBLISHED.shallowQWalk’s own S and L', () => {
+    const w = P.shallowQWalk;
+    const printed = /0\.900 → 0\.143([^\n]{0,120})/.exec(DOC);
+    assert.ok(printed, 'G3.2 no longer prints the 0.900 → 0.143 pair — re-derive it from PUBLISHED.shallowQWalk');
+    assert.equal(r3(shallowQStar({ loose: w.S, chain: w.chains[0], L: w.L, call: w.call })), 0.900);
+    assert.equal(r3(shallowQStar({ loose: w.S, chain: w.chains.at(-1), L: w.L, call: w.call })), 0.143);
+
+    /* The parameters themselves are Spec correction 1 in notes/repair-econ.md: the document owner
+       adds `at S = 12, L = 18, call 95`, and this lane may not edit COMPOSED-GAME.md. So the
+       assertion is written CONDITIONALLY rather than as a lint that would leave the suite red on
+       text nobody has written yet: the moment G3.2 names an S and an L beside the pair, they have to
+       be a pair that actually produces 0.143. Today the arm does not fire — and `printed[1]` is
+       asserted non-null above, so the test still fails if the pair itself disappears. */
+    const sAt = /S\s*=\s*(\d+(?:\.\d+)?)/.exec(printed[1]);
+    const lAt = /L\s*=\s*(\d+(?:\.\d+)?)/.exec(printed[1]);
+    if (sAt && lAt) {
+      assert.equal(r3(shallowQStar({ loose: Number(sAt[1]), chain: 8, L: Number(lAt[1]), call: w.call })), 0.143,
+        `G3.2 now names S = ${sAt[1]}, L = ${lAt[1]} beside 0.900 → 0.143, and that pair does not produce 0.143`);
+    }
   });
 });

@@ -110,7 +110,8 @@ export function freshPlayer() {
     rating: { calls: [], value: 5.0, n: 0 },     // calls capped at CAPS.game.calls — the window IS the array
     rank: 2,                                      // G2 "Rank": calling 50 on everything scores 5.0 = Called 2
     elo: { player: 1000, house: 1000 },
-    records: { bestBag: 0, bestChain: 0, bestRating20: 0, cleanJobs: 0, cracked: 0, walked: 0, cleanGetaway: false },
+    // `bestRating` — the rank ratchet's audit record (S3.1(c)); declared in data/job.js too, see normalizePlayer.
+    records: { bestBag: 0, bestChain: 0, bestRating20: 0, bestRating: 0, cleanJobs: 0, cracked: 0, walked: 0, cleanGetaway: false },
   };
 }
 
@@ -172,7 +173,15 @@ export function normalizePlayer(raw) {
   p.elo = e;
 
   const rec = over(d.records, raw?.records);
-  for (const k of ['bestBag', 'bestChain', 'bestRating20', 'cleanJobs', 'cracked', 'walked']) rec[k] = num(rec[k], 0);
+  /* `bestRating` — the rank ratchet's audit record (REPAIR-DECISION S3.1(c): under a rank FLOOR,
+     `p.rank` stops being recomputable from the 50-call window, so the rating that earned it is
+     stored and printed beside it on Settings/Stats). DECLARED in `freshPlayer()` above and in
+     `data/job.js SAVE_DEFAULTS.player` — the two copies of this schema are deep-equalled in both
+     directions by `tests/job-save.test.mjs`, so they moved in one change at integration
+     (notes/repair-save.md Request A + notes/repair-meta.md Request 1 + notes/repair-state.md
+     Request 4). The coercion is therefore UNCONDITIONAL, like every other record: the field can
+     never reach disk as an uncoerced pass-through of `over()` the way `ledger.debriefAt` did. */
+  for (const k of ['bestBag', 'bestChain', 'bestRating20', 'bestRating', 'cleanJobs', 'cracked', 'walked']) rec[k] = num(rec[k], 0);
   rec.cleanGetaway = bool(rec.cleanGetaway, false);
   p.records = rec;
 
@@ -283,6 +292,12 @@ export function fresh(now = Date.now()) {
       theme: 'auto', sound: false, dailyGoal: 400,
       testDate: null, testTime: '08:00',
       askReasonOnMiss: true, callYourShot: false,
+      /* THE JOB's master switch (COMPOSED-GAME G7: "`settings.game = false` kills it in one tap").
+         `screens/settings.js:318` writes it and five modules read it, and for a whole round it was
+         declared NOWHERE — it reached disk only because `fillDefaults`'s `{...d.settings,
+         ...s.settings}` is not a whitelist, which is verbatim the drift `ledger.debriefAt` and
+         `tags[].days` were each caught for. Declared here, coerced in `fillDefaults`, 13 B. */
+      game: true,
     },
     xp: 0,
     streak: { count: 0, best: 0, lastDay: null, freezes: 0 },
@@ -345,6 +360,13 @@ function fillDefaults(s, now, { crewMakes = SKILL_IDS } = {}) {
   out.game = normalizeGame(s.game, { makes: crewMakes });
   const t = out.settings.theme; if (t !== 'light' && t !== 'dark') out.settings.theme = 'auto';
   const g = out.settings.dailyGoal; out.settings.dailyGoal = Number.isFinite(g) ? Math.min(800, Math.max(100, Math.round(g))) : 400;
+  /* THE JOB's master switch, coerced in the SAME DIRECTION every reader reads it. Every read is
+     `settings.game !== false` (`plan.js:342,492,628`, `screens/settings.js:314,746`,
+     `screens/stats.js:223`), so this FAILS OPEN by construction: only a literal `false` switches the
+     layer off, and a hand-edited `"false"`, an imported `{}` or a `0` becomes `true` on the way in
+     instead of surviving as an undeclared, uncoerced pass-through. Nothing about the layer's
+     on/off decision changes — what changes is that the stored value is now a declared boolean. */
+  out.settings.game = bool(out.settings.game, true);
   return out;
 }
 
@@ -523,6 +545,11 @@ export function applyCaps(s) {
      declined — so `queue ≤ 2 × (drafted + bench)` and `calls ≤ queue`. G7's table prices that ceiling
      (36 calls, a 36-entry queue, 4 bench entries) and `tests/job-save.test.mjs` asserts every link of
      the chain against a corpus of real JOB12s on every run.
+     ROUND 4 re-measured the ceiling independently, because a round-3 critic reported 26 against a
+     fixture that then priced 26 (zero headroom): **8 000 real JOB12s** on all-overdue saves (a
+     week-off catch-up) across four answer policies, taking **15 909** brief-window swaps through the
+     shipped `{ swap: { id } }` action shape, reach **28 calls, a 28-entry queue, 13 drafted, 2
+     benched** — every input of the derived ceiling holds, with 8 calls of headroom on the line.
      DO NOT restate this as "N seeded jobs reach 23" again. That was rounds 1-2's figure and it was
      measured on a corpus that never took a swap: the driver passed `brief(save, { swap: id })` where
      `state.brief` wants `{ swap: { id } }` and silently ignores anything else. Corrected to the

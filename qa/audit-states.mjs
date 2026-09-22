@@ -396,6 +396,53 @@ async function jobAnswerOne(page, { clear = false } = {}) {
 /** The job screen's own `data-phase`, or null when the job screen is not mounted. */
 const jobPhase = (page) => page.evaluate(() => document.querySelector('.job-screen')?.dataset?.phase ?? null);
 
+/**
+ * THE SELECTOR AN OS KEYBOARD ACTUALLY OPENS FOR — a live, editable text field inside the card.
+ * `widgets/base.js keepVisible()` answers `focus` on exactly these, and `keyboardInset()` only ever
+ * reports an inset because one of them took focus. A card with none of them (a cloze answered by
+ * tapping chips, a locked/graded widget) opens no keyboard on any phone.
+ */
+const KB_FIELD = '.card-parts input:not([type="hidden"]), .card-parts textarea';
+const keyboardFields = (page) => page.evaluate((sel) => [...document.querySelectorAll(sel)]
+  .filter((e) => !e.disabled && !e.readOnly && e.getClientRects().length).length, KB_FIELD);
+
+/**
+ * ADVANCE THE LIVE JOB UNTIL THE TARGET IN FRONT OF THE STUDENT IS ONE A KEYBOARD OPENS ON
+ * (round-1 verification, layout-safari).
+ *
+ * `job-answer-kb` and `job-payout-kb` used to stop on target 1 of `qa/fixtures/midweek.json`, which
+ * is a CLOZE: zero text inputs, so on a real phone no keyboard opens there at all. The states then
+ * pinned a 336 px inset on a page where nothing was focused, therefore nothing was scrolled, and
+ * every `offscreen` / `overlap` / `unreachable-answer` hit the auditor reported was an artefact of
+ * the harness — verbatim the artefact `pinKeyboard`'s own comment says it exists to avoid. 372
+ * findings, all from these two states, on every run.
+ *
+ * `css/job.css` already records that the same fixture "mounts live text inputs on three of its ten
+ * targets", so the fix is to walk to one of them: miss the targets that have no field (a miss is
+ * never frozen, so the field stays editable once we reach one) and stop on the first that does.
+ * Bounded, and driven by the screen's own `data-phase` so a brief window or the getaway cannot
+ * derail it.
+ *
+ * @returns {Promise<number>} the number of editable fields on the target it stopped at (0 = none found)
+ */
+async function jobToTypedTarget(page, { max = 10 } = {}) {
+  for (let i = 0; i < max; i++) {
+    const phase = await jobPhase(page);
+    if (phase == null) break;                                   // the job screen went away
+    if (phase === 'getaway') { await tap(page, '.job-screen .job-crack', { wait: 800 }); continue; }
+    if (phase === 'brief') { await tap(page, '.job-screen .job-brief-go, .job-screen .btn-primary', { wait: 700 }); continue; }
+    if (await has(page, '.job-screen .job-beat:not([hidden])')) {
+      await tap(page, '.job-screen .job-push, .job-screen .job-bag', { wait: 900 });
+      continue;
+    }
+    if (await has(page, '.job-screen .job-call')) { await jobLockCall(page); await cardLive(page); }
+    const n = await keyboardFields(page);
+    if (n > 0) return n;                                        // a typed target: stop here
+    if (!(await jobAnswerOne(page))) break;                     // no field: miss it and take the beat
+  }
+  return keyboardFields(page);
+}
+
 /** The debrief's root — the one screen `job-debrief` and `job-debrief-quit` both name. */
 const DEBRIEF_ROOT = '.job-screen .sum-job-take, .job-screen .run-summary';
 
@@ -727,6 +774,41 @@ export function states(h) {
       async (page) => { await go(H, page, `#/card/${cardId}`, { save: await fx('midweek.json'), root: '.card-screen' }); await cardLive(page); });
   }
 
+  /**
+   * THE SAME CARD, THE SAME KEYBOARD, NO JOB — the attribution control (round-1 verification).
+   *
+   * `job-answer-kb` mounts a study-layer card inside the job stage, so every finding it reports has
+   * two possible owners: the game layer's host, or the card chrome the study layer ships everywhere.
+   * Nothing in this catalog could tell them apart, because no card state outside a job ever opened a
+   * keyboard. This one does: `ang-wu-1` is the pairs card `job-answer-kb` stops on, at the same
+   * `VP_KB` phone heights, with the same real focus and the same 336 px inset.
+   *
+   * A finding that appears in BOTH is the study layer's card chrome and is waived out of the game
+   * layer's acceptance command with that evidence (`qa/audit-allow.json`); a finding that appears in
+   * `job-answer-kb` ALONE is the host's and stays in the exit code.
+   */
+  add('card-pairs-kb', '#/card/ang-wu-1 on its own screen, keyboard open — the control that attributes job-answer-kb\'s findings', ['card', 'widget', 'w:pairs', 'dock', 'keyboard', 'phone-critical', 'control'], '.card-screen .w-pairs',
+    async (page) => {
+      await go(H, page, '#/card/ang-wu-1', { save: await fx('midweek.json'), root: '.card-screen' });
+      await cardLive(page);
+      await pinKeyboard(page);
+      await nap(page, 300);
+    }, { vps: VP_KB });
+
+  /**
+   * …and the same card GRADED AND LOCKED, still outside a job — the second half of the attribution.
+   * `job-payout-kb` reaches the payout beat with the pairs widget complete and locked, which is a
+   * widget state no card state audited before; this is where it is owned. Same rule as above: a hit
+   * that appears here is `site/css/widgets.css`'s, not the job host's.
+   */
+  add('card-pairs-locked', '#/card/ang-wu-1 answered to the end — the pairs widget complete and LOCKED', ['card', 'widget', 'w:pairs', 'control'], '.card-screen .w-pairs.is-locked, .card-screen .w-pairs.is-complete',
+    async (page) => {
+      await go(H, page, '#/card/ang-wu-1', { save: await fx('midweek.json'), root: '.card-screen' });
+      await cardLive(page);
+      await missOn(page);
+      await nap(page, 300);
+    });
+
   /* rootcase: the three progressive stages of ang-10 (the student's own bug card) */
   add('card-rootcase-roots', '#/card/ang-10 — rootcase stage 1 of 3 (Solve), 4 parts draining, figure', ['card', 'widget', 'w:rootcase', 'figure', 'stages', 'long'], '.w-rootcase[data-stage="roots"]',
     async (page) => { await go(H, page, '#/card/ang-10', { save: await fx('midweek.json'), root: '.card-screen' }); await rootcaseTo(page, 'roots'); });
@@ -865,17 +947,54 @@ export function states(h) {
   add('job-answer-kb', 'THE JOB · the stem and the Answer Dock with the on-screen keyboard open — J6\'s own acceptance configuration', ['job', 'game', 'card', 'host', 'dock', 'keyboard', 'phone-critical', 'fixture'], '.job-screen .card-screen',
     async (page) => {
       await jobToEnvelope(H, page);
-      await jobLockCall(page);
-      await cardLive(page);
+      /* ROUND-1 VERIFICATION: stop on a target a keyboard actually opens on, not on target 1. */
+      const fields = await jobToTypedTarget(page);
+      if (!fields) throw new Error('job-answer-kb: no target in this job mounts a live text field — '
+        + 'the fixture has changed and this state can no longer model a keyboard (css/job.css records '
+        + 'three typed targets of ten on qa/fixtures/midweek.json)');
       await pinKeyboard(page);
       await nap(page, 300);
     }, { vps: VP_KB });
 
-  add('job-payout-kb', 'THE JOB · the payout beat and BAG / PUSH with the on-screen keyboard open', ['job', 'game', 'card', 'host', 'dock', 'keyboard', 'phone-critical', 'fixture'], '.job-screen .job-beat:not([hidden])',
+  /**
+   * THE PAYOUT BEAT ON A PHONE THE KEYBOARD HAS JUST LEFT — and the measurement that says why the
+   * keyboard is not still up (round-1 verification, layout-safari).
+   *
+   * This state used to pin a 336 px inset on the beat and call it "the payout beat with the keyboard
+   * open". It is not a configuration the app produces, and that is settled by the app's own code
+   * rather than by argument: the beat is drawn from `state.applyTarget`, which runs off the card's
+   * `onDone`, and `screens/card.js:1023 lockAll()` runs first — `entry.w.lock(true)` sets
+   * `input.disabled = true` on every widget field (`widgets/base.js:431`) and `dock.keys.el.hidden`
+   * puts the keypad away. A disabled field is blurred, and a blurred field closes the OS keyboard,
+   * so by the time `.job-beat` exists there is nothing focused for a keyboard to be open for.
+   * Measured, driving a typed target to its beat: `widgets: ["w w-pairs is-complete is-locked"],
+   * activeElement: MAIN`, zero focusable fields — which is why `pinKeyboard` now refuses it.
+   *
+   * What it measures instead is the real thing: the beat at the LAYOUT heights a phone has
+   * (`VP_KB`), reached through a target the student TYPED into, with the keyboard down because the
+   * app put it down. The residual — whether `.job-beat` should ride `--kb` during the OS's ~250 ms
+   * dismissal animation — is a `site/css/job.css` question and is filed there (layout-safari's own
+   * round-3 BLOCKER on that file), not modelled here by inventing a state.
+   */
+  add('job-payout-kb', 'THE JOB · the payout beat and BAG / PUSH on a phone, right after a TYPED target (the app closes the keyboard itself)', ['job', 'game', 'card', 'host', 'dock', 'keyboard', 'phone-critical', 'fixture'], '.job-screen .job-beat:not([hidden])',
     async (page) => {
       await jobToEnvelope(H, page);
+      const fields = await jobToTypedTarget(page);
+      if (!fields) throw new Error('job-payout-kb: no target in this job mounts a live text field');
       await jobAnswerOne(page);
-      await pinKeyboard(page);
+      /* THE ASSERTION THIS STATE EXISTS TO MAKE: the app itself took the keyboard away. If a field is
+         still live at the beat, the reasoning above is out of date and the state must go back to
+         pinning an inset — so it fails loudly rather than drifting. */
+      const live = await keyboardFields(page);
+      if (live > 0) {
+        throw new Error(`job-payout-kb: ${live} field(s) are STILL editable at the payout beat — `
+          + 'card.js lockAll() no longer disables them, so the keyboard really is open here and this '
+          + 'state must pin the inset again (see the note above it)');
+      }
+      await page.evaluate(() => {
+        document.documentElement.style.setProperty('--kb', '0px');
+        document.documentElement.dataset.kb = 'closed';
+      });
       await nap(page, 300);
     }, { vps: VP_KB });
 
@@ -1014,13 +1133,30 @@ export function states(h) {
        `widgets/base.js keepVisible()`, which scrolls the field back above the keyboard and the dock.
        Pinning the inset without the focus would invent a state no student sits in — keys up, nothing
        focused, nothing scrolled — and every "behind the dock" finding it produced would be an
-       artefact of the harness rather than a defect of the page. So the focus comes first. */
-    await page.evaluate(() => {
+       artefact of the harness rather than a defect of the page. So the focus comes first.
+
+       ROUND-1 VERIFICATION (layout-safari). That paragraph was the spec and the code did not enforce
+       it: the probe's `!!f` was discarded and the inset was pinned regardless, so two job states
+       that stop on a chip-answered cloze — zero text inputs, nothing focusable — were audited with
+       the keys up and the page unscrolled, and produced 372 standing findings between them. The
+       probe's answer is now load-bearing: no field, no keyboard, and the state fails loudly rather
+       than inventing a configuration. A state that lands here has to be driven to a typed target
+       (`jobToTypedTarget`) or it has no business pinning a keyboard. */
+    const focused = await page.evaluate(() => {
       const f = [...document.querySelectorAll('.card-parts input:not([type="hidden"]), .card-parts textarea')]
         .find((e) => !e.disabled && !e.readOnly && e.getClientRects().length);
       if (f) { f.focus(); f.dispatchEvent(new Event('focus', { bubbles: true })); }
       return !!f;
     });
+    if (!focused) {
+      const seen = await page.evaluate(() => ({
+        widgets: [...document.querySelectorAll('.card-parts .w')].map((w) => w.className).slice(0, 4),
+        active: document.activeElement?.tagName ?? null,
+      }));
+      throw new Error('pinKeyboard: nothing focusable on this state — no keyboard opens here, so pinning '
+        + `an inset would invent a configuration no device produces. widgets: ${JSON.stringify(seen.widgets)}, `
+        + `activeElement: ${seen.active}. Drive the state to a target with a live text field first.`);
+    }
     return page.evaluate((KB2) => {
     const root = document.documentElement;
     const phone = () => innerWidth <= 480;

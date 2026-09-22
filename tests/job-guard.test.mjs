@@ -45,7 +45,7 @@ import {
   // the two sides of the fixed point, and the press the board actually commits
   fixedPointMix, maximinPress, pressAdvice, stationaryPress,
   X_HAT_FORMULA, GUARD_MIX_FORMULA, MAXIMIN_FORMULA, PRESS_FORMULA,
-  BEST_RESPONSE_ACCEPTANCE, FARM_BAND, PRESS_PANEL_COPY,
+  BEST_RESPONSE_ACCEPTANCE, FARM_BAND, PRESS_PANEL_COPY, CAP_PANEL_COPY,
   // Elo
   elo, expectedScore, eloOutcome, eloSeed, flowControl, applyFlowControl, footholdFor,
   vaultGradeFor, vaultGradeRowFor,
@@ -58,10 +58,85 @@ import { skills, skillById, SKILL_IDS, TOTAL_WEIGHT } from '../site/data/skills.
 import { TAGS, AREAS, MISCONCEPTIONS } from '../site/data/misconceptions.js';
 import { lootMean, coldFor, lootFor, scopeOf, coldOf } from '../site/js/job/econ.js';
 import { scopeFor } from '../site/js/xp.js';
-import { mulberry32 } from '../site/js/rng.js';
+import { mulberry32, rngFrom } from '../site/js/rng.js';
+
+/* ROUND 6 — THE SHIPPED PATH. Two round-6 findings were both "the claim is false on the board the
+   composer actually deals, and the test that checks it never runs the shipped path": the pre-press
+   ordering was verified by calling `stationaryPress(v, wings, …)` with a RAW `v` and no `y` at all,
+   and the hold's price was never evaluated. Both now run through `postBoard` → `startJob` → `walk`,
+   so these five imports are the point of them rather than a convenience. */
+import * as board from '../site/js/job/board.js';
+import * as state from '../site/js/job/state.js';
+import { fresh } from '../site/js/store.js';
+import { applyOutcome, DAY_MS } from '../site/js/schedule.js';
+import { todayISO, addDays } from '../site/js/days.js';
+import { cards as ALL_CARDS } from '../site/data/cards.js';
+import { isBonus } from '../site/data/source-manifest.js';
 
 const sum = (a) => a.reduce((t, v) => t + v, 0);
 const close = (a, b, tol, msg) => assert.ok(Math.abs(a - b) <= tol, `${msg ?? ''} — ${a} vs ${b} (tol ${tol})`);
+
+/* ------------------------------------------------------------------ the shipped-board harness */
+
+const SHIPPED_BANK = ALL_CARDS.filter((c) => !isBonus(c.id));
+const SHIPPED_NOW = new Date(2026, 8, 16, 18, 0).getTime();
+const SHIPPED_TODAY = todayISO(new Date(SHIPPED_NOW));
+
+/**
+ * `tests/job-exploit.test.mjs`'s seeded save (real Leitner records and real `history`, so the
+ * composer and `qHatFor` both have food) PLUS the thing this file needs and that one does not: a
+ * real 0-12-job PRESS history, pushed through the shipped `pushHeat`, so `x̂` — and therefore the
+ * `y` the board prints — is NON-UNIFORM. With no press history `guardDist` cold-starts to uniform,
+ * `1 − yᵢ` is a constant, and every ordering claim about `vᵢ(1 − yᵢ)` is trivially true: that is
+ * exactly how the round-5 verification of the ordering managed to be vacuous.
+ */
+function shippedSave(i, { seedTag = 'j3-shipped' } = {}) {
+  const rng = rngFrom(seedTag, i);
+  const s = fresh(SHIPPED_NOW - (4 + rng.int(0, 20)) * DAY_MS);
+  s.profileId = `j3-${i}`;
+  s.settings.testDate = addDays(SHIPPED_TODAY, 4 + rng.int(0, 12));
+  const n = 28 + rng.int(0, 24);
+  for (let k = 0; k < n; k++) {
+    const c = SHIPPED_BANK[rng.int(0, SHIPPED_BANK.length - 1)];
+    let rec = null;
+    for (let r = 0; r < 3; r++) {
+      rec = applyOutcome(s, c.id, rng.chance(0.75) ? 'clean' : 'wrong', { now: SHIPPED_NOW - (30 - r * 4) * DAY_MS });
+    }
+    if (!rec) continue;
+    rec.cleared = true;
+    rec.rarity = 'gold';
+    rec.due = SHIPPED_NOW + (rng.chance(0.65) ? -rng.float(0, 9) : rng.float(0.2, 12)) * DAY_MS;
+    rec.history = Array.from({ length: 10 }, (_, h) => ({
+      at: SHIPPED_NOW - (20 - h) * DAY_MS, ok: rng.chance(0.75), attempt: rng.chance(0.75) ? 1 : 2, hints: 0, ms: 9000,
+    }));
+  }
+  for (const k of SKILL_IDS) {
+    if (!rng.chance(0.75)) continue;
+    s.skills[k] = {
+      m: rng.int(10, 95), n: rng.int(1, 9), lastAt: SHIPPED_NOW - rng.int(1, 20) * DAY_MS,
+      lastDueCorrectAt: rng.chance(0.4) ? SHIPPED_NOW - DAY_MS : null,
+    };
+  }
+  const jobs = rng.int(0, 12);
+  let heat = null;
+  const log = [];
+  for (let j = 0; j < jobs; j++) {
+    const press = Object.fromEntries(WING_IDS.map((w) => [w, 0]));
+    for (let left = GUARD.tokens; left > 0; left--) press[WING_IDS[rng.int(0, WING_IDS.length - 1)]] += 1;
+    const shape = rng.chance(0.2) ? 'VAULT' : 'JOB';
+    const targets = SHAPES[shape].targets;
+    const posted = 60 + rng.int(0, 140);
+    heat = pushHeat(heat, { press, posted, targets, shape });
+    log.push({ day: SHIPPED_TODAY, shape, targets, bagged: 10, posted, guard: WING_IDS[rng.int(0, WING_IDS.length - 1)], press });
+  }
+  s.game = { ...(s.game ?? {}), heat: heat ?? undefined, log };
+  return s;
+}
+
+/** The board a seeded save posts tonight, or `null` when it posts none. */
+function shippedBoard(save, { now = SHIPPED_NOW } = {}) {
+  try { return board.postBoard(save, SHIPPED_TODAY, { now }); } catch { return null; }
+}
 
 /* =========================================================================================
    1. The four wings partition the 19 skills (G3.4)
@@ -335,6 +410,86 @@ describe('J3 · project(y, cap) — water-filling (G3.4, G12 #10)', () => {
   test('the cap constant IS 0.75 for n = 3 and n = 2 alike (G3.4)', () => {
     assert.equal(GUARD.cap, 0.75);
   });
+
+  test('THE REDISTRIBUTION IS PROPORTIONAL, NOT LEVELLED — "water-filling" names the wrong rule', () => {
+    /* ROUND 4. The excess is shared in proportion to the uncapped entries; water-filling proper —
+       the Euclidean projection onto the capped simplex — LEVELS them, `y_i = min(cap, y_i + λ)`.
+       The two agree whenever one entry is capped and the rest are equal (every worked example the
+       doc and the panel print), and they differ as soon as the tail is uneven, which is every real
+       x̂. The shipped rule is the one the doc and the panel print, so this pins the difference
+       rather than letting a later "fix" rename the guard's distribution into the other one. */
+    const level = (y, cap) => {                        // y_i = min(cap, y_i + λ), λ by bisection
+      let lo = 0;
+      let hi = 1;
+      for (let i = 0; i < 200; i++) {
+        const mid = (lo + hi) / 2;
+        if (sum(y.map((v) => Math.min(cap, v + mid))) < sum(y)) lo = mid; else hi = mid;
+      }
+      return y.map((v) => Math.min(cap, v + (lo + hi) / 2));
+    };
+    const y0 = [0.90, 0.08, 0.02];
+    assert.deepEqual(project(y0, GUARD.cap).map((v) => Number(v.toFixed(5))), [0.75, 0.20, 0.05]);
+    assert.deepEqual(level(y0, GUARD.cap).map((v) => Number(v.toFixed(5))), [0.75, 0.155, 0.095]);
+    // both are feasible and sum-preserving, so neither is "wrong" — they are different rules
+    for (const f of [project(y0, GUARD.cap), level(y0, GUARD.cap)]) {
+      close(sum(f), 1, 1e-9);
+      assert.ok(Math.max(...f) <= GUARD.cap + 1e-9);
+    }
+    // the worked example both rules agree on, which is why the loose name survived this long
+    const flatTail = [0.9333333333333333, 0.03333333333333333, 0.03333333333333333];
+    project(flatTail, GUARD.cap).forEach((v, i) => close(v, level(flatTail, GUARD.cap)[i], 1e-9,
+      'one wing over the cap and an even tail: proportional and levelled coincide'));
+    // …and the shipped rule is idempotent and exactly sum-preserving over the sweep
+    const rng = mulberry32('j3-proportional');
+    for (let k = 0; k < 2000; k++) {
+      const n = 2 + (k % 3);
+      const raw = Array.from({ length: n }, () => rng.next() ** 3);
+      const y = raw.map((v) => v / sum(raw));
+      const once = project(y, GUARD.cap);
+      close(sum(once), sum(y), 1e-12, 'mass is moved, never dropped');
+      assert.deepEqual(project(once, GUARD.cap), once, 'idempotent');
+    }
+  });
+
+  test('THE AUTHORITY\'S PRINTED BLOCK REACHES THE SAME LIMIT AND NOT IN ≤ n−1 PASSES', () => {
+    /* COMPOSED-GAME.md:472 prints `free = { i : i ∉ over }` and the comment "terminates in ≤ n−1
+       passes". A capped entry EQUALS the cap, so it is not in `over` on the next pass; the doc's
+       version therefore re-frees it, hands it excess again, and converges by asymptote. Same limit
+       to 1e-15, 20× to 46× the passes. This is the measurement behind the spec correction in
+       notes/repair-guard.md; the shipped docblock and the Settings panel already print the
+       corrected line (`i not capped`). */
+    const docProject = (y, cap) => {                   // the printed block, implemented literally
+      const out = y.slice();
+      let passes = 0;
+      for (;;) {
+        const over = out.map((v, i) => [v, i]).filter(([v]) => v > cap + 1e-15).map(([, i]) => i);
+        if (over.length === 0 || passes > 5000) return { y: out, passes };
+        passes += 1;
+        let excess = 0;
+        for (const i of over) { excess += out[i] - cap; out[i] = cap; }
+        const free = out.map((_, i) => i).filter((i) => !over.includes(i));
+        const snap = free.map((i) => out[i]);
+        const s = sum(snap);
+        if (s > 0) free.forEach((i, k) => { out[i] += excess * (snap[k] / s); });
+        else free.forEach((i) => { out[i] += excess / free.length; });
+      }
+    };
+    for (const [y, cap, docPasses] of [
+      [[0.60, 0.25, 0.10, 0.05], 0.30, 40],
+      [[0.50, 0.30, 0.15, 0.05], 0.28, 92],
+    ]) {
+      const ship = projectWithPasses(y, cap);
+      const doc = docProject(y, cap);
+      assert.equal(ship.passes, 2, 'the shipped loop retires an index per pass');
+      assert.equal(doc.passes, docPasses, `the printed block takes ${docPasses}`);
+      assert.ok(doc.passes > y.length - 1, 'which is more than the n−1 it claims');
+      ship.y.forEach((v, i) => close(v, doc.y[i], 1e-14, 'and the limit is the same vector'));
+    }
+    // on the doc's own worked example the two agree in one pass, which is how it went unnoticed
+    const worked = [0.9333333333333333, 0.03333333333333333, 0.03333333333333333];
+    assert.equal(projectWithPasses(worked, GUARD.cap).passes, 1);
+    assert.equal(docProject(worked, GUARD.cap).passes, 1);
+  });
 });
 
 /* =========================================================================================
@@ -345,6 +500,7 @@ const POSTED = Object.fromEntries(Object.keys(SHAPES).map((k) => [k, lootMean(k)
 const jobRec = (shape, press) => ({ press, posted: POSTED[shape] });
 const EVEN = { RECALL: 1, FIGURES: 1, WORDS: 1 };          // an honest press, spread over the board
 const DECOY = { RECALL: 3, FIGURES: 0, WORDS: 0 };         // all three tokens on the wing you do not care about
+const HONEST_NO_RECALL = { FIGURES: 1, WORDS: 1, ALGEBRA: 1 };   // an honest press that never touches the farmed wing
 const REAL = { RECALL: 0, FIGURES: 3, WORDS: 0 };          // the wing you DO care about, on the vault
 const rep = (n, shape, press) => Array.from({ length: n }, () => jobRec(shape, press));
 const xOf = (jobs) => xHatFrom({ game: { heat: { window: jobs } } });
@@ -644,6 +800,79 @@ describe('J3 · a 3-RUN + 1-VAULT farm cannot walk the guard (G3.4, G12 #12)', (
     assert.match(FARM_BAND.claim, /< 0\.08/);
     assert.match(FARM_BAND.misses, /school/, 'the all-RUN window is named, not averaged away');
     assert.equal(Object.isFrozen(FARM_BAND), true);
+    /* ROUND 5 — and no string here may generalise the band off the window it was measured on.
+       `holds` has always said "a 10-job window"; the doc dropped the qualifier to "any window" and
+       "every window", and both are false on the four-job window the sentence itself names. */
+    for (const [k, s] of Object.entries(FARM_BAND)) {
+      if (k === 'claim' || k === 'bound') continue;
+      assert.equal(/on (any|every) window/.test(s), false,
+        `FARM_BAND.${k} generalises the band to every window: ${s}`);
+    }
+    assert.match(FARM_BAND.holds, /FULL 10-job window/, 'the window length is IN the sentence');
+    assert.match(FARM_BAND.holds, /spreads the honest press/, 'and so is the press shape');
+  });
+
+  test('SHORT WINDOWS: under ten jobs the three decoy RUNs are ADDED, not substituted — 0.300 at four', () => {
+    /* ROUND 5 (guard-equilibrium). Every scenario above is built as a ten-job list, and the only
+       thing asserted about the published strings was that each ten-job figure appears in one of
+       them — so the quantifier was never measured. `heatWindow` is `jobs.slice(-10)`: under ten
+       jobs NOTHING is evicted, so the three RUNs own three of four jobs instead of three of ten.
+       The window the published sentence literally names — three RUNs and one VAULT, which is what
+       a student has after four jobs — moves x̂ by 0.300, not 0.058.
+
+       Driven through `pushHeat`, the writer `state.endJob` actually calls, rather than by handing
+       `xHatFrom` a window object. */
+    const viaPushHeat = (jobs) => {
+      let heat = null;
+      for (const j of jobs) heat = pushHeat(heat, j);
+      return xHatFrom({ game: { heat } });
+    };
+    const band = [];
+    for (let m = 1; m <= 8; m++) {
+      const honest = rep(m, 'VAULT', EVEN);
+      const farmed = viaPushHeat([...honest, ...rep(3, 'RUN', DECOY)]);
+      band.push({ jobs: farmed.jobs, d: farmed.byWing.RECALL - viaPushHeat(honest).byWing.RECALL });
+    }
+    assert.equal(band[0].jobs, 4, 'three RUNs and one VAULT is a FOUR-job window');
+    close(band[0].d, 0.30, 5e-4, 'and it moves x̂ by the full leverage share, not by 0.058');
+    assert.ok(band[0].d > 0.08, 'the published band does not hold on the window the sentence names');
+    for (const row of band) assert.ok(row.d > 0, 'the farm always costs something');
+    for (let i = 1; i < band.length; i++) {
+      assert.ok(band[i].d <= band[i - 1].d + 1e-12,
+        `the band decays as the window fills: ${band[i - 1].d} then ${band[i].d}`);
+    }
+    const firstInside = band.findIndex((r) => r.d < 0.08);
+    assert.equal(band[firstInside].jobs, 8, 'nothing is inside 0.08 until the eighth job');
+    // every figure of the band is in the published string, to the three places it publishes
+    for (const row of band.slice(0, 5)) {
+      assert.ok(FARM_BAND.shortWindow.includes(row.d.toFixed(3)),
+        `the ${row.jobs}-job window measured ${row.d.toFixed(3)}, which FARM_BAND.shortWindow does not publish`);
+    }
+    assert.match(FARM_BAND.shortWindow, /BELOW ten jobs/);
+    // the leverage bound is what survives down here, and it does survive
+    for (let m = 1; m <= 8; m++) {
+      const hat = viaPushHeat([...rep(m, 'VAULT', EVEN), ...rep(3, 'RUN', DECOY)]);
+      assert.ok(hat.maxShare <= GUARD.jobWeightCap + 1e-12, `maxShare ${hat.maxShare} at ${hat.jobs} jobs`);
+    }
+  });
+
+  test('AND A FULL TEN-JOB WINDOW IS NOT ENOUGH ON ITS OWN: a concentrated honest press gives up 0.087', () => {
+    /* The move is `the decoys' share of the window × (1 − the farmed wing's honest share)`, so the
+       three published figures are figures for a student who SPREADS the honest press. A ten-job
+       VAULT window whose honest press never touched RECALL gives up the whole share — over the
+       band, on a full window holding VAULT work — which is why `holds` names the spread too. */
+    const base = rep(10, 'VAULT', REAL);
+    const farm = [...rep(7, 'VAULT', REAL), ...rep(3, 'RUN', DECOY)];
+    const hat = xOf(farm);
+    const d = hat.byWing.RECALL - xOf(base).byWing.RECALL;
+    close(d, 0.087, 5e-4, 'a full ten-job VAULT window with a concentrated honest press');
+    assert.ok(d > 0.08, 'which is OVER the published band, on a ten-job window holding VAULT work');
+    assert.ok(FARM_BAND.misses.includes(d.toFixed(3)),
+      `measured ${d.toFixed(3)}, which FARM_BAND.misses does not publish`);
+    // and it is exactly the leverage bound, because the honest press held 0 of the farmed wing
+    close(xOf(base).byWing.RECALL, 0, 1e-12, 'the honest press never touched RECALL');
+    close(d, sum(hat.shares.slice(7)), 1e-9, 'so the farm takes the decoys’ whole share of the window');
+    assert.ok(d <= sum(hat.shares.slice(7)) + 1e-9, 'never more than that share — the bound that always holds');
   });
 
   test('the leverage bound: changing the press on a subset moves x̂ by at most that subset s weight share', () => {
@@ -776,8 +1005,14 @@ describe('J3 · a board that was drafted and abandoned is not a job (G3.7 proof 
     const honest = (p) => Array.from({ length: 7 }, (_, i) => varied(i === 3 && p ? {} : EVEN, 10, 80 + i * 7));
     const walks = [varied(DECOY, 0, 129), varied(DECOY, 0, 136), varied(DECOY, 0, 143)];
     const windowOf = (js) => js.filter((j) => sum(WING_IDS.map((w) => j.press[w] ?? 0)) > 0);
+    /* ROUND 7 — the fixture used to set `heat.jobs = js.length`, which is the number of jobs that
+       ENDED. `pushHeat` sets it to the number of rows it ACCEPTED, and the gap between the two is
+       exactly the desync this test is about, so the old fixture declared "in step" on the very
+       window it had put out of step. It is written the way the shipped machine writes it now, and
+       `ledger.jobs` — which `state.endJob` folds on every job, next to the log write — with it. */
     const saveRaw = (js) => ({ game: {
-      heat: { press: {}, weight: 0, jobs: js.length, window: windowOf(js).map((j) => ({ press: j.press, posted: j.posted })) },
+      heat: { press: {}, weight: 0, jobs: windowOf(js).length, window: windowOf(js).map((j) => ({ press: j.press, posted: j.posted })) },
+      ledger: { jobs: js.length },
       log: js.map((j) => ({ day: DAY, shape: j.shape, targets: j.targets, bagged: j.bagged, posted: j.posted, guard: j.wing })),
     } });
 
@@ -788,19 +1023,49 @@ describe('J3 · a board that was drafted and abandoned is not a job (G3.7 proof 
     close(desynced, baseline, 1e-12, 'and they move nothing when one job pressed no tokens either');
     assert.ok(desynced < 0.4, `the decoy wing bought ${desynced.toFixed(4)} of x̂`);
 
-    /* the same window with identical JOB-10s: the exact tail pairing still holds, because a
-       week of 84s pairs onto itself whichever way the skip fell */
+    /* THE SAME WINDOW WITH IDENTICAL JOB-10s, which is where the old defence actually broke. The
+       comment here used to read "the exact tail pairing still holds, because a week of 84s pairs
+       onto itself whichever way the skip fell" — and that is false: the old tier 2 checked only
+       that the last `rows.length` log entries matched the rows on `posted`, never that the rows
+       WERE that tail, so on a week of equal stakes a SHIFTED pairing passed. It happened to be
+       harmless here only because both walks sit AFTER the skip; move the skip after a walk and the
+       walk inherits a worked job's targets (see the school-week test below). The pairing is no
+       longer taken on that check: the counters say the lists are one out of step, so every row is
+       matched only where all of its feasible log entries agree. The walks are dropped either way,
+       and x̂ is where it was. */
     const flat = Array.from({ length: 7 }, (_, i) => varied(i === 3 ? {} : EVEN, 10, 84));
     const flatWalks = [varied(DECOY, 0, 84), varied(DECOY, 0, 84)];
     close(xHatFrom(saveRaw([...flat, ...flatWalks])).byWing.RECALL,
       xHatFrom(saveRaw(flat)).byWing.RECALL, 1e-12, 'identical posted, same answer');
+
+    /* THE SCHOOL WEEK, AND THE ORDER THAT USED TO PAY: an all-RUN week at a flat 36, a board
+       drafted and WALKED at job 3 pressing all three tokens on RECALL, and one night at job 6 where
+       every token came off before the start. Before round 7 the walk's row slid onto job 4's log
+       entry and was credited at full posted — x̂ RECALL 0.125 against 0.000 with the lists in step,
+       an honest row dropped in its place, and `FARM_BAND.claim`'s band broken by a factor of three
+       off one free action. */
+    const runs = ({ zeroAt }) => Array.from({ length: 10 }, (_, i) => {
+      if (i === 3) return { shape: 'RUN', press: DECOY, targets: 0, bagged: 0, wing: 'RECALL', posted: 36 };
+      if (i === zeroAt) return { shape: 'RUN', press: {}, targets: 4, bagged: 50, wing: 'RECALL', posted: 36 };
+      return { shape: 'RUN', press: HONEST_NO_RECALL, targets: 4, bagged: 50, wing: 'RECALL', posted: 36 };
+    });
+    const week = xHatFrom(saveRaw(runs({ zeroAt: 6 })));
+    const inStep = xHatFrom(saveRaw(runs({ zeroAt: -1 })));
+    close(inStep.byWing.RECALL, 0, 1e-12, 'in step, the walk buys nothing — that was never in doubt');
+    close(week.byWing.RECALL, 0, 1e-12,
+      `one zero-press night bought the walked board ${week.byWing.RECALL.toFixed(4)} of x̂`);
+    assert.equal(week.jobs < inStep.jobs, true,
+      'and it is paid for in history: the rows it cannot attribute are dropped, not guessed at');
   });
 
   test('NO desync shape pays: 4 000 adversarial windows of walks, zero presses and mixed posted', () => {
     const varied = (press, targets, posted) => ({ press, targets, posted });
     const windowOf = (js) => js.filter((j) => sum(WING_IDS.map((w) => j.press[w] ?? 0)) > 0);
+    // `heat.jobs` is the ACCEPTED-row count and `ledger.jobs` the ended-job count — see the note on
+    // the fixture above; the gap between them is what tells `withLogEvidence` the lists are apart.
     const saveRaw = (js) => ({ game: {
-      heat: { press: {}, weight: 0, jobs: js.length, window: windowOf(js).map((j) => ({ press: j.press, posted: j.posted })) },
+      heat: { press: {}, weight: 0, jobs: windowOf(js).length, window: windowOf(js).map((j) => ({ press: j.press, posted: j.posted })) },
+      ledger: { jobs: js.length },
       log: js.map((j) => ({ day: DAY, shape: 'JOB', targets: j.targets, bagged: 0, posted: j.posted, guard: 'RECALL' })),
     } });
     let seed = 12345;
@@ -822,6 +1087,110 @@ describe('J3 · a board that was drafted and abandoned is not a job (G3.7 proof 
       if (gain > worst) { worst = gain; worstAt = { nH, nZ, nQ, flat }; }
     }
     assert.ok(worst <= 1e-12, `walking out bought ${worst.toFixed(6)} of x̂ at ${JSON.stringify(worstAt)}`);
+  });
+
+  test('THE DESYNC IS ONE FREE ACTION, and the shipped machine still pays the farm nothing', () => {
+    /* ROUND 7 (guard-equilibrium). `screens/job.js` enables "−" while n > 0 and `pressRefusal` does
+       not refuse a zero press at the board, so three taps take every token off; `state.endJob` then
+       logs that job while `pushHeat` refuses a zero-press row, and the two lists are one out of step
+       FOR GOOD. The old `withLogEvidence` tier 2 checked only that the last `rows.length` log
+       entries matched the rows on `posted`, never that the rows WERE that tail, so the shifted
+       pairing passed and the walked board inherited a worked job's targets.
+
+       This drives the whole thing through the shipped machine — `postBoard` → `startJob` → `walk` —
+       and asks the only question that matters: can the walk's CHOICE OF WING move x̂? Comparing the
+       same seeded save walked with three tokens on wing W against the same save walked with three
+       tokens somewhere else isolates the farm from the drop (dropping rows moves x̂ toward uniform
+       whatever the press was, which pays the farmer nothing because it cannot aim). */
+    let pairs = 0; let desyncs = 0; let worst = 0; let worstAt = null;
+    const drive = (i, { farmWing }) => {
+      const save = shippedSave(i);
+      const b0 = shippedBoard(save);
+      if (!b0?.press?.wings?.length || !b0.pressMatters) return null;
+      const before = save.game.log.length - (save.game.heat?.window?.length ?? 0);
+      const zero = Object.fromEntries(b0.press.wings.map((w) => [w, 0]));   // three taps
+      try {
+        state.startJob(save, {
+          today: SHIPPED_TODAY, now: SHIPPED_NOW, board: b0, seed: b0.seed, tokens: zero,
+          picks: b0.recommend?.picks,
+        });
+      } catch { return null; }
+      state.walk(save, { now: SHIPPED_NOW + 1000 });
+      const gap = save.game.log.length - (save.game.heat?.window?.length ?? 0);
+
+      const b1 = shippedBoard(save, { now: SHIPPED_NOW + 2000 });
+      if (!b1?.press?.wings?.includes(farmWing)) return null;
+      const t = Object.fromEntries(b1.press.wings.map((w) => [w, w === farmWing ? GUARD.tokens : 0]));
+      try {
+        state.startJob(save, {
+          today: SHIPPED_TODAY, now: SHIPPED_NOW + 2000, board: b1, seed: b1.seed, tokens: t,
+          picks: b1.recommend?.picks,
+        });
+      } catch { return null; }
+      state.walk(save, { now: SHIPPED_NOW + 3000 });
+      return { x: xHatFrom(save), desynced: gap > before };
+    };
+    for (let i = 0; i < 60; i++) {
+      for (const W of WING_IDS) {
+        const other = WING_IDS.find((w) => w !== W);
+        const farm = drive(i, { farmWing: W });
+        const ctrl = drive(i, { farmWing: other });
+        if (!farm || !ctrl) continue;
+        pairs += 1;
+        if (farm.desynced) desyncs += 1;
+        const gap = Math.abs(farm.x.byWing[W] - ctrl.x.byWing[W]);
+        if (gap > worst) { worst = gap; worstAt = { i, W, farm: farm.x.byWing[W], ctrl: ctrl.x.byWing[W] }; }
+      }
+    }
+    assert.ok(pairs >= 100, `only ${pairs} walked pairs reached the comparison`);
+    assert.ok(desyncs === pairs,
+      `the zero press must put the lists out of step on every run, and it did on ${desyncs} of ${pairs}`);
+    assert.ok(worst <= 1e-12,
+      `the walk's chosen wing moved x̂ by ${worst.toFixed(6)} at ${JSON.stringify(worstAt)}`);
+  });
+
+  test('40 000 desynced windows, real per-shape stakes: choosing the farmed wing buys nothing', () => {
+    /* The sweep behind R7-1. Every window is ten jobs at the shipped per-shape posted values, with
+       ONE board drafted and walked and ONE night where every token came off — the desync — at
+       independent positions, half of them an all-RUN school week (every stake identical, which is
+       where the old pairing was blindest) and half mixed. Measured against the pre-round-7 pairing
+       the same sweep reported 10 093 of 40 000 windows moved and a worst case of 0.184 on the
+       farmed wing, over twice `FARM_BAND.bound`'s all-RUN ceiling. */
+    const SHAPE_POSTED = { RUN: 36, JOB: 84, JOB12: 152, VAULT: 162 };
+    const SHAPE_IDS = Object.keys(SHAPE_POSTED);
+    const saveRaw = (js) => {
+      const window = js.filter((j) => sum(WING_IDS.map((w) => j.press[w] ?? 0)) > 0);
+      return { game: {
+        heat: { press: {}, weight: 0, jobs: window.length, window: window.map((j) => ({ press: j.press, posted: j.posted })) },
+        ledger: { jobs: js.length },
+        log: js.map((j) => ({ day: DAY, shape: j.shape, targets: j.targets, bagged: 0, posted: j.posted, guard: 'RECALL' })),
+      } };
+    };
+    const xr = (js) => xHatFrom(saveRaw(js)).byWing.RECALL;
+    let seed = 20260922;
+    const rnd = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
+    let worst = 0; let worstAt = null; let reached = 0; let allRunWeeks = 0;
+    const N = 40000;
+    for (let t = 0; t < N; t++) {
+      const allRun = rnd() < 0.5;
+      if (allRun) allRunWeeks += 1;
+      const walkAt = Math.floor(rnd() * 10);
+      let zeroAt = Math.floor(rnd() * 10);
+      if (zeroAt === walkAt) zeroAt = (zeroAt + 1) % 10;
+      const shapes = Array.from({ length: 10 }, () => (allRun ? 'RUN' : SHAPE_IDS[Math.floor(rnd() * SHAPE_IDS.length)]));
+      const build = (walkPress) => shapes.map((shape, i) => {
+        const posted = SHAPE_POSTED[shape];
+        if (i === walkAt) return { shape, press: walkPress, targets: 0, posted };
+        if (i === zeroAt) return { shape, press: {}, targets: 4, posted };
+        return { shape, press: HONEST_NO_RECALL, targets: 4, posted };
+      });
+      const gain = xr(build(DECOY)) - xr(build(HONEST_NO_RECALL));
+      if (gain > 1e-12) reached += 1;
+      if (gain > worst) { worst = gain; worstAt = { allRun, walkAt, zeroAt }; }
+    }
+    assert.ok(allRunWeeks > 1000 && allRunWeeks < N - 1000, `the sweep must drive both weeks: ${allRunWeeks} all-RUN`);
+    assert.equal(reached, 0, `the walk's press reached x̂ on ${reached} of ${N} windows`);
+    assert.ok(worst <= 1e-12, `max Δx̂ on the farmed wing ${worst.toFixed(6)} at ${JSON.stringify(worstAt)}`);
   });
 
   test('THE REROLL: the guard you walked out on is still standing', () => {
@@ -886,8 +1255,143 @@ describe('J3 · a board that was drafted and abandoned is not a job (G3.7 proof 
     // pinning the seed on a getaway count (the critic's own first suggestion) leaks it in exactly
     // the same way, because it is also deterministic. The fix that removes it is state.js/board.js:
     // an abandoned board must be RESUMED, with its press, not re-posted. notes/guard-fix.md R1b.
+    // ROUND 6 — and the edge is no longer merely NAMED here: the next test prices it.
     assert.equal(Math.max(...a.y), 1, 'a held board publishes a certainty, and a certainty is knowable');
     assert.equal(a.note === null || typeof a.note === 'string', true);
+  });
+
+  test('THE HOLD IS NOT A PRICE: one walk at the board is free, and worth +13.6 % of the board on 120 of 120', () => {
+    /* ROUND 6 (guard-equilibrium, verification round 2) — THE BLOCKER, PINNED.
+       `guard.js` said "the hold is what makes quitting worthless", `CAP_PANEL_COPY[2]` printed it to
+       the student, and `COMPOSED-GAME.md` says "Quitting is free and never a strategy". Measured
+       through the shipped machine, the hold ends the SHOPPING for a wing and nothing else: it pins
+       the wing you were already shown, at a price of nothing, and hands the next board a fresh
+       three-token press against a guard that is now a certainty.
+
+       THIS TEST DOES NOT ASSERT THAT THE GAME IS SOUND. It asserts the size of a hole that no fix
+       inside `guard.js` can close (the board must publish the distribution before the press —
+       Global law 6), so that the published copy cannot drift back to the opposite of it. The fix
+       belongs to `state.js`/`board.js`: an abandoned board RESUMED with its committed press rather
+       than re-posted (`notes/guard-fix.md` R1b). See Requests in `notes/repair-guard.md`. */
+    const bonus = GUARD.tokenBonus;
+    const payoff = (wings, v, tokens, W, rank) => wings.reduce((t, w, i) => (
+      t + v[i] * (w === W ? guardMultFor(rank) : 1 + bonus * Math.max(0, tokens[w] ?? 0))
+    ), 0);
+    /** the whole press on the highest-value wing the guard is NOT on — the one-shot optimum */
+    const bestTokens = (wings, v, W) => {
+      let k = -1; let best = -Infinity;
+      wings.forEach((w, i) => { if (w !== W && v[i] > best) { best = v[i]; k = i; } });
+      const t = Object.fromEntries(wings.map((w) => [w, 0]));
+      if (k >= 0) t[wings[k]] = GUARD.tokens;
+      return t;
+    };
+
+    let boards = 0; let heldOk = 0; let sameSeed = 0; let sameContracts = 0;
+    let freeRun = 0; let walkedTally = 0;
+    let bestBetter = 0; let bestWorse = 0; let preBetter = 0; let preWorse = 0;
+    let sumBest = 0; let sumPre = 0; let minBest = Infinity; let maxBest = -Infinity;
+    for (let i = 0; i < 120; i++) {
+      const save = shippedSave(i);
+      const b0 = shippedBoard(save);
+      if (!b0?.press?.wings?.length || !b0.pressMatters) continue;
+      const rank = rankOf(save);
+      const { wings } = b0.press;
+      const v = b0.press.v.slice();
+      const t0 = { ...b0.press.tokens };
+
+      // the press is sealed HERE, and only then does the guard draw and get printed
+      let g0 = null;
+      try {
+        g0 = state.startJob(save, {
+          today: SHIPPED_TODAY, now: SHIPPED_NOW, board: b0, seed: b0.seed, tokens: t0,
+          picks: b0.recommend?.picks,
+        });
+      } catch { continue; }
+      const W = g0?.guard?.wing ?? null;
+      if (!W || !wings.includes(W)) continue;
+      boards += 1;
+
+      const before = {
+        rating: save.player?.rating?.value ?? null,
+        elo: JSON.stringify(save.player?.elo ?? null),
+        walked: save.player?.records?.walked ?? 0,
+        bagged: save.player?.bank ?? null,
+      };
+      const carryOn = payoff(wings, v, t0, W, rank);
+
+      // W → Leave
+      const out = state.walk(save, { now: SHIPPED_NOW + 1000 });
+      const free = out?.ratesElo !== true
+        && !((out?.banked ?? 0) > 0)
+        && (save.player?.rating?.value ?? null) === before.rating
+        && JSON.stringify(save.player?.elo ?? null) === before.elo;
+      if (free) freeRun += 1;
+      walkedTally += (save.player?.records?.walked ?? 0) - before.walked;
+
+      // …and re-post
+      const b1 = shippedBoard(save, { now: SHIPPED_NOW + 2000 });
+      if (!b1?.press?.wings?.length) continue;
+      if (b1.seed === b0.seed) sameSeed += 1;
+      if (b1.contracts.map((c) => c.line).join('|') === b0.contracts.map((c) => c.line).join('|')) sameContracts += 1;
+      if (b1.guard.held === W && Math.abs((b1.guard.byWing[W] ?? 0) - 1) < 1e-9) heldOk += 1;
+
+      const w1 = b1.press.wings;
+      const v1 = b1.press.v.slice();
+      const rank1 = rankOf(save);
+      const gainBest = (payoff(w1, v1, bestTokens(w1, v1, W), W, rank1) - carryOn) / carryOn;
+      const gainPre = (payoff(w1, v1, { ...b1.press.tokens }, W, rank1) - carryOn) / carryOn;
+      sumBest += gainBest; sumPre += gainPre;
+      minBest = Math.min(minBest, gainBest); maxBest = Math.max(maxBest, gainBest);
+      if (gainBest > 1e-9) bestBetter += 1; else if (gainBest < -1e-9) bestWorse += 1;
+      if (gainPre > 1e-9) preBetter += 1; else if (gainPre < -1e-9) preWorse += 1;
+    }
+
+    assert.equal(boards, 120, `the sweep must reach 120 shipped boards: ${boards}`);
+
+    // 1. the walk costs nothing but a tally
+    assert.equal(freeRun, boards, 'a walk at the board moved Elo, the rating or the bank');
+    assert.equal(walkedTally, boards, 'records.walked is the ONLY durable write, and it is +1 a walk');
+
+    // 2. and buys nothing that a re-roll would have bought: the same board comes back
+    assert.equal(sameSeed, boards, 'the re-posted board changed seed — the hold would be shoppable');
+    assert.equal(sameContracts, boards, 'the re-posted board changed contracts');
+    assert.equal(heldOk, boards, 'the re-posted board did not publish the held wing as a certainty');
+
+    // 3. …but the wing is now KNOWN, and a known wing is worth a press
+    assert.equal(bestWorse, 0, 'a walk was worse than playing on, under best play');
+    assert.equal(bestBetter, boards,
+      `a walk is better on ${bestBetter} of ${boards} boards, not on all of them — restate the copy`);
+    assert.ok(minBest > 0, `the walk is weakly dominant by construction: worst board ${(100 * minBest).toFixed(2)} %`);
+    const meanBest = 100 * sumBest / boards;
+    const meanPre = 100 * sumPre / boards;
+    assert.ok(meanBest > 5, `the edge is ${meanBest.toFixed(2)} % — if it has collapsed, restate the copy`);
+
+    /* 4. the copy publishes those numbers and not their opposite. The figures and the measurement
+          are one object, exactly as `FARM_BAND` and `X_HAT_FORMULA` are. */
+    const hold = CAP_PANEL_COPY[2];
+    const num = (re, what) => {
+      const m = re.exec(hold);
+      assert.ok(m, `${what} is not in the published clause any more: ${hold}`);
+      return +m[1];
+    };
+    assert.equal(/quitting is worthless|never a strategy/i.test(hold), false,
+      'the clause claims quitting is worthless again, and it is measured false here');
+    assert.match(hold, /ends the SHOPPING/, 'the clause must name what the hold DOES close');
+    assert.match(hold, /priced at nothing|costs nothing/, 'and that the walk itself is free');
+    assert.equal(num(/better on (\d+) of \d+ boards/, 'the win count'), bestBetter);
+    assert.equal(num(/better on \d+ of (\d+) boards/, 'the board count'), boards);
+    close(num(/\+([\d.]+) % mean/, 'the mean edge'), meanBest, 0.2, 'the published mean edge');
+    close(num(/\+([\d.]+) % at worst/, 'the worst-case edge'), 100 * minBest, 0.2, 'the published floor');
+    assert.equal(num(/better on (\d+) and worse on \d+ taking/, 'the pre-press win count'), preBetter);
+    assert.equal(num(/better on \d+ and worse on (\d+) taking/, 'the pre-press loss count'), preWorse);
+    assert.ok(Math.abs(meanPre) > 0, `(the pre-press mean is ${meanPre.toFixed(2)} %)`);
+
+    // 5. and the docblock that carried the withdrawn sentence carries the measurement instead
+    const src = readFileSync(join(ROOT, 'site', 'js', 'job', 'guard.js'), 'utf8');
+    assert.equal(/the hold is what makes quitting worthless/.test(src), false,
+      'the withdrawn sentence is back in guard.js');
+    assert.match(src, /It does not make quitting worthless/,
+      'heldWing must carry what was measured, next to the mechanism it describes');
   });
 
   test('MERCY is not for sale: three walks on one wing do not buy that wing an exemption', () => {
@@ -934,7 +1438,12 @@ describe('J3 · guardDist publishes y = project((1−ε)x̂ + ε·uniform, 0.75)
     assert.equal(d.byWing.RECALL, d.y[0]);
   });
 
-  test('the guard is never a certainty: y_i ≤ 0.75 on every support of 2 or more', () => {
+  test('y_i ≤ 0.75 on every support of 2 or more — on a board with no log, which is the ONLY regime this sweep reaches', () => {
+    /* THE REGIME IS PART OF THE CLAIM. These saves carry a heat window and no `game.log`, so
+       `blockedWing` and `heldWing` can only return null and the two regimes in which the shipped
+       draw IS a certainty are unreachable here — which is why this test used to be titled "the
+       guard is never a certainty" and passed anyway. The bound below is unchanged and unweakened;
+       the exceptions are measured in §6b, which drives saves that have a log. */
     const rng = mulberry32('j3-dist');
     for (let k = 0; k < 2000; k++) {
       const n = 2 + (k % 3);
@@ -943,7 +1452,10 @@ describe('J3 · guardDist publishes y = project((1−ε)x̂ + ε·uniform, 0.75)
         press: Object.fromEntries(support.map((w) => [w, Math.floor(rng.next() * 4)])),
         posted: Math.round(rng.next() * 300),
       }));
-      const d = guardDist({ game: { heat: { window } }, player: { rank: 1 + (k % 5) } }, { support });
+      const save = { game: { heat: { window } }, player: { rank: 1 + (k % 5) } };
+      assert.equal(blockedWing(save, support), null, 'no log — Mercy cannot fire in this sweep');
+      assert.equal(heldWing(save), null, 'no log — the hold cannot fire in this sweep either');
+      const d = guardDist(save, { support });
       close(sum(d.y), 1, 1e-9, 'y is a distribution');
       assert.ok(Math.max(...d.y) <= GUARD.cap + 1e-9, `max y = ${Math.max(...d.y)}`);
       assert.ok(Math.min(...d.y) >= -1e-12);
@@ -977,6 +1489,365 @@ describe('J3 · guardDist publishes y = project((1−ε)x̂ + ε·uniform, 0.75)
   test('guardDist is pure and does not mutate the save', () => {
     const save = Object.freeze({ player: Object.freeze({ rank: 3 }), game: Object.freeze({ heat: Object.freeze({ window: Object.freeze([]) }) }) });
     assert.deepEqual(guardDist(save, undefined, undefined).y, guardDist(save, undefined, undefined).y);
+  });
+});
+
+/* =========================================================================================
+   6b. The cap, published WITH every condition it has (G4 "Mercy", G3.7 proof 6)
+   ========================================================================================= */
+
+/*
+   ROUND 4 (guard-equilibrium, finding "the guard may not take the same wing more than 3 jobs
+   running is falsifiable — heldWing overrides Mercy"). The finding is right and the CODE is right:
+   the hold has to beat Mercy or quitting buys a wing's exemption. What was wrong was the published
+   sentence, in two panels and in the doc, and what let it stay wrong was §6's sweep — 2 000 saves
+   that carry a heat window and NO `game.log`, so `blockedWing` and `heldWing` are structurally
+   unable to fire and "the guard is never a certainty" was asserted over the one regime in which it
+   is true.
+
+   This section drives saves that have a log, counts the regimes it reaches, and asserts the law in
+   each of them:
+
+       plain board                max y ≤ cap = 0.75
+       Mercy on a 2-wing board    the OTHER wing is drawn with certainty
+       a board walked out on      that wing is drawn with certainty, Mercy notwithstanding
+       a ONE-WING board           that wing is drawn with certainty, with neither of the above
+
+   Measured, shipped path, 3 worked RECALL guards + one abandoned RECALL board:
+   `blockedWing → RECALL`, `heldWing → RECALL`, `guardDist().byWing → {RECALL:1, …}`,
+   `.blocked → null`. Negative control run before this landed: assert `max y ≤ cap` over this same
+   sweep and it fails on the first held save at `max y = 1`.
+
+   ROUND 5 (guard-equilibrium, "a one-wing board is a third exception and the sweep is built so it
+   cannot reach one"). The sweep set `n = 2 + (k % 3)`, so n ∈ {2,3,4} and the ONE-wing support was
+   excluded by construction — while `tests/job-board.test.mjs` builds exactly that board out of a
+   due list that is nothing but one ASN sheet, and `projectWithPasses` returns y unchanged there
+   (`n·cap = 0.75 < 1`, so there is no feasible projection to run) with `blocked` and `held` both
+   null. The sweep drives n ∈ {1,2,3,4} now and asserts the one-wing regime instead of excluding it;
+   `CAP_PANEL_COPY` states the bound on boards with two or more wings and names the one-wing board.
+   ========================================================================================= */
+
+describe('J3 · the cap is a bound with its conditions published, not a promise (G4, G3.7 proof 6)', () => {
+  const DAY = '2026-09-21';
+  /** The two records `state.endJob` writes per job, built through the shipped writer `pushHeat`. */
+  const saveOfJobs = (jobs, rank = 3) => {
+    let heat = null;
+    const log = [];
+    for (const j of jobs) {
+      heat = pushHeat(heat, { press: j.press, posted: j.posted, targets: j.targets, shape: 'JOB' });
+      log.push({
+        day: DAY, shape: 'JOB', targets: j.targets, bagged: j.targets ? 9999 : 0,
+        posted: j.posted, guard: j.posted > 0 ? j.wing : null,
+      });
+    }
+    return { player: { rank }, game: { heat, log } };
+  };
+
+  test('THE CONJUNCTION: three worked guards on one wing, then a board walked out on it — the hold wins', () => {
+    const jobs = [
+      { press: EVEN, posted: 84, targets: 10, wing: 'RECALL' },
+      { press: EVEN, posted: 84, targets: 10, wing: 'RECALL' },
+      { press: EVEN, posted: 84, targets: 10, wing: 'RECALL' },
+    ];
+    const merciful = saveOfJobs(jobs);
+    assert.equal(blockedWing(merciful), 'RECALL', 'three worked RECALL guards: Mercy blocks it');
+    assert.equal(heldWing(merciful), null);
+    const control = guardDist(merciful, { support: WING_IDS });
+    assert.equal(control.blocked, 'RECALL');
+    assert.equal(control.byWing.RECALL, 0, 'the blocked wing leaves the draw');
+    assert.ok(Math.max(...control.y) <= GUARD.cap + 1e-9, 'and the rest is still under the cap');
+
+    // …and now walk out on a fourth board whose guard was the blocked wing
+    const walked = saveOfJobs([...jobs, { press: DECOY, posted: 100, targets: 0, wing: 'RECALL' }]);
+    assert.equal(blockedWing(walked), 'RECALL', 'Mercy still says RECALL — the walk is not a job');
+    assert.equal(heldWing(walked), 'RECALL', 'and the walked board is still holding RECALL');
+    const d = guardDist(walked, { support: WING_IDS });
+    assert.deepEqual(d.byWing, { RECALL: 1, FIGURES: 0, WORDS: 0, ALGEBRA: 0 },
+      'the hold OVERRIDES Mercy: the wing Mercy forbids is drawn with certainty');
+    assert.equal(d.held, 'RECALL');
+    assert.equal(d.blocked, null, 'and the board prints the hold, not the block');
+    assert.equal(Math.max(...d.y), 1, 'so "no wing above 0.75" is false in this reachable state');
+    for (let k = 0; k < 50; k++) assert.equal(drawGuard(d, `s-${k}`), 'RECALL', 'every seed');
+    // one answered target ends it and Mercy is back in charge
+    const resumed = saveOfJobs([...jobs, { press: DECOY, posted: 100, targets: 1, wing: 'RECALL' }]);
+    assert.equal(heldWing(resumed), null);
+    assert.equal(guardDist(resumed, { support: WING_IDS }).byWing.RECALL, 0, 'blocked again');
+  });
+
+  test('MERCY ON A TWO-WING BOARD is the other certainty: the block empties the support', () => {
+    const jobs = Array.from({ length: 3 }, () => ({ press: EVEN, posted: 84, targets: 10, wing: 'RECALL' }));
+    const d = guardDist(saveOfJobs(jobs), { support: ['RECALL', 'FIGURES'] });
+    assert.equal(d.blocked, 'RECALL');
+    assert.deepEqual(d.byWing, { RECALL: 0, FIGURES: 1 });
+    assert.equal(Math.max(...d.y), 1, 'two wings, one blocked — the other is a certainty');
+    close(sum(d.y), 1, 1e-12);
+    // with three wings on the board the block is absorbed and the cap holds again
+    const three = guardDist(saveOfJobs(jobs), { support: ['RECALL', 'FIGURES', 'WORDS'] });
+    assert.ok(Math.max(...three.y) <= GUARD.cap + 1e-9, `max y = ${Math.max(...three.y)}`);
+  });
+
+  test('3 000 random saves WITH a log: the bound holds outside its conditions, and the sweep reaches every one', () => {
+    const rng = mulberry32('j3-cap-regimes');
+    const regimes = { plain: 0, held: 0, mercy2: 0, mercyWide: 0, one: 0 };
+    for (let k = 0; k < 3000; k++) {
+      const n = 1 + (k % 4);                                  // ROUND 5: n = 1 is in the sweep now
+      const support = WING_IDS.slice(0, n);
+      const count = 1 + Math.floor(rng.next() * 10);
+      const jobs = [];
+      for (let j = 0; j < count; j++) {
+        jobs.push({
+          press: Object.fromEntries(support.map((w) => [w, Math.floor(rng.next() * 4)])),
+          posted: 20 + Math.round(rng.next() * 280),
+          targets: rng.next() < 0.15 ? 0 : 10,
+          wing: support[Math.floor(rng.next() * n)],
+        });
+      }
+      // a third of the sweep is steered into the two exception regimes on purpose, because a sweep
+      // that reaches them once in ten thousand tries is the blindness this section exists to close
+      if (rng.next() < 0.33) for (const j of jobs.slice(-3)) { j.wing = support[0]; j.targets = 10; }
+      if (rng.next() < 0.33) { const last = jobs[jobs.length - 1]; last.targets = 0; last.wing = support[Math.floor(rng.next() * n)]; }
+
+      const save = saveOfJobs(jobs, 1 + (k % 5));
+      const held = heldWing(save);
+      const blocked = blockedWing(save, support);
+      const d = guardDist(save, { support });
+      close(sum(d.y), 1, 1e-9, 'y is a distribution in every regime');
+      assert.ok(Math.min(...d.y) >= -1e-12);
+
+      if (held && support.includes(held)) {
+        regimes.held += 1;
+        assert.equal(d.held, held);
+        assert.equal(d.blocked, null, 'the hold is published instead of the block');
+        assert.equal(d.byWing[held], 1, `held ${held} is a certainty`);
+        assert.equal(Math.max(...d.y), 1);
+      } else if (blocked && n === 2) {
+        regimes.mercy2 += 1;
+        assert.equal(d.blocked, blocked);
+        assert.equal(d.byWing[blocked], 0, 'the blocked wing leaves the draw entirely');
+        assert.equal(Math.max(...d.y), 1, 'and the only wing left is a certainty');
+      } else if (n === 1) {
+        /* THE THIRD CONDITION. `n·cap = 0.75 < 1`, so `projectWithPasses` has nothing feasible to
+           project onto and returns the mix unchanged: the one wing on the board is drawn with
+           certainty, with NEITHER printed exception in play. `blockedWing` refuses a one-wing
+           support outright ("nowhere else to send it"), so Mercy cannot be what is happening. */
+        regimes.one += 1;
+        assert.equal(d.held, null, 'not the hold');
+        assert.equal(d.blocked, null, 'and not Mercy — a one-wing support cannot be blocked');
+        assert.equal(d.byWing[support[0]], 1, `the one wing on the board is a certainty (${support[0]})`);
+        assert.equal(Math.max(...d.y), 1,
+          'so the 0.75 bound is a bound on boards with TWO OR MORE wings, which is what CAP_PANEL_COPY says');
+        assert.equal(projectWithPasses(d.mixed, GUARD.cap).passes, 0, 'no projection pass ran at all');
+      } else {
+        if (blocked) regimes.mercyWide += 1; else regimes.plain += 1;
+        assert.equal(d.held, null);
+        assert.ok(Math.max(...d.y) <= GUARD.cap + 1e-9,
+          `max y = ${Math.max(...d.y)} on a board with no hold and ${n} wings`);
+      }
+    }
+    // the coverage guarantee: every regime the law names was actually driven
+    assert.ok(regimes.held > 100, `held boards reached: ${regimes.held}`);
+    assert.ok(regimes.mercy2 > 20, `two-wing Mercy boards reached: ${regimes.mercy2}`);
+    assert.ok(regimes.mercyWide > 20, `Mercy on a wider board: ${regimes.mercyWide}`);
+    assert.ok(regimes.plain > 400, `plain boards reached: ${regimes.plain}`);
+    assert.ok(regimes.one > 100, `one-wing boards reached: ${regimes.one}`);
+  });
+
+  test('THE THIRD CONDITION, on the repo\'s own one-wing board: the certainty is printed before the press', () => {
+    /* The board `tests/job-board.test.mjs` builds from a due list of nothing but one ASN sheet —
+       "an evening whose whole due list is ASN-ANG is ordinary, not exotic" (`board.js`). Driven
+       here through `guardDist` alone, so this file stays free of `board.js`. */
+    const d = guardDist({ player: { rank: 3 }, game: { heat: { window: [] }, log: [] } }, { support: ['RECALL'] });
+    assert.equal(d.n, 1);
+    assert.deepEqual(d.y, [1]);
+    assert.equal(d.blocked, null);
+    assert.equal(d.held, null);
+    assert.ok(Math.max(...d.y) > GUARD.cap, 'above the printed cap, with neither printed exception');
+    // …and a one-wing board that has ALSO been walked reads as the hold, not as this condition
+    const walked = guardDist(
+      { player: { rank: 3 }, game: { heat: { window: [] }, log: [{ day: '2026-09-21', shape: 'JOB', targets: 0, bagged: 0, posted: 80, guard: 'RECALL' }] } },
+      { support: ['RECALL'] },
+    );
+    assert.equal(walked.held, 'RECALL');
+    // the legend states the bound against this regime rather than enumerating around it
+    const [cap, , , summary] = CAP_PANEL_COPY;
+    assert.match(cap, /two or more wings/, 'the cap clause names the support size it is a bound on');
+    assert.match(cap, /one wing tonight/, 'and names what a one-wing board prints instead');
+    assert.match(summary, /two or more wings/, 'and so does the closing sentence');
+    assert.match(summary, /three conditions/, 'which counts them, and the count is now three');
+  });
+
+  test('CAP_PANEL_COPY publishes the bound WITH all three conditions, and every clause is measured', () => {
+    assert.equal(CAP_PANEL_COPY.length, 4);
+    assert.equal(Object.isFrozen(CAP_PANEL_COPY), true);
+    const [cap, mercy, hold, summary] = CAP_PANEL_COPY;
+    // the numerals are the constants, not typed again
+    assert.ok(cap.includes(String(GUARD.cap)), 'the cap is printed from GUARD.cap');
+    assert.ok(mercy.includes(String(GUARD.sameWingMaxRuns)), 'and the run limit from GUARD.sameWingMaxRuns');
+    assert.ok(summary.includes(String(GUARD.cap)) && summary.includes(String(GUARD.sameWingMaxRuns)));
+    // clause 1 does not call the press unexploitable, and points at the vector that is
+    assert.ok(cap.includes(MAXIMIN_FORMULA), 'the word "unexploitable" is attached to the maximin');
+    assert.match(cap, /not a promise/);
+    // clause 2 and 3 are the two exceptions, named as exceptions
+    assert.match(mercy, /two wings[\s\S]*certainty/);
+    assert.match(hold, /probability 1/);
+    assert.match(hold, /One answered target ends the hold/);
+    // the legend never states the bound without naming its conditions
+    assert.equal(CAP_PANEL_COPY.some((s) => /exception|condition/.test(s)), true);
+    /* ROUND 5 — and no clause may state the 0.75 bound without the support-size condition beside
+       it. A one-wing board draws its wing with probability 1 and is neither the hold nor Mercy, so
+       any sentence that prints `GUARD.cap` as an unconditional ceiling is false on a board the
+       composer deals tonight. Measured in "THE THIRD CONDITION" above. */
+    for (const s of CAP_PANEL_COPY) {
+      if (!s.includes(String(GUARD.cap))) continue;
+      assert.match(s, /two or more wings|two-wing|exception|condition/,
+        `a clause states the ${GUARD.cap} bound with no condition beside it: ${s}`);
+    }
+    assert.equal(CAP_PANEL_COPY.filter((s) => /two or more wings/.test(s)).length, 2,
+      'the support-size condition is on the cap clause AND on the closing sentence');
+  });
+
+  test('MERCY IS ON THE BOARD AS A NUMBER AND A LINE, and the copy claims only what is there', () => {
+    /* ROUND 7 (guard-equilibrium). `CAP_PANEL_COPY[1]` published "the board prints the block", and
+       the board printed nothing: `guardDist` sets the blocked wing's y to 0, `screens/job.js` puts
+       `blocked` on `dataset.blocked` and the fill to `scaleX(0)`, and the ONE style that reads the
+       flag — `site/css/job.css`, `.job-bar[data-blocked="true"] .job-bar-fill { background:
+       var(--muted) }` — recolours a zero-width element. "Mercy" appears in no screen file. So a
+       blocked wing was on screen as "RECALL 0%", indistinguishable from any other wing at 0 %.
+
+       Two halves. The COPY now claims only the 0 % — which is asserted here against `guardBars` —
+       and `guardDist` now carries a NOTE, the way it already does for the cold start and the hold,
+       so the screen has a line to print rather than a flag to style. Printing it is the screen
+       lane's (notes/repair-guard.md R7-a). */
+    const worked = (wing) => ({ press: { [wing]: 3 }, targets: 10, wing, posted: 84 });
+    const save = saveOfJobs([worked('RECALL'), worked('RECALL'), worked('RECALL')]);
+    const support = ['RECALL', 'FIGURES', 'WORDS'];
+    assert.equal(blockedWing(save, support), 'RECALL', 'three in a row blocks the wing');
+
+    const d = guardDist(save, { support });
+    assert.equal(d.blocked, 'RECALL');
+    const bars = guardBars(d);
+    const row = bars.find((b) => b.wing === 'RECALL');
+    assert.equal(row.blocked, true, 'the bar carries the flag');
+    assert.equal(row.pct, 0, 'and the number the board prints beside it is 0 %');
+    assert.equal(sum(bars.map((b) => b.pct)), 100, 'the rest of the board still sums to 100');
+
+    // the note: a line, in words, naming the wing and the rule — not a style hook
+    assert.equal(typeof d.note, 'string', 'a blocked board carries a note the board can print');
+    assert.ok(d.note.includes('RECALL'), `the note names the wing: ${d.note}`);
+    assert.ok(d.note.includes(String(GUARD.sameWingMaxRuns)), 'and the run limit it came from');
+    assert.equal(guardDist(saveOfJobs([worked('RECALL')]), { support }).note, null,
+      'and an ordinary board carries no such line');
+
+    // the published sentence claims the 0 %, and does not claim a block is "printed"
+    const [, mercy] = CAP_PANEL_COPY;
+    assert.equal(/prints the block/.test(mercy), false,
+      'the claim that the board prints the block is withdrawn, not reworded');
+    assert.match(mercy, /0 %/, 'what it claims instead is the number the board actually shows');
+    assert.match(mercy, /leaves the draw entirely/, 'and the mechanism is unchanged');
+  });
+
+  test('THE HOLD ALSO BUYS THE BRIEF WINDOWS, and CAP_PANEL_COPY[2] now counts them', () => {
+    /* ROUND 7 (guard-equilibrium). The S5 repair prices the brief window's re-press at a REDRAW:
+       `state.press` calls `drawGuard(g.guard.dist, repressSeed(g))`, and `g.guard.dist` is the
+       board's published `byWing`. On a held board that published vector is a one-hot, so the redraw
+       returns the held wing for every seed there is — the price is zero, twice per JOB, against a
+       wing that is already known. `CAP_PANEL_COPY[2]` enumerates what the hold is and is not and
+       did not contain it.
+
+       `guardDist` now also returns `unheld`, the projection the hold overwrote, so `state.js` CAN
+       charge the redraw on a held board (notes/repair-guard.md R7-b). This measures the price with
+       and without the hold. */
+    const base = saveOfJobs([{ press: EVEN, targets: 10, wing: 'RECALL', posted: 84 }]);
+    const plain = guardDist(base, { support: WING_IDS });
+    assert.deepEqual(plain.unheld, plain.y, 'on an ordinary board the two vectors are the same');
+
+    const walked = saveOfJobs([
+      { press: EVEN, targets: 10, wing: 'RECALL', posted: 84 },
+      { press: DECOY, targets: 0, wing: 'ALGEBRA', posted: 162 },
+    ]);
+    const held = guardDist(walked, { support: WING_IDS });
+    assert.equal(held.held, 'ALGEBRA');
+    assert.deepEqual(held.byWing, { RECALL: 0, FIGURES: 0, WORDS: 0, ALGEBRA: 1 });
+    assert.notDeepEqual(held.unheld, held.y, 'and `unheld` is NOT the one-hot the board publishes');
+    close(sum(held.unheld), 1, 1e-9, 'it is a distribution');
+    assert.ok(held.unheld.filter((p) => p > 1e-9).length >= 2, 'over more than one wing, so a redraw can move');
+
+    // the price of a redraw, with the hold and without it
+    let heldMoved = 0; let unheldMoved = 0;
+    const seeds = 200;
+    for (let k = 0; k < seeds; k++) {
+      const s = `job-seed-${k}|brief1`;
+      if (drawGuard(held, s) !== 'ALGEBRA') heldMoved += 1;
+      if (drawGuard({ wings: held.wings, y: held.unheld }, s) !== 'ALGEBRA') unheldMoved += 1;
+    }
+    assert.equal(heldMoved, 0, `the published one-hot redraws to a different wing on ${heldMoved} of ${seeds} seeds`);
+    assert.ok(unheldMoved > seeds / 4,
+      `the board's unheld distribution is a real price: it moved on only ${unheldMoved} of ${seeds}`);
+    assert.equal(SHAPES.JOB.briefs, 2, 'and a JOB has two of those windows');
+
+    const [, , hold] = CAP_PANEL_COPY;
+    assert.match(hold, /TWO MORE FREE MOVES/, 'the measured list names the brief windows');
+    assert.ok(hold.includes('62.6 %'), 'with the ordinary board s redraw price');
+    assert.ok(hold.includes('1000 times out of 1000'), 'and the held board s');
+    assert.match(hold, /unheld/, 'and names the vector a fix would draw from');
+  });
+
+  test('THE SETTINGS GUARD CARD QUOTES THESE LEGENDS AND DOES NOT RE-AUTHOR THEM', () => {
+    /* ROUND 5 (guard-equilibrium BLOCKER). `settings.js guardCard()` printed `CAP_PANEL_COPY` — the
+       bound WITH its conditions — and then, thirty lines lower in the same <dl>, a hand-written
+       closing line restating the same bound as unconditional and crediting the projection step
+       with enforcing it. Both are in the shipped render path whenever the game toggle is on, and
+       the second one is false in all three certainty regimes (§6b above). Nothing linted it:
+       `tests/job-copy.test.mjs` LAYER_SOURCES is `data/job.js` + `js/job/*.js` + `js/screens/job.js`
+       and has never included `settings.js`. This is the guard lane's own lint on its own legends —
+       the panel may RENDER `CAP_PANEL_COPY` / `PRESS_PANEL_COPY`, and may not write a second,
+       weaker sentence about the cap beside them. */
+    const src = readFileSync(join(ROOT, 'site', 'js', 'screens', 'settings.js'), 'utf8');
+    // the card is the slice from `function guardCard()` to the next sibling card
+    const start = src.indexOf('function guardCard()');
+    assert.ok(start > 0, 'settings.js no longer has a guardCard() — this lint needs re-aiming');
+    // the next sibling card, whatever it is called
+    const end = src.indexOf('\n    function ', start + 1);
+    assert.ok(end > start, 'guardCard() has no sibling after it — this lint needs re-aiming');
+    const card = src.slice(start, end);
+    // every clause of both legends is rendered, so a condition cannot be dropped at the panel
+    for (let i = 0; i < CAP_PANEL_COPY.length; i++) {
+      assert.ok(card.includes(`CAP_PANEL_COPY[${i}]`), `CAP_PANEL_COPY[${i}] is not rendered by the card`);
+    }
+    assert.match(card, /PRESS_PANEL_COPY\.map/, 'and the press paragraph is rendered whole');
+
+    // the card's own prose, with its comments removed
+    const prose = card.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\/\/[^\n]*/g, ' ');
+    assert.equal(/ROUND 5 \(guard-equilibrium/.test(prose), false, 'the comment stripper works');
+    assert.ok(prose.includes('What a token is worth'), 'and it keeps the card s actual copy');
+
+    /* A sentence that pairs the cap with a universal quantifier is the defect this lint exists for:
+       the bound is false on a held board, on a two-wing Mercy board and on a one-wing board, so
+       "ever"/"always"/"whatever your history" beside it is false however it is worded. The worked
+       `project` examples in this card carry 0.75 without any quantifier and are untouched. */
+    const capNumerals = [String(GUARD.cap), `${Math.round(GUARD.cap * 100)} %`, 'GUARD.cap'];
+    const universal = /\b(ever|never|always|whatever|regardless|every board|any board)\b/i;
+    for (const line of prose.split('\n')) {
+      if (!capNumerals.some((c) => line.includes(c))) continue;
+      assert.equal(universal.test(line), false,
+        `settings.js states the ${GUARD.cap} cap with a universal quantifier: ${line.trim()}`);
+    }
+    // and the exact sentence that was withdrawn may not return in its own words
+    assert.equal(/no wing is ever drawn more/.test(prose), false,
+      'the withdrawn unconditional cap sentence is back in settings.js');
+    assert.equal(/whatever your press history/.test(prose), false,
+      'the withdrawn unconditional cap sentence is back in settings.js');
+
+    /* ROUND 6 — ONE SYMBOL, ONE LAW, PER CARD. This card prints the real draw law under `y`
+       (`formula('y = project( (1 − ε)·x̂ + ε·uniform_n, cap = … )')`) and then, thirty lines lower,
+       `PRESS_PANEL_COPY[2]`. That second string used to be written under the SAME letter, so the
+       card published two different laws for `y` — and the second one is off the printed bars by a
+       mean of 0.33 (see "g IS NOT THE PRINTED y"). The legend strings are `guard.js`'s, so the fix
+       is there; this asserts the card cannot be read the old way whatever it quotes. */
+    assert.match(card, /y = project\(/, 'the card no longer prints the real draw law — re-aim this lint');
+    const printed = [...CAP_PANEL_COPY, ...PRESS_PANEL_COPY].join('\n');
+    assert.equal(/yᵢ\s*=\s*1 − k\/vᵢ/.test(printed), false,
+      'a legend this card renders defines `y` a second time, against the draw law above it');
   });
 });
 
@@ -1260,6 +2131,170 @@ describe('J3 · the fixed point: v_i(1 − y_i) = k, Σy = 1 (G3.4)', () => {
     assert.deepEqual(a.press.map((x) => +x.toFixed(6)), shipped.map((x) => +x.toFixed(6)));
   });
 
+  test('THE THREE PUBLISHED LAWS ARE THE RUNNING ONES: each string, READ and executed, reproduces its own function', () => {
+    /* ROUND 5. The round-4 replacement for the regex-only lint had the arrow the wrong way round:
+       it typed the law into the TEST (`const A_of = (eps, n) => (1 - eps / n) / (2 * (1 - eps))`)
+       and asserted `stationaryPress().A` against THAT, and it never dereferenced `PRESS_FORMULA` or
+       `GUARD_MIX_FORMULA` at all — they appeared only inside its comments. So both published
+       strings were free: mutating `PRESS_FORMULA`'s A to `1/(2(1 − ε))` — the exact falsehood that
+       test called its negative control — and `GUARD_MIX_FORMULA`'s k to `n/Σ(1/vᵢ)` left the full
+       suite green, while both strings are rendered verbatim to the student (`settings.js`
+       `PRESS_PANEL_COPY.map(line => hint(line))`).
+
+       The law is now taken OUT OF THE STRING and executed. `readLaw` below is a reader for the
+       glyphs the published strings are written in (−, ᵢ, ε, implicit multiplication) and knows no
+       algebra whatsoever: it evaluates + − × ÷, parentheses and the names it is handed, and throws
+       on anything else. Nothing in this test names the shape of a law; the strings do.
+
+       THE NEGATIVE CONTROLS ARE SHIPPED, not run once in a scratchpad — both mutations above are
+       fed to the same reader at the end of this test and asserted to be caught. */
+
+    /** Evaluate one published sub-expression. Reader only: no algebra, no functions, no names but
+     *  the ones `env` binds. Throws rather than returning NaN, so a law it cannot read is red. */
+    const readLaw = (src, env) => {
+      const s = String(src).replace(/−/g, '-').replace(/[·×]/g, '*').replace(/ᵢ/g, '').replace(/\s+/g, '');
+      let i = 0;
+      const factor = () => {
+        if (s[i] === '-') { i += 1; return -factor(); }
+        if (s[i] === '(') {
+          i += 1;
+          const v = expr();
+          assert.equal(s[i], ')', `unbalanced parentheses in the published law: ${src}`);
+          i += 1;
+          return v;
+        }
+        const num = /^\d+(\.\d+)?/.exec(s.slice(i));
+        if (num) { i += num[0].length; return +num[0]; }
+        const name = /^[A-Za-zε]+/.exec(s.slice(i));
+        assert.ok(name, `the reader cannot read the published law at ${i}: ${src}`);
+        i += name[0].length;
+        assert.ok(Object.hasOwn(env, name[0]),
+          `the published law names "${name[0]}", which this test does not bind: ${src}`);
+        return env[name[0]];
+      };
+      const term = () => {
+        let v = factor();
+        for (;;) {
+          if (s[i] === '*') { i += 1; v *= factor(); } else if (s[i] === '/') { i += 1; v /= factor(); } else if (s[i] === '(') { v *= factor(); } else return v;
+        }
+      };
+      const expr = () => {
+        let v = term();
+        for (;;) {
+          if (s[i] === '+') { i += 1; v += term(); } else if (s[i] === '-') { i += 1; v -= term(); } else return v;
+        }
+      };
+      const out = expr();
+      assert.equal(i, s.length, `the reader did not consume the whole published law: ${src}`);
+      assert.ok(Number.isFinite(out), `the published law did not evaluate to a number: ${src}`);
+      return out;
+    };
+    /** Pull one named piece out of a published string, and fail loudly if it is not there. */
+    const piece = (src, re, what) => {
+      const m = re.exec(src);
+      assert.ok(m, `${what} is not in the published string any more: ${src}`);
+      return m[1].trim();
+    };
+
+    /* what each string says, lifted from the string itself */
+    /* ROUND 6 — the symbol is `gᵢ`, not `yᵢ`. The settings card prints the real draw law
+       `y = project((1 − ε)x̂ + ε·uniform, cap)` and this string in the same <dl>, and one card may
+       not publish two different laws for one letter. See "g IS NOT THE PRINTED y" below. */
+    const yRule = piece(GUARD_MIX_FORMULA, /^\s*gᵢ\s*=\s*([^,]+)/, 'the g rule');          // '1 − k/vᵢ'
+    const kRule = piece(GUARD_MIX_FORMULA, /,\s*k\s*=\s*([^—]+)/, 'the k rule');           // '(n − 1)/Σ(1/vᵢ)'
+    const [kNumer, kSigma] = kRule.split('/Σ');
+    assert.ok(kSigma, `the k rule stopped being a quotient by a Σ: ${kRule}`);
+    const xRule = piece(MAXIMIN_FORMULA, /^\s*xᵢ\s*∝\s*(\S+)/, 'the maximin rule');         // '1/vᵢ'
+    assert.match(MAXIMIN_FORMULA, /over the same support/, 'the maximin string names its support');
+    const pRule = piece(PRESS_FORMULA, /^\s*pᵢ\s*=\s*([^,]+)/, 'the press rule');           // 'A − B/vᵢ'
+    const aRule = piece(PRESS_FORMULA, /,\s*A\s*=\s*([^,]+)/, 'the A term');                // '(1 − ε/n)/(2(1 − ε))'
+    const pTotal = +piece(PRESS_FORMULA, /Σp\s*=\s*(\d+(?:\.\d+)?)/, 'the Σp normalisation');
+
+    const rng = mulberry32('j3-laws');
+    for (let k = 0; k < 600; k++) {
+      const n = 2 + (k % 3);
+      const wings = WING_IDS.slice(0, n);
+      const v = Array.from({ length: n }, () => 1 + rng.next() * 200);
+
+      // GUARD_MIX_FORMULA — read out of the string, then run against fixedPointMix
+      const eq = fixedPointMix(v, wings);
+      const S = eq.support.map((w) => wings.indexOf(w));
+      const kLaw = readLaw(kNumer, { n: S.length }) / sum(S.map((i) => readLaw(kSigma, { v: v[i] })));
+      close(eq.k, kLaw, 1e-9, `${GUARD_MIX_FORMULA} — k over the support it settles on (n = ${S.length})`);
+      for (const i of S) close(eq.y[i], readLaw(yRule, { k: kLaw, v: v[i] }), 1e-9, `${GUARD_MIX_FORMULA} — y on the support`);
+      for (let i = 0; i < n; i++) if (!S.includes(i)) close(eq.y[i], 0, 1e-12, 'and 0 off the support');
+      close(sum(eq.y), 1, 1e-9, 'y is a distribution');
+
+      // MAXIMIN_FORMULA — the proportionality is read out of the string too
+      const mm = maximinPress(v, wings);
+      assert.deepEqual(mm.support, eq.support, 'the same support, as the string says');
+      const raw = S.map((i) => readLaw(xRule, { v: v[i] }));
+      const rawSum = sum(raw);
+      S.forEach((i, j) => close(mm.x[i], raw[j] / rawSum, 1e-12, `${MAXIMIN_FORMULA} — on the support`));
+      for (let i = 0; i < n; i++) if (!S.includes(i)) close(mm.x[i], 0, 1e-12, 'and 0 off it');
+      close(sum(mm.x), 1, 1e-12);
+      close(mm.value, kLaw, 1e-9, 'worth k — the string says k, so k is checked, not just Σx');
+      const worth = sum(mm.x.map((xi, i) => xi * v[i])) - Math.max(...mm.x.map((xi, i) => xi * v[i]));
+      close(worth, kLaw, 1e-9, 'and k is what it is worth against a guard that takes the best wing');
+
+      // PRESS_FORMULA — A, the p rule and the Σp normalisation, all three read out of the string
+      for (const r of RANKS) {
+        const sp = stationaryPress(v, wings, { eps: r.eps, n });
+        close(sp.A, readLaw(aRule, { ε: r.eps, n }), 1e-12,
+          `${PRESS_FORMULA} — A at Called ${r.rank}`);
+        const P = sp.support.map((w) => wings.indexOf(w));
+        for (const i of P) close(sp.p[i], readLaw(pRule, { A: sp.A, B: sp.B, v: v[i] }), 1e-12,
+          `${PRESS_FORMULA} — p on the support`);
+        close(sum(sp.p), pTotal, 1e-12, 'B is set so Σp = 1, as the string says');
+        if (P.length > 1) {
+          close(sp.B, (P.length * sp.A - 1) / sum(P.map((i) => 1 / v[i])), 1e-9,
+            'which pins B to (|S|·A − 1)/Σ_S(1/vᵢ)');
+        }
+        for (const p of sp.p) assert.ok(p >= -1e-12, 'never a negative press');
+      }
+    }
+
+    /* THE NEGATIVE CONTROLS, SHIPPED. Each is the mutation that survived the round-4 test; the
+       reader is handed the mutated law and the disagreement with the running function is asserted,
+       so this test is known to be able to fail rather than merely observed to pass. */
+    const v3 = [30, 20, 10];
+    const wings3 = ['A', 'B', 'C'];
+    const sp3 = stationaryPress(v3, wings3, { eps: RANKS[0].eps, n: 3 });
+    close(sp3.A, 0.611111111111111, 1e-12, 'A at Called 1 on a three-wing board');
+    const badA = piece(PRESS_FORMULA.replace(aRule, '1/(2(1 − ε))'), /,\s*A\s*=\s*([^,]+)/, 'the mutated A');
+    assert.notEqual(badA, aRule, 'the control must actually differ from the shipped law');
+    close(readLaw(badA, { ε: RANKS[0].eps, n: 3 }), 0.6666666666666666, 1e-12, 'the dropped-ε/n control');
+    assert.ok(Math.abs(readLaw(badA, { ε: RANKS[0].eps, n: 3 }) - sp3.A) > 0.05,
+      'A = 1/(2(1 − ε)) must be CAUGHT by this reader — it is 0.0556 out at Called 1');
+
+    const eq3 = fixedPointMix(v3, wings3);
+    close(eq3.k, 12, 1e-9);
+    const S3 = eq3.support.map((w) => wings3.indexOf(w));
+    const sigma3 = sum(S3.map((i) => readLaw(kSigma, { v: v3[i] })));
+    close(readLaw(kNumer, { n: S3.length }) / sigma3, eq3.k, 1e-9, 'the shipped k rule, read and run');
+    const badKNumer = kNumer.replace(/\(\s*n\s*-\s*1\s*\)|\(\s*n\s*−\s*1\s*\)/, '(n)');
+    assert.notEqual(badKNumer, kNumer, 'the control must actually differ from the shipped numerator');
+    assert.ok(Math.abs(readLaw(badKNumer, { n: S3.length }) / sigma3 - eq3.k) > 1,
+      'k = n/Σ(1/vᵢ) must be CAUGHT by this reader — it is 24 against the shipped 12 here');
+
+    /* And a pin on the strings themselves, because a reader can only catch a law that still parses:
+       a silent reword is caught here instead. These literals are the drift guard, never the source
+       of truth — every assertion above runs the string, not this table. */
+    assert.equal(GUARD_MIX_FORMULA, 'gᵢ = 1 − k/vᵢ,  k = (n − 1)/Σ(1/vᵢ)   — the way a GUARD that MINIMISED would have to mix; this one does not, it mirrors x̂');
+    /* ROUND 6 — and the two halves that make it unreadable as the printed bars stay pinned: a
+       symbol that is not `y`, and a tense that is not the present indicative about this guard. */
+    assert.equal(/^yᵢ\s*=/.test(GUARD_MIX_FORMULA), false,
+      'the guard-mix string is back under the letter the drawn distribution already uses');
+    assert.equal(/the GUARD mixes this way/.test(GUARD_MIX_FORMULA), false,
+      'the unqualified present tense is back: this guard does not mix this way');
+    assert.match(GUARD_MIX_FORMULA, /MINIMISED|minimis/,
+      'the string must say whose mixing it is — a minimiser s, not this one s');
+    assert.match(GUARD_MIX_FORMULA, /mirrors x̂/, 'and name what this one does instead');
+    assert.equal(MAXIMIN_FORMULA, 'xᵢ ∝ 1/vᵢ over the same support   — worth k against a guard that reads your press');
+    assert.equal(PRESS_FORMULA, 'pᵢ = A − B/vᵢ,  A = (1 − ε/n)/(2(1 − ε)),  B set so Σp = 1');
+    assert.equal(X_HAT_FORMULA.law, 'x̂ᵢ = (Σⱼ ωⱼ·shareᵢⱼ + β/n) / (Σⱼ ωⱼ + β)');
+  });
+
   test('PRESS_PANEL_COPY names each vector for its own side, and the numbers back every sentence', () => {
     /* The one panel G7 lets print the real formula printed `y` as "the unexploitable answer … in
        proportion to their study value". Three separate things wrong, all of them measurable, so the
@@ -1292,8 +2327,378 @@ describe('J3 · the fixed point: v_i(1 − y_i) = k, Σy = 1 (G3.4)', () => {
     assert.ok(a.maximin[1] > a.maximin[0] + 1e-9,
       'the maximin really does weight the LOWER-value wing more, so sentence 4 is not a slogan');
     assert.ok(a.press[0] > a.press[1] + 1e-9 && a.press[1] > a.press[2] + 1e-9,
-      'while the press the board commits is increasing in v, and positive on every wing');
-    for (const p of a.press) assert.ok(p > 0, 'every wing is pressed');
+      'while the press the board commits is increasing in v, and positive on every wing IT KEEPS');
+    for (const p of a.press) assert.ok(p > 0, 'every wing of THIS board is pressed');
+  });
+
+  test('SENTENCE 2 IS TRUE ON FOUR WINGS TOO: the press keeps a support, and drops what is worth too little', () => {
+    /* ROUND 5 (guard-equilibrium). The sentence read "positive on every wing of every board the
+       composer deals", and the only board it was ever checked on was the hand-made three-wing
+       `v = (30, 20, 10)` above, where the drop never fires. Measured through the shipped
+       `postBoard` over 500 seeded saves: a support wing is pressed at 0 on 55.6 % of FOUR-wing
+       boards (86 of 500 boards overall) — `stationaryPress` drops a wing exactly as `fixedPointMix`
+       does. `v = (58.5, 131.25, 71.25, 18)` below is one of those real boards, wing order
+       `WING_IDS`, and PRESS_PANEL_COPY prints its numbers.
+
+       What IS universal — and what the sentence claims now — is the ORDERING and positivity on the
+       support the press keeps. `B = (|S|·A − 1)/Σ_S(1/vᵢ) ≥ 0` because `A ≥ ½` and `|S| ≥ 2`, so
+       `p = A − B/v` is non-decreasing in `v`, and a dropped wing is always one of the lowest-value
+       ones. Both are asserted over 3 000 random boards, four wings included. */
+    const [, press] = PRESS_PANEL_COPY;
+    assert.equal(/positive on every wing of every board/.test(press), false,
+      'the universal is gone, not reworded');
+    assert.match(press, /positive on every wing the press KEEPS/);
+
+    /* THE ORDERING IS BY STUDY VALUE, WITH ONE EXCEPTION, and the sentence says exactly that.
+       `pressAdvice` zeroes a wing the guard is CERTAIN to take before the press is solved (`vPress`
+       — a token there pays `guardMult`, not `1 + 0.25·tokens`), so a held board can print a wing
+       with the highest v on the board and 0 tokens on it. That is the ONLY place `p` departs from
+       `v`; everywhere else it follows `v` exactly, which is NOT the same as following what a token
+       is worth. ROUND 6: the round-5 sentence said "a wing a token is worth more on" and is
+       measured false on 17.6 % of shipped boards — see the next test. */
+    const heldBoard = pressAdvice({ wings: ['RECALL', 'FIGURES', 'WORDS'], y: [1, 0, 0], eps: 0.2 },
+      { RECALL: 500, FIGURES: 20, WORDS: 10 });
+    assert.equal(heldBoard.press[0], 0, 'the wing the guard is certain to take is pressed at 0…');
+    assert.ok(heldBoard.press[1] > 0 && heldBoard.press[2] > 0, '…however high its study value');
+    assert.equal(heldBoard.v[0], 500, 'and it really is the highest-value wing on that board');
+    assert.match(press, /never presses one wing harder than a wing of greater STUDY VALUE/,
+      'the sentence orders by the value the press actually orders by');
+    assert.equal(/never presses one wing harder than a wing a token is worth more on/.test(press), false,
+      'the round-5 ordering claim is back, and it is false on 17.6 % of shipped boards');
+    assert.match(press, /a wing the guard is certain to take, however high its study value/,
+      'and names the certain-guard wing as the one exception to the v ordering');
+
+    // the real four-wing board the sentence prints, at every rank's ε
+    const w4 = ['RECALL', 'FIGURES', 'WORDS', 'ALGEBRA'];
+    const v4 = [58.5, 131.25, 71.25, 18];
+    assert.ok(press.includes(`v = (${v4.join(', ')})`), `the sentence prints v = (${v4.join(', ')})`);
+    for (const r of RANKS) {
+      const sp = stationaryPress(v4, w4, { eps: r.eps, n: 4 });
+      assert.deepEqual(sp.dropped, ['ALGEBRA'], `Called ${r.rank}: the lowest-value wing leaves the support`);
+      assert.equal(sp.p[3], 0, 'and is pressed at 0 — a support wing of the board, pressed at nothing');
+      assert.ok(sp.support.length === 3 && !sp.support.includes('ALGEBRA'));
+    }
+    const shown = stationaryPress(v4, w4, { eps: epsFor(null), n: 4 }).p;
+    assert.deepEqual(shown.map((p) => +p.toFixed(2)), [0.25, 0.44, 0.31, 0],
+      'the vector the sentence prints is the vector the function returns at the default rank');
+    const printed = `(${shown.map((p) => (p > 0 ? p.toFixed(2) : '0')).join(', ')})`;
+    assert.ok(press.includes(printed),
+      `the sentence must print the vector stationaryPress returns, ${printed}`);
+
+    /* The two universals that replaced it, over 3 000 random boards including four-wing ones.
+       ROUND 6 — THIS SWEEP PROVES MONOTONICITY IN `v` AND NOTHING ELSE. It calls `stationaryPress`
+       with a raw `v`, no `y` and no `pressAdvice`, and it used to label its own failure "a wing a
+       token is worth LESS on was pressed harder", which is a different claim and one this sweep
+       cannot see. The messages say what is being proved now, and the claim the old label named is
+       measured — through `postBoard` and `pressAdvice` — in the test after this one. */
+    const rng = mulberry32('j3-press-support');
+    let dropsSeen = 0;
+    for (let k = 0; k < 3000; k++) {
+      const n = 2 + (k % 3);
+      const wings = WING_IDS.slice(0, n);
+      const v = Array.from({ length: n }, () => 1 + rng.next() ** 3 * 400);
+      const sp = stationaryPress(v, wings, { eps: RANKS[k % RANKS.length].eps, n });
+      const idx = wings.map((w) => wings.indexOf(w));
+      for (const i of idx) {
+        for (const j of idx) {
+          if (v[i] > v[j] + 1e-9) {
+            assert.ok(sp.p[i] >= sp.p[j] - 1e-12,
+              `p is not monotone in the value it is handed: v ${v[j]} got ${sp.p[j]} against v ${v[i]}'s ${sp.p[i]}`);
+          }
+        }
+      }
+      for (const w of sp.support) assert.ok(sp.byWing[w] > 0, 'positive on every wing the press keeps');
+      for (const w of sp.dropped) {
+        assert.equal(sp.byWing[w], 0, 'and exactly 0 on the wings it drops');
+        dropsSeen += 1;
+        const lowest = Math.min(...sp.support.map((s) => v[wings.indexOf(s)]));
+        assert.ok(v[wings.indexOf(w)] <= lowest + 1e-9, 'a dropped wing is never worth more than a kept one');
+      }
+      close(sum(sp.p), 1, 1e-12);
+    }
+    assert.ok(dropsSeen > 100, `the sweep must actually reach the drop: ${dropsSeen} drops seen`);
+  });
+
+  test('THE PRESS ORDERS BY STUDY VALUE, NOT BY WHAT A TOKEN BUYS — measured through postBoard, and the sentence says so', () => {
+    /* ROUND 6 (guard-equilibrium, verification round 2). The round-5 repair published, to the
+       student, "never presses one wing harder than a wing A TOKEN IS WORTH MORE ON". This file
+       defines what a token is worth — `pressAdvice`: `marginalᵢ = GUARD.tokenBonus·vᵢ·(1 − yᵢ)` —
+       and `stationaryPress` solves `p = A − B/vPress` where `vPress` is the RAW `vᵢ` on every wing
+       the guard is not certain to take. `(1 − yᵢ)` is not in the solve, so `p` is monotone in `v`,
+       and whenever tonight's `y` reverses the `v` ordering the press is heavier where a token is
+       worth less. Both bars are on the same screen, so one board falsifies it.
+
+       And the round-5 verification could not see it: it swept `stationaryPress(v, wings, {eps, n})`
+       — raw `v`, no `y`, no `pressAdvice`, no board — and asserted monotonicity in `v`, which is
+       not the published claim. This one runs the shipped path.
+
+       THE SOLVE IS NOT THE DEFECT. `p` is the STATIONARY reply: it answers the `y` that a repeated
+       press itself creates, `yᵢ = (1 − ε)pᵢ + ε/n`, and AT THAT `y` the two orderings coincide —
+       asserted below over 2 000 boards with 0 violations. Ordering by tonight's `marginal` instead
+       would make the pre-press a greedy reply to the bars on screen, which Global law 6 forbids the
+       board to pre-fill. So the sentence was corrected and the maths was left alone. */
+    const [, press] = PRESS_PANEL_COPY;
+    const pct = (re, what) => {
+      const m = re.exec(press);
+      assert.ok(m, `${what} is not in the published sentence any more: ${press}`);
+      return +m[1];
+    };
+    const saidP = pct(/([\d.]+) % of 500 shipped boards/, 'the rate the sentence publishes');
+    const saidTokens = pct(/([\d.]+) % of them in the whole tokens/, 'the whole-token rate');
+
+    let live = 0; let nonUniform = 0; let viol = 0; let violTokens = 0; let worst = null;
+    for (let i = 0; i < 500; i++) {
+      const b = shippedBoard(shippedSave(i));
+      if (!b?.press?.wings?.length || !b.pressMatters) continue;
+      live += 1;
+      const { wings, v, y, marginal } = b.press;
+      if (Math.max(...y) - Math.min(...y) > 1e-9) nonUniform += 1;
+      /* the file's own marginal, recomputed from the board's own printed bars — not a copy of the
+         formula: `pressAdvice` already returns it, and this line only checks it IS that formula */
+      for (let k = 0; k < wings.length; k++) {
+        close(marginal[k], GUARD.tokenBonus * v[k] * (1 - y[k]), 1e-9,
+          'the board s own `marginal` is no longer 0.25·v·(1 − y)');
+      }
+      let bad = false; let badTok = false;
+      for (let a = 0; a < wings.length; a++) {
+        for (let c = 0; c < wings.length; c++) {
+          if (!(marginal[a] > marginal[c] + 1e-9)) continue;
+          if (b.press.press[a] < b.press.press[c] - 1e-9) bad = true;
+          if ((b.press.tokens[wings[a]] ?? 0) < (b.press.tokens[wings[c]] ?? 0)) badTok = true;
+        }
+      }
+      if (bad) viol += 1;
+      if (badTok) { violTokens += 1; worst = worst ?? { i, wings, v, y, marginal, tokens: b.press.tokens }; }
+    }
+
+    assert.ok(live >= 400, `the sweep must actually post boards: ${live} of 500`);
+    assert.ok(nonUniform >= live * 0.7,
+      `the sweep is vacuous unless the guard s bars are NON-uniform: ${nonUniform} of ${live}`);
+    /* the withdrawn claim is false, and not rarely — a sweep that found none would mean the harness
+       stopped reaching the reversal, not that the sentence came true */
+    assert.ok(viol > 0, 'no board pressed harder where a token is worth less — re-read this test');
+    assert.ok(worst, 'and none did it in WHOLE TOKENS, which is the half a student can see');
+
+    /* the published figure and the measured figure are one number, to a point either way: if the
+       composer drifts, this fails and the SENTENCE is what has to be restated */
+    const gotP = 100 * viol / live;
+    const gotTokens = 100 * violTokens / live;
+    assert.ok(Math.abs(gotP - saidP) <= 5,
+      `the sentence publishes ${saidP} % and the shipped boards measure ${gotP.toFixed(1)} %`);
+    assert.ok(Math.abs(gotTokens - saidTokens) <= 3,
+      `the sentence publishes ${saidTokens} % in whole tokens and the boards measure ${gotTokens.toFixed(1)} %`);
+
+    /* A DETERMINISTIC PIN on one real board, so the counterexample survives any drift in the
+       composer: `save 41` of the sweep above, its own v and its own printed y, through
+       `pressAdvice`. The board pre-presses TWO tokens on the wing a token is worth 16.83 on and ONE
+       on the wing it is worth 22.05 on. */
+    const w3 = ['RECALL', 'FIGURES', 'ALGEBRA'];
+    const pin = pressAdvice({ wings: w3, y: [0.148, 0.487, 0.365], eps: 0.20 },
+      { RECALL: 103.5, FIGURES: 131.25, ALGEBRA: 33.75 });
+    assert.deepEqual(pin.marginal.map((m) => +m.toFixed(2)), [22.05, 16.83, 5.36]);
+    assert.deepEqual(pin.tokens, { RECALL: 1, FIGURES: 2, ALGEBRA: 0 });
+    assert.ok(pin.marginal[0] > pin.marginal[1] + 1e-9 && pin.tokens.FIGURES > pin.tokens.RECALL,
+      'the pinned board no longer presses harder where a token is worth less');
+    assert.ok(pin.v[1] > pin.v[0], 'and it does so because it orders by STUDY VALUE, which is reversed here');
+
+    /* WHY THE SOLVE STAYS: at the `y` a repeated press of `p` itself induces, the two orderings are
+       the same, so `p` is not inconsistent — it is stationary. 0 violations over 2 000 boards. */
+    const rngS = mulberry32('j3-press-stationary');
+    let stationaryViol = 0;
+    for (let k = 0; k < 2000; k++) {
+      const n = 2 + (k % 3);
+      const wings = WING_IDS.slice(0, n);
+      const v = Array.from({ length: n }, () => 1 + rngS.next() * 200);
+      const eps = RANKS[k % RANKS.length].eps;
+      const p = stationaryPress(v, wings, { eps, n }).p;
+      const yStat = p.map((pi) => (1 - eps) * pi + eps / n);
+      const mStat = v.map((vi, i) => GUARD.tokenBonus * vi * (1 - yStat[i]));
+      for (let a = 0; a < n; a++) {
+        for (let c = 0; c < n; c++) {
+          if (mStat[a] > mStat[c] + 1e-9 && p[a] < p[c] - 1e-12) stationaryViol += 1;
+        }
+      }
+    }
+    assert.equal(stationaryViol, 0,
+      'against the y a repeated press of p creates, p IS ordered by what a token buys — that is the '
+      + 'claim the solve supports, and the one the sentence may make');
+  });
+
+  test('SENTENCE 3 IS BOUNDED TO WHAT IS MEASURED: y loses to a flat press on the worked board, not on every board', () => {
+    /* ROUND 5 (guard-equilibrium). The sentence read "pressed by a player it is worth less than a
+       flat press", full stop. True on the worked vector and false in general: where `y` collapses
+       onto two wings and the flat press spreads over four, `y` wins — on 19.6 % of random boards
+       against a minimising guard and on 36.4 % of them against the shipped mirror guard (and on
+       real `postBoard` boards at 8.2 % / 9.6 %). The comparison itself was never evaluated by this
+       suite at all: the only assertion on the sentence was `guard.includes(GUARD_MIX_FORMULA)`.
+
+       So the sentence now prints the worked board's three numbers, and the two dominances that ARE
+       universal — the maximin against a minimiser, `stationaryPress` against the House that ships —
+       are asserted here over 4 000 boards, with the counterexample to the withdrawn universal
+       asserted to still exist so it cannot quietly come back. */
+    const [, , guard] = PRESS_PANEL_COPY;
+    assert.equal(/worth less than a flat press/.test(guard), false, 'the universal is gone, not reworded');
+
+    const v3 = [30, 20, 10];
+    const w3 = ['RECALL', 'FIGURES', 'WORDS'];
+    const valueMin = (x, v) => sum(x.map((xi, i) => xi * v[i])) - Math.max(...x.map((xi, i) => xi * v[i]));
+    const y3 = fixedPointMix(v3, w3).y;
+    const flat3 = w3.map(() => 1 / 3);
+    const mm3 = maximinPress(v3, w3).x;
+    close(valueMin(y3, v3), 8, 1e-9, 'pressing the House s mix on the worked board is worth 8.0');
+    close(valueMin(flat3, v3), 10, 1e-9, 'a flat press there is worth 10.0');
+    close(valueMin(mm3, v3), 12, 1e-9, 'and the maximin 12.0');
+    for (const n of ['8.0', '10.0', '12.0']) assert.ok(guard.includes(n), `the sentence prints ${n}`);
+    assert.ok(guard.includes('v = (30, 20, 10)'), 'named against the board it is measured on');
+
+    // the two dominances the sentence claims universally — over 4 000 boards, every rank
+    const rng = mulberry32('j3-flat-vs-y');
+    let yBeatsFlatMin = 0;
+    let yBeatsFlatShipped = 0;
+    for (let k = 0; k < 4000; k++) {
+      const n = 2 + (k % 3);
+      const wings = WING_IDS.slice(0, n);
+      const v = Array.from({ length: n }, () => 1 + rng.next() * 200);
+      const eps = RANKS[k % RANKS.length].eps;
+      const y = fixedPointMix(v, wings).y;
+      const mm = maximinPress(v, wings).x;
+      const p = stationaryPress(v, wings, { eps, n }).p;
+      const flat = wings.map(() => 1 / n);
+      const valueShipped = (x) => sum(x.map((xi, i) => xi * v[i] * (1 - (1 - eps) * xi - eps / n)));
+      assert.ok(valueMin(mm, v) >= valueMin(y, v) - 1e-9,
+        'the maximin is never worse than y against a guard that minimises');
+      /* ROUND 7 — READ THIS ONE AS WHAT IT IS. `valueShipped` IS the objective `stationaryPress`
+         solves by construction, so this line asserts that the optimiser optimises: it is an
+         OPTIMISER CHECK (the solve matches the objective this file publishes for it), and it is
+         not evidence for any sentence about the guard on tonight's board. The sentence's claim is
+         measured against the board's own printed y in the test below. */
+      assert.ok(valueShipped(p) >= valueShipped(y) - 1e-9,
+        'stationaryPress must actually solve the stationary objective this file publishes for it');
+      if (valueMin(y, v) > valueMin(flat, v) + 1e-9) yBeatsFlatMin += 1;
+      if (valueShipped(y) > valueShipped(flat) + 1e-9) yBeatsFlatShipped += 1;
+    }
+    /* the counterexample, kept alive: if these ever hit 0 the withdrawn universal would be true
+       again and the sentence should be re-examined rather than quietly restored */
+    assert.ok(yBeatsFlatMin > 200,
+      `y beat a flat press against a minimiser on only ${yBeatsFlatMin} of 4 000 boards`);
+    assert.ok(yBeatsFlatShipped > 200,
+      `y beat a flat press against the shipped guard on only ${yBeatsFlatShipped} of 4 000 boards`);
+    assert.match(guard, /A flat press does not always beat it/,
+      'and the sentence says so, rather than publishing the universal again');
+  });
+
+  test('THE PRESS BEATS g AGAINST THE GUARD IT CONVERGES TO, NOT AGAINST TONIGHT S BARS', () => {
+    /* ROUND 7 (guard-equilibrium). The sentence closed *"…and the press above beats it on every
+       board against the guard that ships"*, in the same breath as a clause about "a guard that
+       minimises" — two different guards, neither named. "The guard that ships" reads, on that
+       screen, as the y drawn as bars ten lines above; under that y the claim is false on nearly
+       every board. It is true only under the STATIONARY objective, the y a repeated press of x
+       itself creates — and that objective is the one `stationaryPress` solves, which is why the
+       4 000-board assertion above can never fail and is labelled an optimiser check now.
+
+       Both readings, measured over the shipped `postBoard` corpus, with the numbers the sentence
+       prints tied to the numbers computed here. */
+    const [, , guard] = PRESS_PANEL_COPY;
+    let boards = 0; let worseStationary = 0; let worsePrinted = 0;
+    let shortfall = 0; let maxShortfall = 0;
+    for (let i = 0; i < 4000 && boards < 500; i++) {
+      const b = shippedBoard(shippedSave(i));
+      if (!b?.press?.v?.length || !b?.guard) continue;
+      const wings = b.press.wings;
+      const v = b.press.v.slice();
+      if (!(sum(v) > 0) || wings.length < 2) continue;
+      const { eps } = b.press;
+      const n = wings.length;
+      const yPrinted = wings.map((w) => b.guard.byWing[w] ?? 0);
+      const g = fixedPointMix(v, wings).y;
+      const p = stationaryPress(v, wings, { eps, n }).p;
+      const stationary = (x) => sum(x.map((xi, k) => xi * v[k] * (1 - (1 - eps) * xi - eps / n)));
+      const printed = (x) => sum(x.map((xi, k) => xi * v[k] * (1 - yPrinted[k])));
+      boards += 1;
+      if (stationary(p) < stationary(g) - 1e-9) worseStationary += 1;
+      if (printed(p) < printed(g) - 1e-9) {
+        worsePrinted += 1;
+        const s = (printed(g) - printed(p)) / Math.max(1e-12, printed(g));
+        shortfall += s;
+        if (s > maxShortfall) maxShortfall = s;
+      }
+    }
+    assert.equal(boards, 500, 'the corpus is 500 shipped boards');
+    assert.equal(worseStationary, 0,
+      `p lost to g under the stationary objective on ${worseStationary} boards — the half that IS universal`);
+    assert.equal(worsePrinted, 491,
+      `g beat p against the board's own printed y on ${worsePrinted} of ${boards}, not the published 491`);
+    const mean = shortfall / worsePrinted;
+    assert.ok(Math.abs(mean - 0.117) < 0.0005, `the mean shortfall is ${(100 * mean).toFixed(1)} %`);
+    assert.ok(Math.abs(maxShortfall - 0.317) < 0.0005, `the worst shortfall is ${(100 * maxShortfall).toFixed(1)} %`);
+
+    // …and the sentence prints those numbers, against the guard each half is measured on
+    assert.ok(guard.includes('491 of 500'), 'the sentence prints the count it is measured at');
+    assert.ok(guard.includes('11.7 %') && guard.includes('31.7 %'), 'and the mean and the worst case');
+    assert.match(guard, /a guard that MINIMISES/, 'the maximin half names its guard');
+    assert.match(guard, /NOT the bars above/, 'and the press half names a guard that is not the printed one');
+    assert.equal(/against the guard that ships\./.test(guard), false,
+      'the unqualified "the guard that ships" is gone, not reworded around');
+  });
+
+  test('g IS NOT THE PRINTED y: one card may not publish two laws for one symbol, and the two vectors are measured apart', () => {
+    /* ROUND 6 (guard-equilibrium, verification round 2). `settings.js guardCard()` prints, in this
+       order, the real draw law — `y = project((1 − ε)·x̂ + ε·uniform_n, cap = 0.75)` — and then, in
+       the same <dl>, `PRESS_PANEL_COPY[2]`, which carried `yᵢ = 1 − k/vᵢ … — the GUARD mixes this
+       way`: the same letter for two different objects, thirty lines apart, the second in the
+       unqualified present tense about a guard that does not do it. Sentence 2 of the same card
+       already said the opposite ("whose y is a published mirror of your own last 10 jobs and not a
+       minimiser"). The only assertion on it was `guard.includes(GUARD_MIX_FORMULA)` plus a match on
+       /HOUSE/, so nothing ever compared the claim with `guardDist`.
+
+       The symbol is `g` now, the tense is counterfactual, and the distance between the two vectors
+       is measured on shipped boards rather than argued. */
+    const [, , guard] = PRESS_PANEL_COPY;
+    assert.equal(/\byᵢ = 1 − k\/vᵢ/.test(guard), false,
+      'the guard-mix law is printed under `y` again, which is the letter the drawn bars use');
+    assert.equal(/the GUARD mixes this way/.test(guard), false, 'the present-tense mechanism claim is back');
+    assert.match(guard, /NOT the bars/, 'the sentence must say it is not the printed distribution');
+
+    const said = (re, what) => {
+      const m = re.exec(guard);
+      assert.ok(m, `${what} is not in the published sentence any more: ${guard}`);
+      return +m[1];
+    };
+    const saidMean = said(/mean of ([\d.]+)/, 'the published mean deviation');
+    const saidMax = said(/as much as ([\d.]+)/, 'the published max deviation');
+    const saidAgree = said(/agree on (\d+) of them/, 'the published agreement count');
+
+    let boards = 0; let agree = 0; let maxDev = 0; let sumDev = 0; let sample = null;
+    for (let i = 0; i < 400; i++) {
+      const b = shippedBoard(shippedSave(i));
+      if (!b?.press?.wings?.length) continue;
+      boards += 1;
+      const wings = b.press.wings;
+      const printed = wings.map((w) => b.guard.byWing[w] ?? 0);        // the bars the board prints
+      const g = fixedPointMix(b.press.v, wings).y;                     // what GUARD_MIX_FORMULA is
+      const dev = Math.max(...wings.map((_, k) => Math.abs(g[k] - printed[k])));
+      maxDev = Math.max(maxDev, dev); sumDev += dev;
+      if (dev < 1e-9) agree += 1;
+      if (!sample && dev > 0.5) sample = { i, wings, v: b.press.v, printed, g };
+    }
+    assert.ok(boards >= 300, `the sweep must actually post boards: ${boards} of 400`);
+    assert.ok(sample, 'no board separated the two vectors by half a bar — re-read this test');
+    assert.equal(agree, saidAgree,
+      `the sentence says the two agree on ${saidAgree} boards; ${agree} of ${boards} agree`);
+    close(sumDev / boards, saidMean, 0.05, 'the published MEAN deviation is not the measured one');
+    close(maxDev, saidMax, 0.05, 'the published MAX deviation is not the measured one');
+
+    /* and the mechanism claim itself: the shipped draw does not read `v` at all. Two boards with
+       the SAME press history and different `v` draw the same bars; `fixedPointMix` does not. */
+    const save = { player: { rank: 3 }, game: { heat: { press: { RECALL: 80, FIGURES: 20 }, weight: 100, jobs: 4, window: [] }, log: [] } };
+    const d = guardDist(save, { support: ['RECALL', 'FIGURES', 'WORDS'], eps: 0.2 });
+    const lo = fixedPointMix([30, 20, 10], d.wings).y;
+    const hi = fixedPointMix([10, 20, 30], d.wings).y;
+    assert.notDeepEqual(lo, hi, 'fixedPointMix reads v — that is the whole of it');
+    for (const y of [lo, hi]) {
+      assert.equal(y.every((yi, k) => Math.abs(yi - d.y[k]) < 1e-9), false,
+        'the guard the layer ships drew the minimiser s mix — guardDist has started reading v');
+    }
   });
 
   test('pressAdvice always spends exactly GUARD.tokens, over 2 000 random boards', () => {

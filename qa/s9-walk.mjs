@@ -250,13 +250,30 @@ async function walk() {
   await writeFile(path.join(SCRATCH, 'after-ace.json'), saved);
   await ctx.close();
 }
+/* SHIP 2026-09-21a — the one repair this driver needed after the game layer landed.
+   `settings.game` ships TRUE (`js/store.js:301`), so Home's primary is the JOB board on every save
+   that posts one and this function used to hang for 20 s on `[data-kind="page"]` and abort the walk
+   (the process still exited 0, which is why it looked green). COMPOSED S9 is the STUDY layer's
+   definition of wow and COMPOSED-GAME G10 #14 keeps the flat Page one tap from Home — `home.js:761`
+   renders `a.btn[href="#/run/page"]` ("Run a page") exactly when the primary is not the Page. So:
+   take the primary when it IS the Page, and take that link when it is not. Nothing else changes,
+   and the walk now measures the same Page it always did. */
+async function tapTodaysPage(page) {
+  await page.waitForSelector('.home-primary[data-kind]:not([data-kind="loading"])', { timeout: 20000 });
+  await page.waitForTimeout(500);
+  const kind = await page.evaluate(() => document.querySelector('.home-primary')?.dataset.kind || null);
+  if (kind === 'page' || kind === 'resume') { await tap(await page.$('.home-primary')); return kind; }
+  const link = await page.$('a[href="#/run/page"]');
+  if (!link) throw new Error(`no tap to Today's Page on Home (primary kind ${kind})`);
+  say('home primary is not the Page', { kind, took: 'the "Run a page" link (G10 #14)' });
+  await tap(link);
+  return kind;
+}
 async function walkB() {
   const state = await readFile(path.join(SCRATCH, 'after-ace.json'), 'utf8');
   const { ctx, page, errors } = await open({ route: '#/today', state });
-  await page.waitForSelector('.home-primary[data-kind="page"]', { timeout: 20000 });
-  await page.waitForTimeout(500);
   // Today's Page
-  await tap(await page.$('.home-primary'));
+  await tapTodaysPage(page);
   let mm = await mark(page);
   await page.waitForSelector('.run-screen', { timeout: 20000 });
   let item = 0; let summaryReached = false;
@@ -267,16 +284,35 @@ async function walkB() {
     const prog = await text(page, '.run-progress');
     say(`page item ${i}`, prog, a.kinds, a.stem);
     if (i === 1) {
-      // S9 #9 keyboard-open: focus the first input, shrink the viewport as an on-screen keyboard would, shoot
+      /* S9 #9 keyboard-open. SHIP 2026-09-21a: this used to shrink the PLAYWRIGHT viewport to
+         375×380, which shrinks the LAYOUT viewport — something no keyboard does. It moved every
+         sticky element up with the fold and hid nothing, so the claim passed on a keyboard that
+         does not exist (r3 finding, `qa/job-screen.mjs` head). Modelled the way the platform does
+         it and the way `js/widgets/base.js keyboardInset()` reads it: the layout viewport stays
+         375×667, only `visualViewport` shrinks, and every "in view" test is against
+         `visualViewport.offsetTop + visualViewport.height`, never `innerHeight`. */
       const inp = await page.$('.card-parts input:not([disabled])');
       if (inp) {
         await inp.focus();
-        await page.setViewportSize({ width: 375, height: 380 });
+        const kbOk = await page.evaluate((px) => {
+          const vv = window.visualViewport;
+          if (!vv) return false;
+          const h = Math.max(120, window.innerHeight - px);
+          Object.defineProperty(vv, 'height', { configurable: true, get: () => h });
+          Object.defineProperty(vv, 'offsetTop', { configurable: true, get: () => 0 });
+          vv.dispatchEvent(new Event('resize'));
+          return true;
+        }, 287);   // 375-wide iOS Safari number pad; qa/job-screen.mjs uses 336 for the full keyboard
         await page.waitForTimeout(400);
-        const kb = await page.evaluate(() => { const vis = (s) => { const e = document.querySelector(s); if (!e || e.hidden) return null; const r = e.getBoundingClientRect(); return { top: Math.round(r.top), bottom: Math.round(r.bottom), inView: r.top >= 0 && r.bottom <= innerHeight }; }; return { input: vis('.card-parts input:focus'), keys: vis('#dock .dock-keys, #dock [class*=keys]'), submit: vis('.card-submit'), kb: document.documentElement.dataset.kb, keyRow: document.querySelector('#dock')?.innerText.replace(/\s+/g, ' ').slice(0, 120) }; });
-        say('keyboard-open geometry (375×380)', kb);
+        const kb = await page.evaluate(() => {
+          const vv = window.visualViewport;
+          const fold = vv ? vv.offsetTop + vv.height : innerHeight;
+          const vis = (s) => { const e = document.querySelector(s); if (!e || e.hidden) return null; const r = e.getBoundingClientRect(); return { top: Math.round(r.top), bottom: Math.round(r.bottom), inView: r.top >= 0 && r.bottom <= fold }; };
+          return { fold: Math.round(fold), layoutH: innerHeight, input: vis('.card-parts input:focus'), keys: vis('#dock .dock-keys, #dock [class*=keys]'), submit: vis('.card-submit'), kb: document.documentElement.dataset.kb, keyRow: document.querySelector('#dock')?.innerText.replace(/\s+/g, ' ').slice(0, 120) };
+        });
+        say(`keyboard-open geometry (visual viewport, kbOk ${kbOk})`, kb);
         await shot(page, 'p-09-page-item1-keyboard.png');
-        await page.setViewportSize({ width: 375, height: 667 });
+        await page.evaluate(() => { const vv = window.visualViewport; if (!vv) return; delete vv.height; delete vv.offsetTop; vv.dispatchEvent(new Event('resize')); });
         await page.waitForTimeout(300);
       }
       await shot(page, 'p-09-page-item1.png');
@@ -456,6 +492,7 @@ async function mockWalk() {
   say('settings errors', s2.errors);
   await s2.ctx.close();
 }
+let failed = false;
 try {
   if (mode === 'walk') { await walk(); await walkB(); }
   else if (mode === 'page') await walkB();
@@ -463,9 +500,9 @@ try {
   else if (mode === 'dip') {
     const state = await readFile(path.join(SCRATCH, 'after-ace.json'), 'utf8');
     const { ctx, page } = await open({ route: '#/today', state });
-    await page.waitForSelector('.home-primary[data-kind="page"]', { timeout: 20000 });
+    await page.waitForSelector('.home-primary[data-kind]:not([data-kind="loading"])', { timeout: 20000 });
     say('home before', await page.evaluate(() => document.querySelector('.hero-text')?.innerText.replace(/\s+/g, ' ')));
-    await tap(await page.$('.home-primary')); let mm = await mark(page); await page.waitForSelector('.run-screen', { timeout: 20000 });
+    await tapTodaysPage(page); let mm = await mark(page); await page.waitForSelector('.run-screen', { timeout: 20000 });
     for (let i = 1; i <= 4; i++) { await armCard(page, mm); await submitUntilContinue(page); mm = await mark(page); await tap(await page.$('.card-continue:not([hidden])')); await page.waitForTimeout(500); }
     await page.goto(base + '#/today', { waitUntil: 'networkidle' }); await page.waitForTimeout(800);
     say('home after 4 clean items, page quit', await page.evaluate(() => ({ hero: document.querySelector('.hero-text')?.innerText.replace(/\s+/g, ' '), weak: document.querySelector('.home-weak')?.innerText.replace(/\s+/g, ' ').slice(0, 200), primary: document.querySelector('.home-primary')?.innerText })));
@@ -490,8 +527,11 @@ try {
   else if (mode === 'debug') { const { ctx, page, errors } = await open({ route: '#/' }); await page.waitForTimeout(2500); say('url', page.url(), 'text', await page.evaluate(() => document.body.innerText.replace(/\s+/g, ' ').slice(0, 300)), 'screens', await page.evaluate(() => [...document.querySelectorAll('main *')].slice(0,5).map(e => e.tagName + '.' + e.className))); say('errors', errors); await shot(page, 'debug.png'); await ctx.close(); }
   else if (mode === 'shots') await shots();
   else if (mode === 'offline') await offline();
-} catch (e) { say('SCRIPT ERROR', String(e?.stack || e)); }
+} catch (e) { say('SCRIPT ERROR', String(e?.stack || e)); failed = true; }
 await writeFile(path.join(SCRATCH, `s9-${mode}.log`), log.join('\n'));
 await browser.close();
 server.close();
+/* SHIP 2026-09-21a: a walk that aborted used to exit 0, so `node qa/s9-walk.mjs && echo ok` printed
+   ok on a run that never reached the Page. A gate that cannot fail is not a gate. */
+if (failed) process.exitCode = 1;
 

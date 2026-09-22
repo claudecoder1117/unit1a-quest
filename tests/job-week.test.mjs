@@ -45,11 +45,14 @@ import * as boss from '../site/js/screens/boss.js';
 import * as night from '../site/js/screens/night.js';
 
 import * as state from '../site/js/job/state.js';
+import { postBoard } from '../site/js/job/board.js';
+import { finalWordOf } from '../site/js/screens/job.js';
+import { sessionSplit } from '../site/js/screens/run.js';
 import * as call from '../site/js/job/call.js';
 import * as guard from '../site/js/job/guard.js';
 import * as econ from '../site/js/job/econ.js';
 import { postedCountFor, nextAction } from '../site/js/page.js';
-import { WEEK, SHAPES, REVIEW_BOARD, BACKCHECK, COMMIT_BONUS, COMPLETION, AUTO_BAG, CAPS, COPY, PUBLISHED, WING_IDS } from '../site/data/job.js';
+import { WEEK, SHAPES, REVIEW_BOARD, BACKCHECK, COMMIT_BONUS, COMPLETION, AUTO_BAG, CAPS, COPY, PUBLISHED, SPLIT, WING_IDS } from '../site/data/job.js';
 
 const BANK = ALL_CARDS.filter((c) => !isBonus(c.id));
 const clone = (x) => structuredClone(x);
@@ -94,6 +97,42 @@ function saveAtD(D, { day = THU, hh = 19, mm = 0, seed = 1 } = {}) {
   return { save: s, now, today };
 }
 
+/* ------------------------------------------------------------------------------------------------
+   A REAL job, driven through the state machine on a clock that is nobody's published table.
+   (REPAIR, r3 split-honesty MINOR: the projection arm below used to hand-write
+   `tGame: 300000, tAnswer: 200000` and then assert `split === 60` — 300/(300+200) by construction,
+   i.e. it verified that `boardModel` can divide. `playJob` gives the assertion a second clock:
+   `state.endJob` writes the log entry this file then reads, and the pace is a student's, not a
+   table's — a slow answerer who decides fast, so neither term is a constant this file owns.)
+   ------------------------------------------------------------------------------------------------ */
+const PACE = Object.freeze({ answerS: 47, decideS: 6, callS: 4, phaseS: 11 });
+
+/** Play one job to its terminal and return the `game.log` entry `endJob` wrote. */
+function playJob(save, { now, today, shape = 'JOB', pace = PACE, board = null } = {}) {
+  let t = now;
+  const step = (secs) => (t += Math.round(secs * 1000));
+  state.startJob(save, { today, now: t, board: board ?? postBoard(save, today, { now: t, shape }) });
+  state.tick(save, 'guard', step(pace.phaseS));
+  state.beginTargets(save, { now: step(pace.phaseS) });
+  for (let stop = 0; stop < 900; stop++) {
+    const g = state.stateOf(save);
+    if (!g || g.outcome != null) break;
+    if (g.phase === 'envelope') { state.lockCall(save, 70, { now: step(pace.callS) }); continue; }
+    if (g.phase === 'answer') { state.applyTarget(save, { ok: true, attempt: 1, hints: 0 }, { now: step(pace.answerS) }); continue; }
+    if (g.phase === 'payout' || g.phase === 'bagpush') {
+      const when = step(pace.decideS);
+      if (state.targetsLeft(save) === 0) state.endJob(save, finalWordOf(save), { now: when, day: today });
+      else state.push(save, { now: when });
+      continue;
+    }
+    if (g.phase === 'brief') { state.brief(save, {}, { now: step(pace.phaseS) }); continue; }
+    if (g.phase === 'getaway') { state.crack(save, { now: step(pace.phaseS) }); continue; }
+    break;
+  }
+  const log = save.game?.log ?? [];
+  return log[log.length - 1] ?? null;
+}
+
 /* ========================================================================================== */
 describe('J11 #1 — D = 2 posts the REVIEW BOARD', () => {
   test('the policy is REVIEW_BOARD verbatim: no vault, no guard, no tokens, flat ladder, calls optional, Backchecks free', () => {
@@ -135,7 +174,22 @@ describe('J11 #1 — D = 2 posts the REVIEW BOARD', () => {
     assert.equal(g.kind, 'review');
     assert.equal(g.post, true);
     assert.equal(home.boardModel(save, { now, today }).gate.kind, 'review');
-    assert.match(read('site/js/screens/home.js'), /'REVIEW BOARD' : "Tonight's Board"/);
+    /* r3: this arm used to assert the ternary `'REVIEW BOARD' : "Tonight's Board"` as a REGEX over
+       home.js's source, which is green for a screen that prints the words and green for a screen
+       that prints them twice — and home.js did print them twice: `COPY.boardTitle`,
+       `COPY.reviewBoard` and `COPY.schoolWindow` all had zero call sites while this file re-typed
+       their text (r3 finding on the copy lint's scope). The heading and the two week lines are now
+       the table's, and this asserts the VALUES the screen prints, not the shape of its source. */
+    assert.equal(COPY.boardTitle({ review: true }), 'REVIEW BOARD');
+    assert.equal(COPY.boardTitle({ review: false }), "Tonight's Board");
+    assert.match(strip(read('site/js/screens/home.js')), /COPY\.boardTitle\(\{ review:/,
+      'the panel heading is COPY.boardTitle, not a literal');
+    assert.equal(home.lineFor({ kind: 'review' }), COPY.reviewBoard());
+    assert.equal(home.lineFor({ kind: 'school' }), COPY.schoolWindow());
+    for (const s of ['REVIEW BOARD ·', 'School window ·', "Tonight's Board"]) {
+      assert.ok(!read('site/js/screens/home.js').includes(`'${s}`) && !read('site/js/screens/home.js').includes(`"${s}`),
+        `home.js re-types a string the table owns: ${s}`);
+    }
   });
 });
 
@@ -538,22 +592,84 @@ describe('J11 #8 — the Mock is a test: no call, no stake, no crew, no chain', 
     assert.match(SRC, /applyMockCall\(save, run, \{ now \}\)/, 'submitRun wires it');
   });
 
-  test('w is EXACTLY 1.0 — the Mock has no make, so the weight is defined rather than undefined', () => {
-    assert.equal(mock.MOCK_CALL_W, 1.0);
-    const mc = mock.mockCall({ pred: 88, score: 81, submittedAt: 5 });
-    assert.equal(mc.w, 1.0);
-    assert.equal(mc.entry.w, 1.0);
+  /* verify r1 — the weight was `MOCK_CALL_W = 1.0`, a CONSTANT: "no make, so no q̂, so the weight is
+     defined rather than undefined" (G12 #40d). A defined weight is not a measured one, and at 1.0 it
+     made one Mock slot worth `w·c = 10.00` for a forecast the student could make come true. It is now
+     the same `4q̂(1−q̂)` law every other call obeys, read off the sittings that came BEFORE this
+     paper, and capped at the smallest weight the window will count. */
+  test('THE WEIGHT is measured, not defined: `min(4ŝ(1−ŝ), MOCK_CALL_W)` over the PRIOR sittings', () => {
+    assert.equal(mock.MOCK_CALL_W, call.INFORMATIVE_MIN, 'the cap IS the smallest weight the window counts');
+    assert.equal(mock.MOCK_CALL_W, 0.25);
+    assert.equal(mock.MOCK_CALL_WINDOW, call.QHAT_WINDOW, 'ŝ uses the trailing-10 window q̂ uses');
+    assert.equal(mock.MOCK_CALL_SLOT_MAX, 2.5, 'so one Mock slot can never pay more than 2.50');
+    assert.equal(mock.MOCK_CALL_SLOT_MAX, mock.MOCK_CALL_W * call.credit(1, true));
+
+    // the law, sampled. 0 outside the informative band — and "no prior sitting at all" is outside it.
+    assert.equal(mock.mockCallWeight(null), 0, 'no history weighs nothing');
+    assert.equal(mock.mockCallWeight(0), 0, 'and a history of blank papers weighs nothing');
+    for (const sHat of [0.05, 0.066, 0.94, 1]) {
+      assert.equal(mock.mockCallWeight(sHat), 0, `ŝ = ${sHat} is outside INFORMATIVE_BAND`);
+    }
+    for (const sHat of [call.INFORMATIVE_BAND[0], 0.1, 0.5, 0.9, call.INFORMATIVE_BAND[1]]) {
+      assert.equal(mock.mockCallWeight(sHat), mock.MOCK_CALL_W, `ŝ = ${sHat} is inside it`);
+      assert.ok(mock.mockCallWeight(sHat) <= call.weightFor(sHat), 'the cap only ever LOWERS 4ŝ(1−ŝ)');
+    }
+
+    const mc = mock.mockCall({ pred: 88, score: 81, submittedAt: 5 }, { sHat: 0.5 });
+    assert.equal(mc.w, mock.MOCK_CALL_W);
+    assert.equal(mc.entry.w, mock.MOCK_CALL_W);
     assert.ok(mc.entry.w >= call.INFORMATIVE_MIN, 'and it is therefore informative');
     assert.equal(mc.entry.skill, null, 'no make');
+
+    const unweighed = mock.mockCall({ pred: 88, score: 81, submittedAt: 5 });
+    assert.equal(unweighed.w, 0, 'with no measurement behind it the same paper weighs 0');
+    assert.equal(unweighed.entry.w, 0);
+    assert.equal(unweighed.entry.p, null, 'and it takes its slot as a BLANK one');
+    assert.equal(unweighed.contribution, 0, 'paying exactly nothing');
+  });
+
+  test('ŝ is EXOGENOUS — `mockPriorMean` cannot see the paper it is weighing', () => {
+    const { save, now } = saveAtD(4);
+    const s = clone(save);
+    const paper = satRun({ pred: 50, score: 50, at: now, seed: 'today' });
+    s.runs = [
+      satRun({ pred: 0, score: 40, at: now - 3 * DAY_MS, seed: 'p1' }),
+      satRun({ pred: 0, score: 60, at: now - 2 * DAY_MS, seed: 'p2' }),
+      satRun({ pred: 0, score: 0, at: now - DAY_MS, seed: 'replay', retry: true }),
+      paper,
+      satRun({ pred: 0, score: 100, at: now + DAY_MS, seed: 'later' }),
+    ];
+    assert.deepEqual(mock.mockPriorRuns(s, paper).map((r) => r.seed), ['p1', 'p2'],
+      'this paper, a later paper and a replayed seed are all excluded');
+    assert.equal(mock.mockPriorMean(s, paper), 0.5, 'ŝ is the mean of what came first — 40 and 60');
+    assert.equal(mock.mockPriorMean(s, paper), (0.4 + 0.6) / 2);
+
+    // the window is MOCK_CALL_WINDOW sittings long, newest kept
+    const many = { runs: Array.from({ length: 15 }, (_, i) =>
+      satRun({ pred: 0, score: i < 5 ? 100 : 20, at: now - (15 - i) * DAY_MS, seed: `m${i}` })) };
+    assert.equal(mock.mockPriorRuns(many, paper).length, mock.MOCK_CALL_WINDOW);
+    assert.ok(Math.abs(mock.mockPriorMean(many, paper) - 0.2) < 1e-12, 'the oldest five have aged out');
+
+    // and a paper's own score never reaches its weight: same paper, same prediction, two histories
+    const cold = mock.mockCall(paper, { sHat: mock.mockPriorMean({ runs: [] }, paper) });
+    const warm = mock.mockCall(paper, { sHat: mock.mockPriorMean(s, paper) });
+    assert.equal(cold.credit, warm.credit, 'the CREDIT is the same proper quadratic either way');
+    assert.equal(cold.w, 0);
+    assert.equal(warm.w, mock.MOCK_CALL_W);
   });
 
   test('the credit comes out of call.credit and IS c(p, o) = 10 − 40(p − o)²', () => {
     for (const pred of [0, 12, 50, 70, 88, 95, 100]) {
       for (const score of [0, 31, 50, 81, 100]) {
-        const mc = mock.mockCall({ pred, score });
+        const mc = mock.mockCall({ pred, score }, { sHat: 0.5 });
         const p = pred / 100, o = score / 100;
         assert.ok(Math.abs(mc.credit - (10 - 40 * (p - o) ** 2)) < 1e-9, `pred ${pred} score ${score}`);
         assert.ok(Math.abs(mc.credit - call.credit(mc.entry.p, mc.entry.ok)) < 1e-12, 'routed through call.credit');
+        assert.ok(Math.abs(mc.contribution - mc.w * mc.credit) < 1e-12, 'and Σ(w·c) adds up the product');
+        // the weight moves what the slot PAYS; it never touches the credit itself
+        const unweighed = mock.mockCall({ pred, score });
+        assert.ok(Math.abs(unweighed.credit - mc.credit) < 1e-12, 'the calibration credit is weight-blind');
+        assert.equal(unweighed.contribution, 0);
       }
     }
   });
@@ -625,8 +741,7 @@ describe('J11 #8 — the Mock is a test: no call, no stake, no crew, no chain', 
     assert.equal(mock.MOCK_CALL_MIN_ANSWERED, 0.5);
     assert.equal(mock.MOCK_CALL_MIN_MS_PER_ITEM, 20000);
 
-    // 2. ONE SLOT A DAY. The window is 50 and the Mock pays at most one entry per day per seed, so
-    //    the tank cannot fill the window: it buys 1/50 of the rating for a whole evening's work.
+    // 2. ONE SLOT A DAY — true, and NOT the bound that matters. See the arm below it.
     const s2 = clone(save);
     const first = { ...paper(of, of * 60000), submittedAt: now };
     const r1 = mock.applyMockCall(s2, first, { now });
@@ -637,6 +752,12 @@ describe('J11 #8 — the Mock is a test: no call, no stake, no crew, no chain', 
     assert.equal(mock.applyMockCall(s2, second, { now: now + 60000 }), null,
       'and the second one, the same day, does not — even on a fresh seed');
     assert.equal(mock.mockCallEligible(s2, second, { now: now + 60000 }).why, 'already-today');
+    /* ROUND-1 VERIFICATION (exploit-hunt). This assertion is TRUE and the inference that used to sit
+       on top of it was not: the comment said "the tank cannot fill the window: it buys 1/50 of the
+       rating for a whole evening's work". The rating is `5 + 2·Σ(w·c)/N` with N = 50 FIXED
+       (`call.js ratingDetail`), not a mean over the filled slots, so one slot is not one fiftieth of
+       anything — it is a fixed `2·(w·c)/50` of RATING POINTS. What the channel can reach is measured
+       in the arm below, which is the comparison this file never made. */
     assert.equal(s2.player.rating.calls.length, 1, `one slot of ${CAPS.calls}`);
 
     // 3. THE LEDGER: scoring 0 is paid for where it hurts. The same paper drives mastery DOWN on
@@ -653,6 +774,173 @@ describe('J11 #8 — the Mock is a test: no call, no stake, no crew, no chain', 
       'and Readiness with it — the number the whole product is pointed at');
   });
 
+  /**
+   * WHAT THE MOCK CHANNEL ALONE CAN REACH — the comparison this file never made
+   * (round-1 verification, exploit-hunt).
+   *
+   * The arm above proves the scoring rule cannot tell a tank from a scholar (`0/0` and `100/100` are
+   * both in the argmax) and then hands the whole brake to the gate and the ledger. The gate is a
+   * COST — 20 items × 20 s = 6 min 40 s an evening — and a cost is not a bound. Nothing in `tests/`
+   * bounded the RANK the channel can buy:
+   *
+   *     $ grep -rn 'MOCK_CALL_W|mockCallEligible|applyMockCall' tests/*.mjs
+   *       → job-week.test.mjs only: the wiring, `MOCK_CALL_W === 1.0`, and the three gate refusals.
+   *
+   * The quantity that decides whether a channel is a farm is its per-slot `w·c` against the best
+   * per-slot `w·c` honest play can reach, because the rating is `5 + 2·Σ(w·c)/50` with a FIXED
+   * divisor: every slot is worth `2·(w·c)/50` rating points no matter how many slots are filled.
+   * Both sides are computed here from the shipped constants, and the answer is then driven through
+   * the shipped writers on a real save.
+   *
+   * THE VERDICT THIS TEST PINNED BEFORE THE REPAIR, and it was a defect of `screens/mock.js`, not of
+   * this file: a Mock slot paid the CREDIT CEILING (10.000) because a self-fulfilling forecast is
+   * exact, while an honest job slot cannot exceed 2.268 — so ten tanked evenings bought Called 5,
+   * against the forty-three honest calls the same rank costs. "Repricing `MOCK_CALL_W` … is the fix;
+   * the numbers below are pinned so that whoever makes it has to come back here and restate them."
+   *
+   * RESTATED (verify r1, notes/repair-week.md). `MOCK_CALL_W` is no longer a constant 1.0: the weight
+   * is `min(4ŝ(1−ŝ), MOCK_CALL_W)` on ŝ = the mean score of the PRIOR sittings, capped at
+   * `INFORMATIVE_MIN` = 0.25, the smallest weight the window counts. Two numbers move:
+   *
+   *   · THE TANK'S SLOT IS NOW 0.000, not 10.000. A paper of nonsense scores 0, ten of them make
+   *     ŝ = 0, ŝ = 0 is outside `INFORMATIVE_BAND`, and a call outside the band is a BLANK slot.
+   *     Sixty consecutive tanked evenings leave the rating at 5.000 and the rank where it started.
+   *   · THE MOCK'S BEST SLOT IS 2.500 against the honest 2.268 (reachable) / 2.4998 (theoretical) —
+   *     a ratio of 1.102, where it was 4.409. 2.500 is `INFORMATIVE_MIN × c_max`, i.e. the FLOOR of
+   *     what any counting slot can pay: no cap below it exists that does not also clip `c` and give
+   *     up strict propriety.
+   *
+   * The channel is bounded, not banned, and the bound is the last arm of this test: a PERFECT daily
+   * forecast on in-band papers needs 15 / 27 / 39 weighed slots for Called 3 / 4 / 5.
+   */
+  test('THE BOUND THE GATE IS NOT — a Mock slot against the best honest slot, and the rank each buys', () => {
+    const { RATING, RANK_THRESHOLDS } = call;
+
+    /* (a) THE MOCK SLOT. `mockCall` stores `p = 1 − |pred − score|` with `ok = true`, so a paper
+           that predicts its own score exactly stores `p = 1` and the window recomputes
+           `credit(1, true)` — the ceiling of `c = 10 − 40(p − o)²`. What the repair changed is the
+           WEIGHT that ceiling is multiplied by: the tank's own history weighs 0, and the most any
+           history can weigh is `MOCK_CALL_W`. */
+    assert.equal(mock.MOCK_CALL_W, 0.25, 'the weight is the informative floor, not the old 1.0');
+    assert.equal(call.credit(1, true), 10);
+    const mockSlot = mock.MOCK_CALL_SLOT_MAX;
+    assert.equal(mockSlot, 2.5);
+
+    const tanked = mock.mockCall({ pred: 0, score: 0, submittedAt: 0 }, { sHat: 0 });
+    assert.equal(tanked.credit, 10, 'the self-fulfilling forecast still EARNS the credit ceiling');
+    assert.equal(tanked.w, 0, 'and a history of zeroes weighs it at exactly 0');
+    assert.equal(tanked.entry.p, null, 'so it takes its slot as a blank one');
+    assert.equal(tanked.contribution, 0, 'and pays the rating nothing at all');
+
+    const best = mock.mockCall({ pred: 50, score: 50, submittedAt: 0 }, { sHat: 0.5 });
+    assert.equal(best.entry.p, 1, 'predicting 50 and scoring 50 stores the PERFECT call');
+    assert.equal(best.contribution, mockSlot, 'and the most it can pay is MOCK_CALL_SLOT_MAX');
+
+    /* (b) THE HONEST SLOT. `wTimesEcDiscrete(q̂)` is what one truthful call at `q̂` is worth in
+           expectation on the shipped four-rung ladder. `q̂` is a clear rate over a window of
+           `RATING.qHatWindow` targets, so the values a save can actually hold are `k/10`. Both the
+           reachable grid and a fine sweep are computed, because the grid is the real constraint and
+           the sweep is the theoretical one — neither is anywhere near 10. */
+    const grid = Array.from({ length: RATING.qHatWindow + 1 }, (_, k) => k / RATING.qHatWindow);
+    const honestOn = (qs) => qs.reduce((best, q) => Math.max(best, call.wTimesEcDiscrete(q)), 0);
+    const honestGrid = honestOn(grid);
+    const honestFine = honestOn(Array.from({ length: 10001 }, (_, k) => k / 10000));
+    assert.ok(Math.abs(honestGrid - 2.268) < 5e-4, `reachable honest ceiling ${honestGrid.toFixed(4)}`);
+    assert.ok(Math.abs(honestFine - 2.4998) < 5e-4, `theoretical honest ceiling ${honestFine.toFixed(4)}`);
+    assert.ok(honestGrid <= honestFine, 'the reachable ceiling cannot beat the theoretical one');
+
+    /* (c) THE RATIO. This was the finding, in one number; it is now the parity, in the same number. */
+    const ratio = mockSlot / honestGrid;
+    assert.ok(Math.abs(ratio - 1.1023) < 1e-3,
+      `a Mock slot is worth ${ratio.toFixed(4)} of the best slot honest play can reach `
+      + `(${mockSlot.toFixed(3)} against ${honestGrid.toFixed(4)}) — repriced? restate this number`);
+    assert.ok(Math.abs((1.0 * call.credit(1, true)) / honestGrid - 4.4092) < 1e-3,
+      'the pre-repair ratio, kept so the size of the defect stays legible: w = 1.0 was 4.409 honest slots');
+    assert.ok(mockSlot / honestFine - 1 < 1e-3,
+      `one Mock slot (${mockSlot}) is the theoretical honest ceiling (${honestFine.toFixed(4)}) to within a tenth of a per cent `
+      + '— it is NOT below it, and the arm below says why no cap below it exists');
+    assert.ok(mockSlot >= call.INFORMATIVE_MIN * call.credit(1, true) - 1e-12,
+      'and it cannot be capped lower without clipping c: 2.50 is INFORMATIVE_MIN × c_max, the floor of any counting slot');
+
+    /* (d) WHAT EACH BUYS. Slots to reach a rating, from the shipped divisor: `Σ(w·c) ≥ (T − 5)·N/2`. */
+    // `− 1e-9`: `(8.9 − 5) × 50 / (2 × 2.5)` is 39.000000000000004 in binary, and `rankFor` itself
+    // compares against `RANK_THRESHOLDS[i] − 1e-9` for exactly this reason. 39 slots IS rating 8.900.
+    const slotsFor = (T, per) => (per > 0 ? Math.max(0, Math.ceil(((T - RATING.base) * RATING.N) / (RATING.scale * per) - 1e-9)) : Infinity);
+    const mockSlots = RANK_THRESHOLDS.map((T) => slotsFor(T, mockSlot));
+    const honestSlots = RANK_THRESHOLDS.map((T) => slotsFor(T, honestGrid));
+    assert.deepEqual(mockSlots, [0, 0, 15, 27, 39],
+      `PERFECTLY forecast in-band Mock slots per rank: ${JSON.stringify(mockSlots)}`);
+    assert.deepEqual(honestSlots, [0, 0, 17, 30, 43],
+      `honest calls per rank at the reachable ceiling: ${JSON.stringify(honestSlots)}`);
+    assert.deepEqual(RANK_THRESHOLDS.map((T) => slotsFor(T, 1.0 * call.credit(1, true))), [0, 0, 4, 7, 10],
+      'against the four / seven / TEN evenings the same ranks cost before the repair');
+
+    /* (e) END TO END, through the shipped writers. Ten evenings, one tanked paper each, `now`
+           advanced a day at a time so the `already-today` gate is satisfied honestly and every seed
+           is fresh. Nothing synthetic: `applyMockCall` writes the window, the rating and the rank. */
+    const { save: s0, now: t0 } = saveAtD(4);
+    const tank = clone(s0);
+    const OF = 20;
+    const sat = (day) => ({
+      kind: 'mock', seed: `tank-day-${day}`, status: 'done', pred: 0, score: 0, n: OF,
+      items: Array.from({ length: OF }, () => ({ credit: 0, ms: 30000, answers: { a: { raw: '999' } } })),
+      startedAt: t0 + day * DAY_MS - OF * 60000, submittedAt: t0 + day * DAY_MS,
+    });
+    const rank0 = tank.player.rank;
+    const ladder = [];
+    for (let day = 0; day < 60; day++) {
+      const run = sat(day);
+      const res = mock.applyMockCall(tank, run, { now: t0 + day * DAY_MS });
+      assert.ok(res, `evening ${day + 1} earned no call — the gate refused a paper it should accept`);
+      assert.equal(res.w, 0, `evening ${day + 1} was WEIGHED — a tank's history is outside the band`);
+      tank.runs = [...(tank.runs ?? []), run];
+      ladder.push([day + 1, +res.rating.toFixed(3), res.rank]);
+    }
+    assert.equal(tank.player.rating.calls.length, RATING.N, 'sixty evenings, and the window is full of them');
+    assert.equal(tank.player.rating.n, 0, 'not one of which is a measurement');
+    assert.equal(tank.player.rating.value, 5, 'the rating never left 5.000');
+    assert.equal(tank.player.rank, rank0, `the rank never left Called ${rank0} — it was Called 5 by evening ten`);
+    assert.equal(ladder[9][1], 5, 'ten tanked slots is rating 5.000, where it used to be 9.000');
+    assert.ok(ladder.every((r) => r[1] === 5 && r[2] === rank0), 'and no evening in sixty moved either number');
+
+    /* (f) THE CHANNEL'S OWN CEILING, through the same writers. Papers that score INSIDE the band and
+           are predicted exactly are the most this channel can ever pay: `MOCK_CALL_SLOT_MAX` a slot,
+           and the first paper of all is unweighed because it has no history to be weighed against.
+           (d) is therefore a LOWER BOUND on the sittings each rank costs, and it is asserted as one:
+           `ratingDetail`'s own honest-expectation cap (`earned`, round-4 verify, call.js) prices the
+           rank BELOW the raw rating for a window of Mock slots, so the real ladder is slower still —
+           measured at the time of writing: Called 3 on sitting 22, Called 4 on 38, and Called 5 not
+           reached at all inside the 50-slot window. The assertions below hold under either pricing;
+           the console line prints what it actually was. */
+    const ace = clone(s0);
+    const acePaper = (day) => ({ ...sat(day), seed: `ace-day-${day}`, pred: 50, score: 50 });
+    const aceLadder = [];
+    for (let day = 0; day < RATING.N; day++) {
+      const run = acePaper(day);
+      const res = mock.applyMockCall(ace, run, { now: t0 + day * DAY_MS });
+      assert.ok(res, `sitting ${day + 1} earned no call`);
+      ace.runs = [...(ace.runs ?? []), run];
+      aceLadder.push([day + 1, +res.rating.toFixed(3), res.rank, res.w]);
+    }
+    assert.equal(aceLadder[0][3], 0, 'the first sitting has no prior measurement, so it is unweighed');
+    assert.ok(aceLadder.slice(1).every((r) => r[3] === mock.MOCK_CALL_W), 'every later one is weighed at the cap');
+    assert.ok(aceLadder.every((r) => r[1] <= 5 + (RATING.scale * mockSlot * (r[0] - 1)) / RATING.N + 1e-9),
+      'no sitting ever paid more than MOCK_CALL_SLOT_MAX');
+    const aceReached = (rank) => aceLadder.find((r) => r[2] >= rank)?.[0] ?? null;
+    for (const rank of [3, 4, 5]) {
+      const floorSittings = mockSlots[rank - 1] + 1;          // weighed slots + the unweighed first paper
+      const got = aceReached(rank);
+      assert.ok(got === null || got >= floorSittings,
+        `Called ${rank} arrived on sitting ${got}, and ${mockSlots[rank - 1]} weighed slots at ${mockSlot} apiece is the most that can be paid by then`);
+      assert.ok(aceLadder.slice(0, floorSittings - 1).every((r) => r[2] < rank),
+        `Called ${rank} was reached inside the first ${floorSittings - 1} sittings`);
+    }
+    console.log(`  mock tank ladder, 60 evenings: rating ${tank.player.rating.value.toFixed(3)} · Called ${tank.player.rank} · ${tank.player.rating.n} measurements`);
+    console.log(`  per-slot w·c: mock ${mockSlot.toFixed(3)} · honest ceiling ${honestGrid.toFixed(4)} (reachable) / ${honestFine.toFixed(4)} (theoretical) — ratio ${ratio.toFixed(3)}`);
+    console.log(`  sittings to Called 3/4/5 on a PERFECT daily forecast: ${aceReached(3)}/${aceReached(4)}/${aceReached(5)}`
+      + ` (floor from MOCK_CALL_SLOT_MAX alone: ${mockSlots.slice(2).map((k) => k + 1).join('/')})`);
+  });
+
   /* J13 r1 — a run the way `submitRun` leaves it: graded items whose parts carry `kind`, a real
      `startedAt → submittedAt` span, a seed. `mockCallEligible` reads exactly these fields, so a
      fixture that omits them is a blank paper and (correctly) earns no call. */
@@ -667,16 +955,38 @@ describe('J11 #8 — the Mock is a test: no call, no stake, no crew, no chain', 
   test('applyMockCall pushes exactly one call, moves the rating, and never runs twice', () => {
     const { save, now } = saveAtD(4);
     const s = clone(save);
+    /* the sittings that price this one. Without them ŝ is null, the call is unweighed and the rating
+       does not move — which is the arm below, and the reason this one seeds a history first. */
+    s.runs = [satRun({ pred: 60, score: 64, at: now - 2 * DAY_MS, seed: 'hist-1' })];
     const before = s.player.rating.calls.length;
     const run = satRun({ pred: 70, score: 72, at: now });
     const r = mock.applyMockCall(s, run, { now });
     assert.ok(r);
+    assert.equal(r.w, mock.MOCK_CALL_W, 'weighed, because a prior sitting scored 64');
     assert.equal(s.player.rating.calls.length, before + 1);
     assert.equal(s.player.rating.n, 1);
     assert.equal(s.player.rating.value, call.ratingFrom(s.player.rating.calls, CAPS.calls));
-    assert.equal(s.player.rank, call.rankFor(s.player.rating.value));
+    assert.ok(s.player.rating.value > 5, `a good forecast moved the rating to ${s.player.rating.value}`);
+    assert.equal(s.player.rank, call.ratingDetail(s.player.rating.calls, CAPS.calls, { rank: save.player.rank }).rank);
     assert.equal(mock.applyMockCall(s, run, { now }), null, 'idempotent per run');
     assert.equal(s.player.rating.calls.length, before + 1);
+  });
+
+  test('the FIRST paper of all is unweighed — it takes its slot, pays 0, and moves no rank', () => {
+    const { save, now } = saveAtD(4);
+    const s = clone(save);
+    s.runs = [];
+    const rank0 = s.player.rank;
+    const r = mock.applyMockCall(s, satRun({ pred: 70, score: 70, at: now, seed: 'first' }), { now });
+    assert.ok(r, 'the call is still recorded — it is the one-a-day gate\'s ledger');
+    assert.equal(r.sHat, null, 'there was nothing to measure it against');
+    assert.equal(r.w, 0);
+    assert.equal(r.credit, 10, 'the forecast was perfect and the credit says so');
+    assert.equal(r.contribution, 0, 'and it bought nothing');
+    assert.equal(s.player.rating.calls.length, 1, 'a slot is still a call (round-2 windowPush)');
+    assert.equal(s.player.rating.n, 0, 'but not a measurement');
+    assert.equal(s.player.rating.value, 5);
+    assert.equal(s.player.rank, rank0);
   });
 
   test('a retry (same seed) earns no call, exactly as it earns no XP and no PB', () => {
@@ -761,11 +1071,40 @@ describe('J11 #8 — the Mock is a test: no call, no stake, no crew, no chain', 
     test('a real sitting still pays the full 10.00 — a weak student who calls 20 and scores 20 is CORRECT', () => {
       const { save, now } = saveAtD(4);
       const s = clone(save);
+      s.runs = [satRun({ pred: 30, score: 22, at: now - 2 * DAY_MS, seed: 'hist' })];   // ŝ = 0.22, in band
       const honest = satRun({ pred: 20, score: 20, at: now, done: 14, ms: 31 * 60 * 1000 });
       const r = mock.applyMockCall(s, honest, { now });
       assert.ok(r, 'a genuinely sat paper scores');
-      assert.equal(Math.round(r.credit * 100) / 100, 10, 'and truth-telling still pays the maximum');
-      assert.equal(r.w, 1.0, 'at the weight G12 #40d defines');
+      assert.equal(Math.round(r.credit * 100) / 100, 10, 'and truth-telling still pays the maximum credit');
+      assert.equal(r.w, mock.MOCK_CALL_W, 'weighed like everybody else — knowing little is not a disqualification');
+      assert.equal(r.contribution, mock.MOCK_CALL_SLOT_MAX, 'so the weak student earns the best slot this channel has');
+    });
+
+    /* verify r1, the exploit as the round-1 critics ran it: NOT a blank paper. Every box carries a
+       wrong answer, so `itemAttempted` counts all twenty, the sitting takes its 20 s an item, and the
+       three effort conditions are all satisfied — which is the whole point of the finding. What stops
+       it now is the weight: a history of zeroes is outside `INFORMATIVE_BAND`. */
+    test('TEN DELIBERATELY-FAILED papers, every gate satisfied, buy nothing at all', () => {
+      const { save, now } = saveAtD(4);
+      const s = clone(save);
+      s.runs = [];
+      const rank0 = s.player.rank;
+      for (let k = 0; k < 10; k++) {
+        const day = now + k * DAY_MS;
+        const run = satRun({ pred: 0, score: 0, at: day, done: 20, ms: 20 * 20000, seed: `wrong-${k}` });
+        assert.equal(mock.mockCallEligible(s, run, { now: day }).ok, true, `the effort gate accepts paper ${k + 1}`);
+        const r = mock.applyMockCall(s, run, { now: day });
+        assert.ok(r, `paper ${k + 1} was refused outright — this arm is about the WEIGHT, not the gate`);
+        assert.equal(r.credit, 10, 'predicting the score you handed yourself is still exact…');
+        assert.equal(r.w, 0, '…and weighs nothing');
+        assert.equal(r.contribution, 0);
+        s.runs.push(run);
+      }
+      assert.equal(s.player.rating.calls.length, 10, 'ten slots');
+      assert.equal(s.player.rating.n, 0, 'and not one measurement among them');
+      assert.equal(s.player.rating.value, 5, 'the rating is where it started — it used to be 9.00 here');
+      assert.equal(s.player.rank, rank0, `and the rank is Called ${rank0} — it used to be Called 5`);
+      assert.equal(s.player.records.bestRating ?? 5, 5, 'the audit line has nothing to brag about either');
     });
 
     test('the gate is about EFFORT, never about the score — the thresholds are half the paper and 20 s an item', () => {
@@ -779,11 +1118,16 @@ describe('J11 #8 — the Mock is a test: no call, no stake, no crew, no chain', 
       assert.equal(mock.mockCallEligible(s, satRun({ pred: 0, score: 0, at: now, done: 10, ms: 20 * 20000 - 1 })).why, 'too-fast');
     });
 
-    test('`mockCall` itself is untouched: the credit, the propriety and w = 1.0 are the same function', () => {
+    test('`mockCall`\'s CREDIT is untouched — only the weight moved, and it moved off the outcome', () => {
       for (const [pred, score] of [[0, 0], [88, 81], [50, 50], [100, 0]]) {
-        const mc = mock.mockCall({ pred, score });
-        assert.equal(mc.w, 1.0);
-        assert.ok(Math.abs(mc.credit - (10 - 40 * (pred / 100 - score / 100) ** 2)) < 1e-9);
+        const want = 10 - 40 * (pred / 100 - score / 100) ** 2;
+        for (const sHat of [null, 0, 0.1, 0.5, 0.9, 1]) {
+          const mc = mock.mockCall({ pred, score }, { sHat });
+          assert.ok(Math.abs(mc.credit - want) < 1e-9, `credit at ŝ ${sHat}`);
+          assert.equal(mc.w, mock.mockCallWeight(sHat), 'the weight is the law on ŝ, and nothing else');
+          // the weight is the SAME for every paper at this ŝ — it does not read pred or score
+          assert.equal(mc.w, mock.mockCall({ pred: 100, score: 0 }, { sHat }).w, 'the weight is outcome-blind');
+        }
       }
     });
   });
@@ -848,14 +1192,33 @@ describe('J11 #10 — COMPOSED Global rule 1: gates gate loot, not learning', ()
   });
 
   test('nothing in J11\'s four files gates a card, a boss, the Mock, a hint, a solution or a Variant on rank', () => {
+    /* Two legal mentions, and they are the only two. (1) the Mock WRITING the rank back after its one
+       call. (2) the Mock passing the rank it already holds to `call.ratingDetail` as the RATCHET's
+       floor (S3, REPAIR-DECISION §S3.1(b)): rank gates the 95 rung and guardMult — loot — and this
+       layer never removes a tool you own, so the recomputation is floored on the rank held. A floor
+       argument cannot gate anything: it is an input to a number, not a branch. Everything else is
+       still a gate and still fails, including a comparison, a conditional or a ternary on the rank. */
+    const RATCHET_FLOOR = /ratingDetail\(\s*[^;]*?\{\s*rank:\s*save\.player\.rank\s*\}\s*\)/g;
+    let ratchetSites = 0;
     for (const p of ['site/js/plan.js', 'site/js/screens/home.js', 'site/js/screens/mock.js', 'site/js/screens/boss.js']) {
-      const src = read(p).replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
-      assert.ok(!/\brankOf\b/.test(src), `${p} calls guard.rankOf`);
-      // the ONLY legal mention is the Mock WRITING the rank back after its one call — never a gate
+      const bare = read(p).replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+      assert.ok(!/\brankOf\b/.test(bare), `${p} calls guard.rankOf`);
+      const floors = bare.match(RATCHET_FLOOR) ?? [];
+      ratchetSites += floors.length;
+      /* blank the allowed form OUT, then run the original lint over what is left: any other read of
+         the rank in any of these four files still fails, exactly as before */
+      const src = bare.replace(RATCHET_FLOOR, (m) => ' '.repeat(m.length));
       for (const m of src.matchAll(/(?:player|game)\.rank\b(.{0,3})/g)) {
         assert.match(m[1], /^\s*=[^=]/, `${p} READS the game rank: ${m[0]}`);
       }
+      /* and the ratchet's floor may never become a branch */
+      for (const m of bare.matchAll(/(?:player|game)\.rank\b\s*(?:[<>]=?|===?|!==?|\?)/g)) {
+        assert.fail(`${p} BRANCHES on the game rank: ${m[0]}`);
+      }
     }
+    assert.equal(ratchetSites, 1,
+      `the rank floor should be passed at exactly one site in these four files (found ${ratchetSites}) — `
+      + 'screens/mock.js applyMockCall, the third writer of player.rank (REPAIR-DECISION §S3.1(b))');
     assert.equal(state.hintsOn(), true, 'hints are free and infinite, at every rank');
   });
 
@@ -866,7 +1229,8 @@ describe('J11 #10 — COMPOSED Global rule 1: gates gate loot, not learning', ()
     s.player.rank = call.rankFor(5.0);
     assert.equal(call.rankFor(0), 1, 'rank 1 exists and is the floor');
     assert.equal(call.callsFor(1).includes(95), false, 'and it is the rank without the 95 call');
-    assert.equal(mock.mockCall({ pred: 50, score: 50 }).w, 1.0, 'the Mock still scores');
+    assert.equal(mock.mockCall({ pred: 50, score: 50 }, { sHat: 0.5 }).w, mock.MOCK_CALL_W,
+      'the Mock still scores — the weight gates on the HISTORY, never on the rank');
     assert.equal(plan.boardPolicy(s, { now, today }).on, true);
     assert.equal(plan.boardPolicy(s, { now, today }).post, true, 'rank gates no board');
   });
@@ -936,27 +1300,161 @@ describe('J11 — the two-pass board: Home\'s static half is PINNED to plan.js',
     }
   });
 
-  test('pass 1 paints a real board: rows, wings, minutes, the end time and the projection', () => {
+  test('pass 1 paints a real board: rows, wings, and NOT ONE per-draft numeral', () => {
+    /* REPAIR (r3 split-honesty). This arm used to assert `m.ends`, `m.minutes`, `m.projection` and
+       `m.projectionSource === 'projected'` against `PUBLISHED.shapeTable` — the brochure row. The
+       home lane has since removed pass 1's shape-table shim outright (`screens/home.js:20`,
+       `:286-289`: every per-draft number "is ALWAYS null here, and that is the contract"), because
+       pass 1 has neither tonight's draft nor `job/board.js`. That is the root fix for this finding:
+       there is now exactly ONE projection in the product, `job/board.js`'s, so there is no second
+       number for Home's to disagree with. This arm pins the new contract from both sides. */
     const { save, now, today } = saveAtD(7);
     const m = home.boardModel(save, { now, today });
     assert.equal(m.gate.post, true);
     assert.ok(m.rows.length >= 1 && m.rows.length <= 5);
     assert.deepEqual(m.supply.map((s) => s.wing), ['RECALL', 'FIGURES', 'WORDS', 'ALGEBRA']);
-    assert.equal(m.ends, timeHM(new Date(now + PUBLISHED.shapeTable.JOB.wallS[0] * 1000)));
-    assert.equal(m.minutes, Math.ceil(PUBLISHED.shapeTable.JOB.wallS[0] / 60));
-    assert.equal(m.projection, `~${m.split} % game · projected`);
-    assert.equal(m.projectionSource, 'projected');
+    for (const k of ['minutes', 'wallS', 'endsAt', 'ends', 'split', 'projection', 'projectionSource']) {
+      assert.equal(m[k], null, `pass 1 printed a per-draft \`${k}\` it cannot know (${m[k]})`);
+    }
     for (const r of m.rows) assert.equal(r.posted, null, 'the posted numerals are pass 2\'s');
+    /* and the shim really is gone from the module, not merely unused by this save */
+    const src = strip(read('site/js/screens/home.js'));
+    assert.equal(/PUBLISHED\.shapeTable|shapeTable\(/.test(src), false,
+      'pass 1 carries a shape table again — it would print the brochure under the board\'s own label');
+    assert.equal(/COPY\.projection\(/.test(src), false,
+      'pass 1 builds a projection sentence again; `job/board.js` is the only producer of that string');
+    /* the sizing shape stays, is never printed, and `shapeName` is null unless the WEEK named it */
+    assert.equal(typeof m.sizingShape, 'string');
+    assert.equal(m.shapeName, null, 'the ordinary evening board does not name its shape in pass 1');
+    const rb = saveAtD(2);
+    assert.equal(home.boardModel(rb.save, { now: rb.now, today: rb.today }).shapeName,
+      SHAPES[home.REVIEW_SHAPE].name,
+      'the REVIEW BOARD does name it, because `weekGate` settled the shape itself');
   });
 
   test('the projection reads the student\'s OWN last five jobs when the ledger has them (G1 statement 1)', () => {
+    /* REPAIR (r3 split-honesty, MINOR). This arm used to live on `home.boardModel`, build
+       `tGame: 300000, tAnswer: 200000` by hand, and assert `m.split === 60`: 300/(300+200) is 60 by
+       construction, so the only thing it established was that a division works on two numbers the
+       test handed in. Two things changed it.
+
+       (a) THE PLACE. G1 statement 1 is a claim about the board, and after r3 there is exactly ONE
+           projection in the product: pass 1 prints `null` for every per-draft number
+           (`screens/home.js:286-289`) and pass 2 writes `postBoard(...).projection` into the node it
+           reserved (`screens/home.js:477`). So the claim is asserted where it is implemented, which
+           also closes the other half of the finding — `grep -rn 'boardModel' tests/ | grep -c
+           'postBoard'` was 0, and there was no second number to compare because Home no longer has
+           one. The two-source-of-truth pin is (2) below.
+       (b) THE CLOCK. `playJob` drives five REAL jobs through the state machine at a pace no
+           published table owns (47 s to answer, 6 s to decide, 11 s per fixed phase), and
+           `state.endJob` writes the log entries this arm reads back — so no term in the assertion is
+           a constant this file owns.
+
+       NEGATIVE CONTROLS, all three run against the shipped code before this arm was accepted:
+         A. replacing the `playJob` ledger with five ZERO-TARGET walk entries drops
+            `projectionSource` to `projected` (measured: `~31 % game · projected`), so assertion (1)
+            FAILS — the arm can tell a measurement from a fallback.
+         B. re-running the whole arm at the published tables' pace
+            (`{ answerS: 36, decideS: 12, callS: 5, phaseS: 18 }`) moves the measured quantity from
+            **22 % to 38 %** while the board follows it to the point (gap 0 both times, brochure
+            43.2 both times) — so the number in (3) is the clock's, not a constant's.
+         C. four slow-answer jobs followed by one deliberator's job makes the board's five-job mean
+            and the last job's headline **9 % against 90 %, gap 81** — the ±5 band in (3) is an
+            assertion that can fail, not a tautology. */
     const { save, now, today } = saveAtD(7);
     const s = clone(save);
-    s.game.log = Array.from({ length: 5 }, (_, i) => ({ day: today, shape: 'JOB', targets: 10, bagged: 100, posted: 120, rating: 6, guard: 'WORDS', cracked: false, tGame: 300000, tAnswer: 200000 }));
+    s.game.log = [];
+    let last = null;
+    for (let j = 0; j < 5; j++) {
+      last = playJob(s, { now: now - (5 - j) * 3600000, today, shape: 'JOB' });
+      assert.ok(last, `job ${j} wrote no log entry`);
+    }
+    const log = s.game.log.slice(-5);
+    assert.equal(log.length, 5, 'five real jobs on record');
+    for (const e of log) {
+      assert.ok(e.tGame > 0 && e.tAnswer > 0, 'each entry carries both accumulators');
+      assert.ok(e.targets > 0, 'and real targets, so it is one of "your last N jobs"');
+      assert.notEqual(e.tGame, 300000, 'the clock is the machine\'s, not this file\'s old constant');
+      assert.notEqual(e.tAnswer, 200000, 'the clock is the machine\'s, not this file\'s old constant');
+    }
+
+    /* (1) the BOARD reads them, says so, and prints the sentence G1 publishes */
+    const pb = postBoard(s, today, { now });
+    assert.equal(pb.projectionSource, 'ledger', 'five real jobs on record and the board still says `projected`');
+    assert.equal(pb.projection, COPY.projection({ split: pb.split, jobs: 5 }));
+    assert.match(pb.projection, /your last 5 jobs$/);
+
+    /* (2) and pass 1 prints NO second number for it to disagree with — the finding's other half */
     const m = home.boardModel(s, { now, today });
-    assert.equal(m.projectionSource, 'ledger');
-    assert.equal(m.split, 60, '300 s game / 500 s wall');
-    assert.equal(m.projection, '~60 % game · your last 5 jobs');
+    assert.equal(m.split, null, 'pass 1 is printing a projection again; there must be exactly one');
+    assert.equal(m.projectionSource, null);
+    /* the RAW source, not the stripped one: the selector IS a string, and `strip` empties strings */
+    assert.match(read('site/js/screens/home.js'),
+      /setNumeral\(meta\.querySelector\('\.b-split'\), board\.projection\)/,
+      'pass 2 must write the BOARD\'s projection into the node pass 1 reserved');
+
+    /* (3) THE SECOND CLOCK: the number the student was HEADLINED at the debrief of the last of those
+       jobs, computed by `run.js sessionSplit` off the entry `endJob` wrote, on the debrief basis (the
+       read in neither term — COMPOSED-GAME.md:122). The board's projection of the same quantity must
+       land inside the published band. This is the criterion `tests/job-split.test.mjs` asserts on a
+       scripted walkthrough; here it is asserted on the state machine's own clock through Home's own
+       door, which is the pair the finding said nothing covered. */
+    const headline = Math.round(100 * sessionSplit({ tGame: last.tGame, tAnswer: last.tAnswer }, s).measured);
+    assert.ok(Math.abs(pb.split - headline) <= SPLIT.agreeWithinPoints,
+      `the board projected ${pb.split} % against a debrief headline of ${headline} % — more than `
+      + `SPLIT.agreeWithinPoints = ${SPLIT.agreeWithinPoints}`);
+    /* and the pace really is the student's, not a table: the brochure row is a different number */
+    assert.notEqual(headline, PUBLISHED.shapeTable.JOB.split[0],
+      'the clock driving this arm is the published table after all — the arm has gone circular');
+  });
+
+  test('THE AGREEMENT: one projection, and the numeral Home shows is the BOARD\'s', () => {
+    /* REPAIR (r3 split-honesty, MINOR). The finding: "nothing anywhere pins Home's printed split to
+       the board's". It cannot be pinned as an agreement of two numbers any more, because the home
+       lane removed the second number at the root (pass 1's shape-table shim is gone, r3). What is
+       pinnable — and what the finding was really about — is that there is exactly ONE producer of the
+       projection in the product, and that the numeral Home ends up showing is that one. Asserted
+       three ways, over the week states Home actually paints.
+
+       Measured while writing this, on 12 saves × both branches, against the estimator home.js USED
+       to carry: the ledger branch disagreed with the board by 2–7 points (median 5) and the
+       projected branch by 7–21 (median 13). Those are the numbers the removal bought, and they are
+       recorded here because nothing else in the tree records them. */
+    let posted = 0;
+    for (let seed = 0; seed < 12; seed++) {
+      for (const D of [7, 4, 2]) {
+        const { save, now, today } = saveAtD(D, { seed });
+        const s = clone(save);
+        if (seed % 2 === 0) for (let j = 0; j < 5; j++) playJob(s, { now: now - (5 - j) * 3600000, today });
+        const hm = home.boardModel(s, { now, today });
+        if (!hm.gate.post) continue;
+        posted++;
+        /* (1) pass 1 never prints one, on any week state that posts a board */
+        for (const k of ['minutes', 'wallS', 'endsAt', 'ends', 'split', 'projection', 'projectionSource']) {
+          assert.equal(hm[k], null, `D=${D} seed=${seed}: pass 1 printed \`${k}\` = ${hm[k]}`);
+        }
+        /* (2) the board does, on the same save and the same shape Home sized for the same week */
+        const pb = postBoard(s, today, { now, ...(hm.gate.shape ? { shape: hm.gate.shape } : {}) });
+        assert.equal(typeof pb.split, 'number', `D=${D} seed=${seed}: the board printed no split`);
+        assert.ok(pb.split >= 0 && pb.split <= 100);
+        assert.match(pb.projection,
+          pb.projectionSource === 'ledger' ? /^~\d+ % game · your last [1-5] jobs$/ : /^~\d+ % game · projected$/,
+          `D=${D} seed=${seed}: "${pb.projection}" is not COPY.projection's sentence for a ${pb.projectionSource} read`);
+        assert.ok(pb.projection.startsWith(`~${pb.split} % game`),
+          `D=${D} seed=${seed}: the sentence and the number disagree (${pb.split} vs "${pb.projection}")`);
+        /* (3) and where the WEEK settled the shape, Home's sizing shape is the board's own shape —
+               the one thing pass 1 may still say about tonight */
+        if (hm.gate.shape) assert.equal(pb.shape, hm.gate.shape, `D=${D} seed=${seed}: shape drift between the passes`);
+      }
+    }
+    assert.ok(posted >= 24, `only ${posted} posting week states were reached`);
+    /* both branches of the board's own estimator were exercised by the loop above */
+    const { save, now, today } = saveAtD(7, { seed: 0 });
+    const cold = clone(save); cold.game.log = [];
+    assert.equal(postBoard(cold, today, { now }).projectionSource, 'projected', 'job 1 must label itself');
+    const warm = clone(save); warm.game.log = [];
+    for (let j = 0; j < 5; j++) playJob(warm, { now: now - (5 - j) * 3600000, today });
+    assert.equal(postBoard(warm, today, { now }).projectionSource, 'ledger', 'five real jobs must be read');
   });
 
   test('pass 1 has NO spinner and every pass-2 numeral is a --muted placeholder of its final width', () => {
@@ -978,8 +1476,22 @@ describe('J11 — the two-pass board: Home\'s static half is PINNED to plan.js',
     assert.equal(m.coldCrew.idle, null, 'the idle count needs the composed pool — pass 2');
     assert.equal(typeof m.coldCrew.dues, 'number');
     assert.equal(m.coldCrew.dues, m.dues);
-    assert.match(read('site/js/screens/home.js'), /crew idle on their own reviews · /);
-    assert.equal(typeof COPY.coldCrew({ idle: 4, dues: 9, minutes: 4 }), 'string');
+    /* r3: this arm used to assert the phrase `crew idle on their own reviews · ` as a regex over
+       home.js's source and the mere TYPE of `COPY.coldCrew` — both green while the screen carried
+       its own copy of the sentence and `COPY.coldCrew` had no caller at all. The strip is now built
+       from the table's own line, split at the two numerals pass 1 has to reserve; this asserts the
+       fragments REASSEMBLE the table's sentence, which is a claim about the words the student
+       reads. `home.copyParts` is the shipped splitter, not a second implementation. */
+    const cc = home.copyParts(COPY.coldCrew, ['idle', 'dues', 'minutes']);
+    assert.equal(cc.length, 4, 'COPY.coldCrew no longer has three numerals — the strip would drop a phrase');
+    assert.equal(cc[0] + 4 + cc[1] + 9 + cc[2] + 4 + cc[3], COPY.coldCrew({ idle: 4, dues: 9, minutes: 4 }),
+      'the strip\'s fragments do not reassemble the table\'s own sentence');
+    assert.ok(!read('site/js/screens/home.js').includes("' crew idle on their own reviews · '"),
+      'home.js re-types the cold-crew sentence the table owns');
+    const sup = home.copyParts(COPY.supply, ['wing', 'locks']);
+    assert.equal(sup.length, 3);
+    assert.equal(sup[0] + 'WORDS' + sup[1] + 7 + sup[2], COPY.supply({ wing: 'WORDS', locks: 7 }),
+      'the supply row\'s fragments do not reassemble COPY.supply');
   });
 
   test('the board panel sits ABOVE the primary button (G7)', () => {

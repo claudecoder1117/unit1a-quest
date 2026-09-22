@@ -37,7 +37,7 @@ import * as econ from '../site/js/job/econ.js';
 import * as call from '../site/js/job/call.js';
 import * as guard from '../site/js/job/guard.js';
 import * as faultIndex from '../site/js/job/index.js';
-import { COPY, ANIMATION, AUTO_BAG } from '../site/data/job.js';
+import { COPY, ANIMATION, AUTO_BAG, DECISIONS } from '../site/data/job.js';
 import { fresh } from '../site/js/store.js';
 import { applyOutcome, DAY_MS } from '../site/js/schedule.js';
 import { todayISO, addDays } from '../site/js/days.js';
@@ -258,7 +258,10 @@ describe('J6b — both regret lines equal the solver’s value for the realised 
     assert.equal(got.bagpush.line, expect.line);
     assert.equal(got.bagpush.cost, expect.cost);
     assert.equal(got.bagpush.at, expect.at);
-    if (expect.line) assert.match(got.bagpush.line, /^you (bagged|pushed) at chain \d+; the threshold said (bag|push) \(q\* [\d.]+, your q̂ [\d.—]+\)\. cost \d+\.$/);
+    /* VERIFY r2 (player-feel): `cost N.` carried no unit while `regret2` directly under it printed
+       `cost N credit.`, so two paragraphs of one block invited a comparison between BAGGED points
+       and credit. The word is now on both, and the shape is pinned WITH it. */
+    if (expect.line) assert.match(got.bagpush.line, /^you (bagged|pushed) at chain \d+; the threshold said (bag|push) \(q\* [\d.]+, your q̂ [\d.—]+\)\. cost \d+ bagged\.$/);
   });
 
   /* r3 — this test used to pin `{best:'carry', cost:'rating'}` and `evMax === argmaxCall`: the rung
@@ -284,13 +287,28 @@ describe('J6b — both regret lines equal the solver’s value for the realised 
         cost: call.regretOf({ call: got.call.called, qHat: q, ladder: 'rating' }).cost },
       'the screen must not hand-roll what call.regretOf already computes',
     );
-    assert.equal(got.call.line, COPY.regret2({
-      envelope: got.call.envelope, called: got.call.called, evMax: got.call.evMax,
-      cost: (Math.round(got.call.cost * 10) / 10).toFixed(1),
-    }));
+    /* VERIFY r3 (call-propriety) — WHICH SENTENCE, AND THE WORD IT IS ALLOWED TO USE.
+       This fixture's worst envelope lands INSIDE G3.1's second disagreement band (q̂ ∈ [0.8824,
+       0.9): the money says 95, the rating says 85), which is the case the word `EV-max` cannot
+       carry: `settings.js` publishes it as `evMaxBands()` — `argmaxCall` — and this line prices
+       `honestCall`. So the assertion is now the invariant, not the template: the line is the split
+       sentence exactly when the two ladders disagree, and wherever the WORD survives it names the
+       rung Settings publishes under it. Walked across both bands in tests/run-lane-v3.test.mjs §1. */
+    const cost = (Math.round(got.call.cost * 10) / 10).toFixed(1);
+    assert.equal(got.call.money, call.argmaxCall(q), 'the money rung is Settings’ own argmax at the same q̂');
+    assert.equal(got.call.split, got.call.money !== got.call.evMax, '`split` is exactly a disagreement');
+    assert.equal(got.call.line, got.call.split
+      ? COPY.regret2Split({ envelope: got.call.envelope, called: got.call.called, money: got.call.money, rank: got.call.evMax, cost })
+      : COPY.regret2({ envelope: got.call.envelope, called: got.call.called, evMax: got.call.evMax, cost }));
+    if (/EV-max/.test(got.call.line)) {
+      assert.equal(Number(/EV-max was (\d+)/.exec(got.call.line)[1]), call.argmaxCall(q),
+        'the word may only name the rung Settings names with it');
+    } else {
+      assert.match(got.call.line, /the money said \d+, the rating said \d+/, 'a split line names both ladders');
+    }
   });
 
-  test('G5 #2’s own worked line reproduces: called 85 at q̂ .75 → EV-max 70, cost 0.3 rating', () => {
+  test('G5 #2’s own worked line reproduces: called 85 at q̂ .75 → EV-max 70, cost 0.3 credit', () => {
     const q = 0.75;
     assert.equal(call.argmaxCall(q), 70);
     const cost = call.expectedCredit(0.70, q) - call.expectedCredit(0.85, q);
@@ -303,7 +321,7 @@ describe('J6b — both regret lines equal the solver’s value for the realised 
     assert.equal(shipped.best, 70);
     assert.equal(Math.round(shipped.cost * 10) / 10, 0.3);
     assert.equal(COPY.regret2({ envelope: 6, called: 85, evMax: shipped.best, cost: (Math.round(shipped.cost * 10) / 10).toFixed(1) }),
-      'envelope 6: you called 85, EV-max was 70. cost 0.3 rating.');
+      'envelope 6: you called 85, EV-max was 70. cost 0.3 credit.');
   });
 
   test('played optimally there is no BAG/PUSH regret line at all', () => {
@@ -732,6 +750,11 @@ describe('J6b — MEASURED (chromium)', { skip: SKIP }, () => {
         walk: root.querySelector('.sum-job-walk')?.textContent ?? '',
         rating: root.querySelector('.sum-job-rating')?.textContent ?? '',
         deflation: root.querySelector('.sum-job-deflation')?.textContent ?? '',
+        /* VERIFY r1 (player-feel): the section the deflation sentence stands in, and whether that
+           section prints a posted figure on a different basis from the one it is about. */
+        deflationHome: root.querySelector('.sum-job-deflation')?.closest('[role="group"]')?.getAttribute('aria-label') ?? '',
+        deflationSectionText: root.querySelector('.sum-job-deflation')?.closest('[role="group"]')?.textContent ?? '',
+        tomorrow: root.querySelector('.sum-tomorrow-line')?.textContent ?? '',
         regret: [...root.querySelectorAll('.sum-regret-line')].map((n) => ({ kind: n.dataset.kind, text: n.textContent })),
         bagged: root.querySelector('.sum-bag-n')?.textContent ?? '',
         fee: root.querySelector('.sum-bag-fee')?.outerHTML ?? '',
@@ -741,13 +764,41 @@ describe('J6b — MEASURED (chromium)', { skip: SKIP }, () => {
     const d = FIX.debrief;
     const split = `${Math.round(d.split * 100)} %`;
     assert.ok(got.facts.some((s) => s.includes(split)), `the split ${split} is not printed: ${got.facts.join(' | ')}`);
-    assert.ok(got.facts.some((s) => s.includes('24 mandatory / 35 full use')), `the published decision count is not printed: ${got.facts.join(' | ')}`);
+    /* ── VERIFY r2 (split-honesty) — THIS PIN ASSERTED THE DEFECT ─────────────────────────────────
+       It read `s.includes('24 mandatory / 35 full use')`, i.e. it required the debrief to print
+       G1's option-counted ceiling beside a count that is not on that basis. `state.debriefOf`
+       charges ONE decision per brief window (`+ g.briefs.length`); `econ.decisionCount`'s full
+       column charges `DECISIONS.briefOptionsMax` per window, so 35 — and the 3.5 per item the
+       document computes off it — cannot be produced by the counter printing next to it (a clean
+       full-use JOB-10 measures 25 · 2.5). Both numerals still print. What is asserted now is that
+       each is named with the basis it is on, and that the counter's own column is the one the
+       counter can reach. */
+    const pubD = econ.decisionCount(d.shape ?? 'JOB');
+    const ownColumn = `${pubD.mandatory} mandatory / ${pubD.mandatory + DECISIONS.commitFull} full use`;
+    assert.ok(got.facts.some((s) => s.includes(ownColumn)),
+      `the counter's own decision column (${ownColumn}) is not printed: ${got.facts.join(' | ')}`);
+    assert.ok(got.facts.some((s) => s.includes(ownColumn) && s.includes('counting a brief window once')),
+      `the column is printed without the basis it is on: ${got.facts.join(' | ')}`);
+    assert.ok(got.facts.some((s) => s.includes(`G1’s ${pubD.full} counts its ${DECISIONS.briefOptionsMax} options`)),
+      `G1's own column is not printed, or is not named as the different quantity it is: ${got.facts.join(' | ')}`);
     assert.ok(got.facts.some((s) => s.includes(String(d.decisions))), 'the measured decision count is not printed');
     const mmss = (ms) => `${Math.floor(Math.round(ms / 1000) / 60)}:${String(Math.round(ms / 1000) % 60).padStart(2, '0')}`;
     assert.ok(got.walk.includes(`${mmss(d.tAnswer)} thinking`), `tAnswer not printed: ${got.walk}`);
     assert.ok(got.walk.includes(`${mmss(d.tGame)} deciding`), `tGame not printed: ${got.walk}`);
     assert.ok(got.facts.some((s) => s.includes(mmss(d.tGame)) && s.includes(mmss(d.tAnswer))), 'both accumulators must print together');
-    assert.match(got.rating, /^rating \d+\.\d\d · \d+\/50 informative calls$/);
+    /* STRENGTHENED at integration — REPAIR-DECISION S3.1(d) landed, so the line LEADS WITH THE HELD
+       RANK and prints words, not a bare 5.00, on an unmeasured window. Both branches are pinned and
+       the rank is checked against the SAVE's own `player.rank` (not just shape-matched), because
+       after the ratchet that field is the only place the held rank exists. */
+    assert.match(got.rating,
+      /^Called [1-5] · (?:rating \d+\.\d\d|rating unchanged · no measurement) · \d+\/50 informative calls$/,
+      `the debrief's rating line is not S3.1(d)'s: ${JSON.stringify(got.rating)}`);
+    const heldRank = call.rankOf(FIX.save.player.rank)?.name;
+    assert.ok(got.rating.startsWith(`${heldRank} · `),
+      `the line must lead with the HELD rank ${heldRank}, got ${JSON.stringify(got.rating)}`);
+    const informative = Number(got.rating.match(/(\d+)\/50/)[1]);
+    assert.equal(/rating \d+\.\d\d/.test(got.rating), informative > 0,
+      'a window with no informative call may not print a rating numeral, and a measured one must');
     /* the rating delta is the MEASURED move from the pre-first-call snapshot — which `endJob`'s own
        `ratingAfter − ratingBefore` now equals too, since `game.rating0` landed (see the pure test) */
     const moved = Number(d.ratingAfter) - Number(FIX.before.rating);
@@ -756,13 +807,40 @@ describe('J6b — MEASURED (chromium)', { skip: SKIP }, () => {
     assert.ok(got.facts.some((s) => s.includes(printed)), `the rating delta ${printed} is not printed: ${got.facts.join(' | ')}`);
     assert.ok(!got.facts.some((s) => s.includes('+0.00')), 'a rating delta that is always +0.00 is not information (G5 #4)');
     assert.equal(got.deflation, COPY.deflation());
+    /* ── VERIFY r1 (player-feel), TWO BEHAVIOURAL PINS ON ONE SCREEN ────────────────────────────
+       (1) "posted falls as you master the material" used to be the LEDGER block's last line, 95 px
+       above `Tomorrow's board: … worth 952 if you took them all` — a take-everything backlog pool
+       2.3× the `Posted 419` the sentence is about. It now stands in the section that prints that
+       very figure, and the tomorrow line is not in that section. */
+    assert.equal(got.deflationHome, 'The take',
+      `the deflation sentence is in the wrong section: ${JSON.stringify(got.deflationHome)}`);
+    assert.ok(got.deflationSectionText.includes('Posted'),
+      'the sentence must stand beside the posted figure it is about');
+    assert.ok(got.tomorrow.length > 0, 'the tomorrow line must still print, or this pin is vacuous');
+    assert.equal(got.deflationSectionText.includes(got.tomorrow), false,
+      'the backlog figure is back in the same section as the deflation sentence');
+    /* (2) ONE RATING, ONE RANK. The take block derived the rank WORD from the rating while
+       `.sum-job-rating` read the HELD rank, so a save whose rating had fallen one hundredth below
+       its held band printed `Called 1` at the top and `Called 2` at the bottom of one debrief. */
+    const rankWord = (s) => (s.match(/Called [1-5]/) ?? [])[0] ?? null;
+    assert.ok(rankWord(got.walk), `the walk line names no rank: ${got.walk}`);
+    assert.equal(rankWord(got.walk), rankWord(got.rating),
+      `two ranks on one debrief: "${got.walk}" over "${got.rating}"`);
+    assert.equal(rankWord(got.walk), call.rankOf(FIX.save.player.rank)?.name,
+      'the rank the screen prints is not the rank the save holds');
+    assert.ok(got.facts.some((s) => s.includes(rankWord(got.walk))),
+      'the `Rating` fact names a different rank from the walk line');
     assert.equal(got.bagged, String(econ.round(d.finalBagged)));
     assert.match(got.fee, /^<s /, 'the getaway bag is free, so the fee line is struck through');
     assert.equal(got.title, 'Vault cracked');
 
+    /* VERIFY r1 (call-propriety) — the mirror moves with the screen. `jobLedgerBlock` no longer
+       hands `jobRegret` a LIVE `qHatFor` read taken after `endJob` cleared `inProgress`; it hands
+       over the save, and `run.sealedQHatOf` recovers the q̂ the seal actually cut. The expectation
+       is computed the same way, so this still asserts "the screen prints `jobRegret`'s line". */
     const expected = run.jobRegret(d, {
       items: FIX.queue, decisions: FIX.decisions, guardWing: FIX.guardWing,
-      qHatOf: (c) => (c?.skill ? call.qHatFor(FIX.save, c.skill, { cards: cardById }) : null),
+      save: FIX.save, cards: cardById, startedAt: FIX.before?.startedAt ?? 0,
     });
     const byKind = Object.fromEntries(got.regret.map((r) => [r.kind, r.text]));
     if (expected.bagpush.line) assert.equal(byKind.bagpush, expected.bagpush.line);

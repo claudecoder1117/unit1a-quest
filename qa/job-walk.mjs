@@ -402,6 +402,22 @@ const PROBE_SWEEP = () => {
     }).map((e) => `${String(e.className).slice(0, 30)} ${Math.round(e.getBoundingClientRect().width)}x${Math.round(e.getBoundingClientRect().height)}`),
     header: [...document.querySelectorAll('[id^="hdr-"]')].filter((e) => !e.hidden && e.getClientRects().length).map((e) => e.id),
     boardH: (() => { const b = document.querySelector('.job-board'); return b ? Math.round(b.getBoundingClientRect().height) : null; })(),
+    /* THE RAIL (round 3, player-feel). G6: "≥ 1024 px: the board lives in the 320 px right rail,
+       permanently visible", and `css/job.css` scopes every collapse rule to
+       `@container jobscreen (max-width: 895.98px)`. So above the threshold the board is NOT
+       supposed to collapse and the collapse check below must not be applied — but the RAIL is, or
+       the width threshold is a number nothing reads. `beside` is `qa/job-screen.mjs PROBE_RAIL`'s
+       own predicate, verbatim, so the two harnesses agree about what a rail is. */
+    rail: (() => {
+      const b = document.querySelector('.job-board');
+      const m = document.querySelector('.job-main');
+      if (!b || !m) return null;
+      const rb = b.getBoundingClientRect(); const rm = m.getBoundingClientRect();
+      return {
+        beside: rb.left >= rm.right - 1 && rb.top < rm.bottom,
+        boardW: Math.round(rb.width), boardH: Math.round(rb.height), mainW: Math.round(rm.width),
+      };
+    })(),
     stem: !!document.querySelector('.card-screen'),
     /* the beat is where the payout line, the chain ticks, BAG / PUSH and CALL IT live. A decision
        the student cannot see is a decision that is not offered. */
@@ -474,7 +490,7 @@ const KNOWN = [
 ];
 const knownOf = (text) => KNOWN.find((k) => k.match.test(text)) ?? null;
 
-const REPORT = { rows: [], fails: [], known: [], warns: [], shots: [], s9: [], probs: { checked: 0, bad: [] } };
+const REPORT = { rows: [], fails: [], known: [], warns: [], shots: [], s9: [], rails: [], probs: { checked: 0, bad: [] } };
 const row = (engine, measure, value) => { REPORT.rows.push({ engine, measure, value }); if (TRACE) console.log(`  · ${measure}: ${value}`); };
 const fail = (what, detail) => {
   const line = `${what} — ${detail}`;
@@ -497,8 +513,32 @@ async function shot(page, name, { full = false, sweep = true } = {}) {
     if (s.overflow) fail('horizontal scroll', `${name}: scrollWidth ${s.scrollW} > ${s.inner}`);
     if (s.lowCount) warn('contrast', `${name}: ${s.lowCount} text nodes under 4.5:1 — ${s.low.map((x) => `${x.t}@${x.ratio}`).join(', ')}`);
     if (s.smallCount) warn('tap target', `${name}: ${s.smallCount} under 44 px — ${s.small.map((x) => `${x.t} ${x.w}x${x.h}`).join(', ')}`);
-    if (s.stem && s.boardH != null && s.boardH > LAYOUT.boardCollapsedPx) {
-      fail('board collapse', `${name}: a stem is in the DOM and the board is ${s.boardH} px (> ${LAYOUT.boardCollapsedPx})`);
+    /* THE COLLAPSE IS THE NARROW FORM'S RULE  (round 3, player-feel MINOR)
+       This check used to run at every width, so `node qa/job-walk.mjs jobs` was PERMANENTLY RED:
+       8 FAILs, all of the form "a stem is in the DOM and the board is 599 px (> 36)", every one of
+       them at 1280 px — where `css/job.css:122` (`@container jobscreen (max-width: 895.98px)`)
+       does not apply and G6 requires the opposite ("≥ 1024 px: the board lives in the 320 px right
+       rail, permanently visible"). The screenshot it flagged shows a correct rail beside the card.
+       A harness that always fails is a harness nobody reads, and this one was flagging the design.
+       Below `LAYOUT.railMinWidthPx` the collapse is asserted exactly as before; at or above it the
+       RAIL is asserted instead, so the threshold is measured rather than merely declared. */
+    if (s.inner != null && s.inner < LAYOUT.railMinWidthPx) {
+      if (s.stem && s.boardH != null && s.boardH > LAYOUT.boardCollapsedPx) {
+        fail('board collapse', `${name}: a stem is in the DOM and the board is ${s.boardH} px `
+          + `(> ${LAYOUT.boardCollapsedPx}) at ${s.inner} px, inside the narrow form`);
+      }
+    } else if (s.stem && s.rail) {
+      if (!s.rail.beside) {
+        fail('rail', `${name}: at ${s.inner} px the board is stacked above the card, not beside it `
+          + `(board ${s.rail.boardW}x${s.rail.boardH}, column ${s.rail.mainW}) — G6 says the rail is permanently visible`);
+      } else if (s.rail.boardH <= LAYOUT.boardCollapsedPx) {
+        fail('rail', `${name}: the rail board is collapsed to ${s.rail.boardH} px at ${s.inner} px — `
+          + 'G6 says the board lives in the rail, permanently visible');
+      } else if (Math.abs(s.rail.boardW - LAYOUT.railPx) > LAYOUT.railPx * 0.075) {
+        fail('rail', `${name}: the rail is ${s.rail.boardW} px wide; LAYOUT.railPx says ${LAYOUT.railPx} (±7.5 %)`);
+      } else {
+        REPORT.rails.push(`${name}: rail ${s.rail.boardW}x${s.rail.boardH} beside a ${s.rail.mainW} px column at ${s.inner} px`);
+      }
     }
     if (s.fixed.length) warn('full-screen', `${name}: position:fixed on body — ${s.fixed.join(', ')}`);
     if (s.beat && !s.beat.inView) {
@@ -695,12 +735,21 @@ async function coldOpen(engineName, browser, { shots = true } = {}) {
       return {
         fields: { label: p('.b-label'), locks: p('.b-locks'), cold: p('.b-cold'), posted: p('.b-posted'), wing: p('.b-wing') },
         supply: (() => { const e = b.querySelector('.board-sup .b-sup-n'); return e ? (e.dataset.pending ? 'placeholder' : 'ink') : 'absent'; })(),
-        meta: b.querySelector('.board-meta')?.textContent.replace(/\s+/g, ' ').trim() ?? null,
+        /* INKED cells only (notes/repair-week.md Request 1, landed at integration). A node carrying
+           `data-pending` is a reserved-width placeholder, not a claim, so comparing the meta line's
+           RAW text across the passes fired on `····· → "JOB · ~23 min · …"` — the repair working.
+           The check's real intent is "an inked pass-1 cell may never be REWRITTEN in pass 2", and
+           this selector is what would still have caught the original 13-point-of-split defect. */
+        meta: [...b.querySelectorAll('.board-meta > *')]
+          .filter((e) => !e.dataset.pending)
+          .map((e) => e.textContent.replace(/\s+/g, ' ').trim()).join(' · '),
+        metaRaw: b.querySelector('.board-meta')?.textContent.replace(/\s+/g, ' ').trim() ?? null,
         inked: all.filter((e) => !e.dataset.pending).length, pending: all.filter((e) => e.dataset.pending).length,
       };
     });
     row(engineName, 'pass 1 carries', Object.entries(pass1.fields).map(([k, v]) => `${k}:${v}`).join(' ') + ` supply:${pass1.supply}`);
-    row(engineName, 'pass 1 meta line', pass1.meta);
+    row(engineName, 'pass 1 meta line', pass1.metaRaw);
+    row(engineName, 'pass 1 meta inked', pass1.meta === '' ? '(nothing inked — every cell is a placeholder)' : pass1.meta);
     const missing = Object.entries(pass1.fields).filter(([k, v]) => k !== 'posted' && v === 'placeholder').map(([k]) => k);
     if (missing.length || pass1.supply === 'placeholder') {
       warn('pass 1 content', `G7 says pass 1 carries the labels, lock counts, cold days, wing labels and per-wing supply from the save alone; `
@@ -792,10 +841,21 @@ async function coldOpen(engineName, browser, { shots = true } = {}) {
     if (two.clsSupported && two.cls > 0.1) warn('CLS', `the browser scored ${two.cls} of layout instability on Home (sources: ${JSON.stringify(two.shifts)})`);
     /* The geometry can be frozen and the NUMBERS still change. Pass 1's meta line is the session the
        student reads first; if pass 2 rewrites it, the first thing Home said was wrong. */
-    const meta2 = await page.evaluate(() => document.querySelector('.home-board .board-meta')?.textContent.replace(/\s+/g, ' ').trim() ?? null);
-    row(engineName, 'pass 2 meta line', meta2);
-    if (pass1.meta && meta2 && pass1.meta !== meta2) {
-      warn('pass 1 truth', `the meta line the student reads in pass 1 is rewritten in pass 2: "${pass1.meta}" → "${meta2}"`);
+    const two2 = await page.evaluate(() => {
+      const b = document.querySelector('.home-board');
+      return {
+        raw: b?.querySelector('.board-meta')?.textContent.replace(/\s+/g, ' ').trim() ?? null,
+        inked: [...(b?.querySelectorAll('.board-meta > *') ?? [])]
+          .filter((e) => !e.dataset.pending)
+          .map((e) => e.textContent.replace(/\s+/g, ' ').trim()).join(' · '),
+      };
+    });
+    row(engineName, 'pass 2 meta line', two2.raw);
+    /* Compare the INKED cells only, through the same selector on both sides: pass 1's placeholders
+       becoming ink is the two-pass design, and pass 1 inking a number pass 2 then changes is the
+       defect. An inked pass-1 line must be a PREFIX-equal subset of pass 2's, i.e. unchanged. */
+    if (pass1.meta && two2.inked && pass1.meta !== two2.inked) {
+      warn('pass 1 truth', `an INKED pass-1 meta cell is rewritten in pass 2: "${pass1.meta}" → "${two2.inked}"`);
     }
 
     /* the posted values the student just read — they must survive the tap (Global law 4) */
@@ -1211,6 +1271,10 @@ if (REPORT.s9.length) {
 }
 console.log(`\n  screenshots: ${REPORT.shots.length} in ${path.relative(REPO, OUT)}`);
 console.log(`  printed probabilities checked: ${REPORT.probs.checked}, mismatched: ${REPORT.probs.bad.length}`);
+/* the rail, measured rather than declared: above `LAYOUT.railMinWidthPx` the collapse check is
+   replaced by a rail check, so the report has to show that it measured something (round 3). */
+console.log(`  rail measured on ${REPORT.rails.length} desktop state(s) at or above ${LAYOUT.railMinWidthPx}px`
+  + (REPORT.rails.length ? `\n   · ${REPORT.rails[0]}` : ' — NOTHING MEASURED: no desktop state reached a stem'));
 if (REPORT.warns.length) { console.log(`\n  warnings (${REPORT.warns.length})`); for (const w of REPORT.warns) console.log('   ! ' + w); }
 if (REPORT.known.length) {
   console.log(`\n  KNOWN OPEN (${REPORT.known.length}) — measured, written up in notes/J13.md, owned elsewhere`);

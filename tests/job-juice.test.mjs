@@ -203,9 +203,56 @@ describe('J12 — the animation budget is exactly six cues', () => {
     assert.deepEqual(bad, []);
   });
 
-  test('four sound cues, and not one of them is a sting, a voice or music (G6)', () => {
-    assert.equal(SOUND_CUES.length, 4);
-    assert.deepEqual(SOUND_CUES.map((c) => c.id), ['job-call-lock', 'job-chain-tick', 'job-vault', 'job-bag-drop']);
+  /* ---------------------------------------------------------------------------------------------
+     ROUND-2 VERIFY (player-feel finding 7) — THE FOUR SOUND CUES, MEASURED AGAINST THE APP.
+
+     This used to be `assert.equal(SOUND_CUES.length, 4)` and a `deepEqual` of the same four ids the
+     table declares: a frozen literal in `site/data/job.js` compared with a literal in this file. It
+     could not fail, and what it could not see is that the table has NO READER — the four ids appear
+     in `site/css/job.css` as @keyframes names and nowhere in `site/js`, `sound.js`'s own `CUES`
+     registry is `['correct','wrong','mint','level','combo']`, and the game layer therefore plays no
+     audio of its own at any beat. COMPOSED-GAME.md:1030 discloses that, so this is not a false
+     published claim; it is a dead table, and the assertion below is the one that says so.
+
+     THE SHAPE: the wiring is measured from the sources, and the arm is written so that it is the
+     REAL coverage test the moment anyone starts building the cues — a cue id that appears anywhere
+     under `site/js` must be in `sound.play`'s registry, and the registry may not grow one of these
+     ids without a caller. Half a build fails here. A finished build fails here too, saying to
+     replace this arm with a spy on `sound.play` through a whole job (finding 7's own words).
+     --------------------------------------------------------------------------------------------- */
+  test('the four G6 cues are DECLARED and UNBUILT — no reader in site/js, no id in sound.js’s registry', () => {
+    assert.equal(SOUND_CUES.length, 4, 'G6 declares four cues');
+    const ids = SOUND_CUES.map((c) => c.id);
+    assert.deepEqual(ids, ['job-call-lock', 'job-chain-tick', 'job-vault', 'job-bag-drop']);
+    /* every .js under site/js, and what it says about these four ids */
+    const JS = listFiles(repoPath('site/js'), /\.js$/);
+    const readers = [];
+    for (const f of JS) {
+      const src = readFileSync(f, 'utf8');
+      for (const id of ids) if (src.includes(`'${id}'`) || src.includes(`"${id}"`)) readers.push(`${f.split('/site/')[1]} → ${id}`);
+    }
+    const soundSrc = read('site/js/sound.js');
+    const registry = soundSrc.match(/export const CUES = Object\.freeze\(\[([^\]]*)\]/)?.[1] ?? '';
+    const registered = ids.filter((id) => registry.includes(`'${id}'`) || registry.includes(`"${id}"`));
+
+    if (readers.length === 0 && registered.length === 0) {
+      /* TODAY: the table is dead. Both halves are asserted so that building either half alone fails. */
+      assert.deepEqual(readers, [], 'a module under site/js now names a G6 cue id');
+      assert.deepEqual(registered, [], 'sound.js now registers a G6 cue id');
+      /* …and the CSS keyframes of the same name are NOT the cue: they are the animation half */
+      const css = read('site/css/job.css');
+      assert.ok(ids.some((id) => css.includes(id)),
+        'not even the @keyframes remain — if the whole feature is gone, delete SOUND_CUES from data/job.js too '
+        + '(notes/repair-tests.md Requests · H) and delete this arm with it');
+      return;
+    }
+    /* SOMEONE HAS STARTED BUILDING THEM. From here the arm is the real coverage test. */
+    assert.deepEqual(registered.sort(), [...ids].sort(),
+      `site/js now names ${readers.join(', ')} but sound.js registers only [${registered.join(', ')}] — `
+      + 'a cue id play() does not understand is a silent no-op');
+    assert.ok(readers.length >= ids.length,
+      `only ${readers.length} of the four cues have a caller: ${readers.join(', ')} — `
+      + 'replace this arm with a spy on sound.play through a whole job, asserting each id fires at its beat');
   });
 });
 

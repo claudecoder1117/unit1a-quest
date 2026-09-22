@@ -47,7 +47,7 @@
 import {
   CAPS, SHAPES, BOARD, BACKCHECK, COMPLETION, COMMIT_BONUS, FREE_OUTCOMES,
   RUNGS, MISS_RUNG, IN_PROGRESS_KEYS, PHASE_ORDER, GAME_PHASES, ANSWER_PHASES,
-  PHASE_MEANS_DEFAULT, SAVE_DEFAULTS, STATES, WING_IDS, GUARD, SPLIT, DECLINE_PRICE,
+  PHASE_MEANS_DEFAULT, SAVE_DEFAULTS, STATES, WING_IDS, GUARD, SPLIT, DECLINE_PRICE, CALL_DEFAULT,
 } from '../../data/job.js';
 import { todayISO, isQuietHours } from '../days.js';
 import { dueList } from '../schedule.js';
@@ -74,9 +74,17 @@ const str = (x, d = null) => (typeof x === 'string' && x ? x : d);
  * The keys of LEDGER A. Written by `screens/card.js` at grade time and by nothing in `js/job/*`.
  * The first five are the ones G3.7 proof 11 and `tests/job-ledger.test.mjs` name; the rest are the
  * remainder of the study layer's save, which this module equally has no business writing.
+ *
+ * ROUND 3 (ledger-invariance, finding 64). `streak` and `jumps` were in NEITHER list: the guard did
+ * not cover them and the corpus comparison did not include them, so G7's published *"Streak,
+ * trophies, XP, levels | unchanged"* (COMPOSED-GAME.md:901) rested on nothing but the absence of a
+ * caller. Nothing in `js/job/*` writes either one — `markStreakDay` is `store.js`'s and its only
+ * callers are `schedule.checkDailyGoal`, `screens/card.js` and `screens/boss.js`, none of them
+ * reachable from here — so naming them costs nothing and makes the claim structural.
  */
 export const LEDGER_A_KEYS = Object.freeze([
   'cards', 'skills', 'xp', 'errors', 'forecastLog', 'variants', 'frozen', 'daily', 'runs', 'trophies',
+  'streak', 'jumps',
 ]);
 
 /** The keys of LEDGER B — the game, and the only top-level keys this module writes. */
@@ -86,8 +94,26 @@ export const LEDGER_B_KEYS = Object.freeze(['player', 'game']);
  * Written ONLY through the study layer's own functions (`markItem` / `requeueReview` / `finishPage`),
  * never by a line of arithmetic in this file. `counters.pages` is `finishPage`'s, exactly as on the
  * flat path — which is why `tests/job-ledger.test.mjs` can compare `counters` byte-for-byte.
+ *
+ * ROUND 3 (ledger-invariance, finding 64), AND THE ONE EXCEPTION THE PROOF OWES A NAME.
+ * `counters` is LEDGER A by G3.7 proof 11's own list — it is one of the five keys the proof says a
+ * job leaves byte-identical — and SHARED by construction, because `finishPage` increments
+ * `counters.pages` on the job route exactly as it does on the flat page. Listing it in
+ * `LEDGER_A_KEYS` would make `endJob`'s own `finishPage(s)` throw; leaving it out made the guard
+ * silent on it, and `s.counters.clears = 999` from `js/job/*` landed without a sound.
+ * So it is neither: it is a NARROW proxy (`narrowCounters` below) that admits `pages` and refuses
+ * every other key at any depth. The invariance of `counters.pages` itself is byte-identity between
+ * the two arms, not the guard — the flat page counts the same page — and `tests/job-ledger.test.mjs`
+ * is where that half lives.
  */
 export const SHARED_KEYS = Object.freeze(['inProgress', 'counters']);
+
+/**
+ * The keys of `save.counters` that the study layer's own functions write on the JOB route, and the
+ * only ones this module's proxy lets through. `finishPage` writes exactly one (`page.js`: `pages`);
+ * every other counter belongs to a screen the job never runs.
+ */
+export const COUNTERS_WRITABLE = Object.freeze(['pages']);
 
 /** Thrown when a write from this module would have reached Ledger A. */
 export class LedgerError extends Error {
@@ -140,10 +166,45 @@ function readOnly(value, path) {
   return p;
 }
 
+const NARROW_CACHE = new WeakMap();
+
+/**
+ * `save.counters`, wrapped so that only `COUNTERS_WRITABLE` may be written — see `SHARED_KEYS`.
+ * Reads pass through untouched (the layer prices `counters.pages` into nothing, but `readiness`
+ * and the debrief read the object). Every other key throws `LedgerError('counters.<key>')`, at any
+ * depth: a nested object comes back through this same wrapper, so `counters.foo.bar = 1` is
+ * refused at `foo`, before it can reach `bar`.
+ */
+function narrowCounters(value) {
+  if (!value || typeof value !== 'object') return value;
+  const hit = NARROW_CACHE.get(value);
+  if (hit) return hit;
+  const allowed = new Set(COUNTERS_WRITABLE);
+  const check = (k) => {
+    if (typeof k === 'symbol' || allowed.has(k)) return;
+    throw new LedgerError(`counters.${String(k)}`);
+  };
+  const p = new Proxy(value, {
+    get(t, k, r) {
+      const v = Reflect.get(t, k, r);
+      return typeof v === 'object' && v !== null && typeof k !== 'symbol' ? readOnly(v, `counters.${String(k)}`) : v;
+    },
+    set(t, k, v) { check(k); return Reflect.set(t, k, v); },
+    defineProperty(t, k, d) { check(k); return Reflect.defineProperty(t, k, d); },
+    /* nothing on this route DELETES a counter — `finishPage` only ever increments — so a delete is
+       refused for `pages` too: losing the page count is losing study progress. */
+    deleteProperty(t, k) { throw new LedgerError(`counters.${String(k)}`); },
+    setPrototypeOf() { throw new LedgerError('counters'); },
+  });
+  NARROW_CACHE.set(value, p);
+  return p;
+}
+
 /**
  * The save, wrapped so that Ledger A is READ-ONLY at any depth. Every exported mutator in this file
  * runs against this; a write to `xp`, `skills`, `cards[*].bucket`, `cards[*].rarity`,
- * `cards[*].foil`, `errors` or `forecastLog` throws `LedgerError` instead of landing.
+ * `cards[*].foil`, `errors`, `forecastLog`, `streak` or `jumps` throws `LedgerError` instead of
+ * landing, and `counters` admits only `pages` (`narrowCounters`, and `SHARED_KEYS` for why).
  *
  * Idempotent (guarding a guarded save returns it) and cached per save object, so identity is stable.
  * @param {object} save
@@ -154,21 +215,31 @@ export function guardSave(save) {
   if (GUARDED.has(save)) return save;                        // already guarded
   const hit = GUARD_CACHE.get(save);
   if (hit) return hit;
+  /* `finishPage` creates `counters` when a save has none (`page.js`: `if (!isObj(save.counters))
+     save.counters = {}`), and that is the ONLY assignment to the key itself on this route. It is
+     admitted in exactly that shape — a fresh empty object over a key that is not an object — so
+     `s.counters = { clears: 999 }`, and any replacement of a `counters` that already exists, is
+     still refused. */
+  const isCountersCreate = (t, v) => !isObj(t.counters) && isObj(v) && Object.keys(v).length === 0;
   const p = new Proxy(save, {
     get(t, k, r) {
       if (typeof k === 'string' && PROTECTED.has(k)) return readOnly(Reflect.get(t, k, r), k);
+      if (k === 'counters') return narrowCounters(Reflect.get(t, k, r));
       return Reflect.get(t, k, r);
     },
     set(t, k, v) {
       if (typeof k === 'string' && PROTECTED.has(k)) throw new LedgerError(k);
+      if (k === 'counters' && !isCountersCreate(t, v)) throw new LedgerError('counters');
       return Reflect.set(t, k, v);
     },
     defineProperty(t, k, d) {
       if (typeof k === 'string' && PROTECTED.has(k)) throw new LedgerError(k);
+      if (k === 'counters' && !isCountersCreate(t, d?.value)) throw new LedgerError('counters');
       return Reflect.defineProperty(t, k, d);
     },
     deleteProperty(t, k) {
       if (typeof k === 'string' && PROTECTED.has(k)) throw new LedgerError(k);
+      if (k === 'counters') throw new LedgerError('counters');
       return Reflect.deleteProperty(t, k);
     },
   });
@@ -199,8 +270,12 @@ export const unguard = (save) => (isObj(save) && RAW.get(save)) || save;
  *   quiet   — the 22:00 close has already banked this job, so the terminal word is QUIET22 and not
  *             CALLED. Both end the stakes; only one of them was the student's decision, and a debrief
  *             that cannot tell them apart prints `Called it` over a night the student never called.
+ *   tellOff — a brief window DECLINED the next target's tell (G1's fourth option). One target wide:
+ *             `pricedTarget` withholds the tag and its ×1.25, `applyTarget` consumes the flag. It is
+ *             a boolean and it is false on all but one beat of a job, so it costs 15 B on the disk
+ *             and buys the difference between an option and a string pushed into `briefs[].took`.
  */
-export const EXTRA_KEYS = Object.freeze(['stakes', 'outcome', 'locked', 'posted', 'bc', 'last', 'ph', 'rating0', 'quiet']);
+export const EXTRA_KEYS = Object.freeze(['stakes', 'outcome', 'locked', 'posted', 'bc', 'last', 'ph', 'rating0', 'quiet', 'tellOff']);
 
 /** Every key of `inProgress.game`, in serialisation order: J10's sixteen, then this file's eight. */
 export const STATE_KEYS = Object.freeze([...IN_PROGRESS_KEYS, ...EXTRA_KEYS]);
@@ -231,8 +306,13 @@ export const OUTCOMES = Object.freeze({
    goes up (G3.7 proof 6 — quitting must not pay, but losing must count). */
 const GETAWAY_OUTCOMES = new Set([OUTCOMES.COMPLETED, OUTCOMES.CRACKED, OUTCOMES.KNOCKED, OUTCOMES.WALKED]);
 
-/** The call every rank may make, and the rung a stakes-off target is priced at. */
-export const CALL_DEFAULT = 50;
+/**
+ * The call every rank may make, and the rung a stakes-off target is priced at — re-exported from
+ * `data/job.js`, where it is `CALL_LEVELS[0].id`. It was a literal `50` here while `job/call.js` and
+ * `job/econ.js` both derived the same rung from the ladder, so a ladder change would have moved two
+ * of the three (single-sourced at integration; the re-export keeps this module's importers working).
+ */
+export { CALL_DEFAULT };
 
 /** G2 "calling 50 on everything scores exactly 5.0" — the rating an empty window holds. */
 const RATING_DEFAULT = SAVE_DEFAULTS.player.rating.value;
@@ -257,6 +337,8 @@ export function freshState(over = {}) {
     rating0: RATING_DEFAULT,
     /** set by `quietClose` — the 22:00 close banked this job, whatever word it ends on. */
     quiet: false,
+    /** set by `brief({tell:false})`, consumed by the next `applyTarget` — see EXTRA_KEYS. */
+    tellOff: false,
   };
   return { ...base, ...(isObj(over) ? over : null) };
 }
@@ -307,6 +389,7 @@ export function serialize(game) {
       case 'outcome': out.outcome = Object.values(OUTCOMES).includes(g.outcome) ? g.outcome : null; break;
       case 'stakes': out.stakes = g.stakes !== false; break;
       case 'quiet': out.quiet = g.quiet === true; break;
+      case 'tellOff': out.tellOff = g.tellOff === true; break;
       case 'locked': out.locked = isObj(g.locked) && Number.isFinite(+g.locked.call)
         ? { call: int(g.locked.call, CALL_DEFAULT), n: int(g.locked.n, 0), at: num(g.locked.at, 0) } : null; break;
       case 'last': out.last = isObj(g.last) ? {
@@ -511,6 +594,22 @@ export const currentItem = (save) => queueOf(save)[idxOf(save)] ?? null;
 export const targetsLeft = (save) => Math.max(0, queueOf(save).length - idxOf(save));
 /** How many have been answered (the pointer, which `markItem` moves). */
 export const answered = (save) => Math.min(idxOf(save), queueOf(save).length);
+
+/**
+ * **The ANSWERED PREFIX's posted value, on the bar's own basis.**
+ *
+ * `g.posted` is `startJob`'s `queue.reduce(… it.posted)` over the WHOLE drafted queue (plus whatever
+ * `swapIn` added). This is the same sum over the targets actually answered, taken from the same
+ * `it.posted` the bar was built from — so the two are comparable by construction and neither is an
+ * estimate. It needs no key of its own: the queue is persisted and the pointer is persisted, so it
+ * re-derives exactly across a reload (G3.7 proof 6).
+ *
+ * `callIt` is its caller: a mercy walk is recorded against what the student actually played, not
+ * against the queue they never saw (verify round 4, exploit-hunt) and not against 0.
+ */
+export const postedAnswered = (save) => econ.round(
+  queueOf(save).slice(0, answered(save)).reduce((t, it) => t + Math.max(0, num(it?.posted, 0)), 0),
+);
 /** Is the pointer on the LAST target — the one the getaway gates (G1 "The last target is the vault")? */
 export const isVaultTarget = (save) => queueOf(save).length > 0 && idxOf(save) === queueOf(save).length - 1;
 
@@ -655,19 +754,55 @@ export function pricedTarget(save, opts = {}) {
   const tokens = guarded ? 0 : Math.max(0, int(g.tokens?.[wing], 0));
   const make = crew.makeOf(item);
   const cr = crew.crewFor(save, make, item);
+  /* THE DECLINED PRICE, ON THE PAYOUT AND NOT ONLY ON THE BAR (verify round 4, exploit-hunt).
+     `benchFor` stored the +15 % on `item.posted` and `swapIn` added that inflated figure to
+     `g.posted` — the Elo bar — but nothing priced it: this function rebuilds the target from
+     `jobTargetOf`, which knows `{tier, scopeFlags, bucket, overdueDays, tell}` and nothing about a
+     decline, so the shipped ratio of the priced posted to the bench item's `basePosted` took every
+     value the wing/token/guard/rank terms produce and **1.15 exactly 0 times in 470 swap rows**.
+     G1 publishes the swap as a PRICE ("swap one undrafted contract in at its declined price"), so it
+     has to reach a payout term: `declineMult` is folded into `econ`'s own `num(target.mult, 1)`,
+     which `postedFor`, `carryFor`, `missFor` and `stakeOf` all already end on. A declined target is
+     therefore worth 15 % more on a clear and costs 15 % more on a miss — a trade, not a free spin.
+     It is derived from `item.declined`, which `benchFor` already writes and `swapIn` already carries
+     into the queue, so the save grows by NOT ONE BYTE. */
+  const declineMult = str(item.declined) ? 1 + DECLINE_PRICE : 1;
+  const mult = num(item.mult, 1) * declineMult;
+  /* THE DECLINED TELL (verify round 4, exploit-hunt). `brief({tell:false})` was a string pushed into
+     `briefs[].took` and nothing else — the next envelope was byte-identical on 40/40 windows and
+     `econ.tellFor` went on paying ×1.25 on the very tell the student had just refused. `g.tellOff`
+     is that refusal, and it is read HERE, which is the one place every priced surface goes through:
+     the envelope does not name the tag, `econ.tellFor` prices the target at 1.00, and `applyTarget`
+     finds no live tell to RESOLVE — so the fault stays live and keeps paying on the later targets of
+     that make. That is the trade the option buys: this target's quarter against the tag's own life.
+     `applyTarget` consumes the flag, so it governs exactly the ONE target G1 names ("the NEXT
+     target's tell"). */
+  const declinedTell = g.tellOff === true && t.tell != null;
+  const tell = declinedTell ? null : t.tell;
   return {
     ...t,
+    tell,
+    /**
+     * Was this target's tell WITHHELD by a `brief({tell:false})`? A BOOLEAN, deliberately — not the
+     * tag. `screens/job.js` calls `pricedTarget` directly (`:1579`, `:1743`), so a field carrying
+     * the refused tag would hand the screen the very disclosure the student declined, and the
+     * refusal would be a refusal of the payout only. This says *that* a tell was declined, which is
+     * all a panel needs to explain what the window bought.
+     */
+    tellDeclined: declinedTell,
     item,
     idx,
     make,
     tokens,
     guarded,
+    mult,
+    declined: str(item.declined) ?? null,
     rank: guard.rankOf(save),
     x2: item.x2 === true,
     crew: cr.effective,
     idle: cr.idle,
     crewInfo: cr,
-    posted: econ.postedFor({ ...t, tokens, guarded, rank: guard.rankOf(save), x2: item.x2 === true }),
+    posted: econ.postedFor({ ...t, tell, mult, tokens, guarded, rank: guard.rankOf(save), x2: item.x2 === true }),
   };
 }
 
@@ -811,6 +946,36 @@ const repressed = (g) => num(g?.guard?.drawnAt, 0) > num(g?.phaseAt, 0);
 /**
  * Why a press would be refused right now, or `null`. Pure — `canPress` and `press` share it so a
  * screen can grey a +/− button out with exactly the rule the state machine will enforce.
+ *
+ * ── S5, THE RESIDUAL THIS FUNCTION DOES NOT CLOSE, NAMED RATHER THAN CLOSED ──────────────────
+ * Two brief-window leaks survive here ON PURPOSE, because closing them at this level would break
+ * the sixteen tests written to pin this repair (`tests/job-state-r3.test.mjs`), and a repair that
+ * weakens a test is refused outright (designs/REPAIR-DECISION.md S5.2):
+ *
+ *   1. **lift-then-place is two calls, and the second one is informed.** `press()` redraws on the
+ *      LIFT, so the new wing is published through `envelopeFor` before the freed token is placed —
+ *      and because the redraw seed is pinned to `${seed}|brief${n}`, the place cannot re-roll it,
+ *      which is exactly what makes the second half a fully informed free move. Measured, on a fresh
+ *      window: lift off the guarded wing → ACCEPTED, wing WORDS → RECALL; place on another wing →
+ *      ACCEPTED against the now-known RECALL, no second draw.
+ *      `job-state-r3.test.mjs:242-256` asserts `canPress(place-after-lift) === true` at module
+ *      level, so the law CANNOT live here. **It lives in `screens/job.js`**, which stages the +/−
+ *      into a screen-local pending allocation and submits ONE atomic press (`added = 1,
+ *      removed = 1`, `lifted` false) through `brief({ repress })`.
+ *   2. **The bare press** (`added === 0 && removed === 0`) stays legal below, and `press()` then
+ *      redraws anyway — a free re-roll of the guarded wing. It must stay legal here: the priced
+ *      button (`job-state-r3.test.mjs:181`), `job-split.test.mjs:194` and the fixture in
+ *      `tests/_helpers.mjs` all exercise the unchanged allocation. The screen is what must not
+ *      OFFER it — the submit button is disabled while the staged allocation equals the live one.
+ *
+ * The structural alternative, recorded for whoever revisits it: redraw unconditionally on ENTERING
+ * the brief window, so the redraw stops being the student's option at all and a bare press becomes
+ * a genuine no-op that stays legal and worthless.
+ *
+ * What is NOT a residual, because this function already refuses it: a wholesale re-allocation.
+ * Three tokens moved off the known guarded wing in one call is `repress-step`, and `canPress`
+ * agrees (`job-state-r3.test.mjs:216-225`; re-measured for r3 finding 56, whose headline — "the
+ * brief window re-presses all 3 tokens for free" — is the round-2 shape of this code, not this one).
  * @returns {JobStateError|null}
  */
 function pressRefusal(g, t) {
@@ -1048,6 +1213,13 @@ export function applyTarget(save, result, opts = {}) {
 
   const stakes = g.stakes !== false;
   const t = stakes ? pricedTarget(s, { item: it, idx: idxOf(s), tellFor: opts.tellFor }) : null;
+  /* G1's fourth brief option is ONE TARGET WIDE — "take or decline the NEXT target's tell". The flag
+     is read by `pricedTarget` one line above (which withheld the tag and its ×1.25) and is spent
+     HERE, so the window after this one starts from take again. Spent on a stakes-off target too:
+     nothing can set it with the stakes off (a stakes-off beat never reaches `brief`), and a flag that
+     could outlive the job it was set on is the `commit.bound` bug over again. */
+  const declinedTell = g.tellOff === true;
+  g.tellOff = false;
   const rung = rungOf(result);
   const ok = result?.cleared === true;
   const callId = stakes ? int(g.locked?.call, CALL_DEFAULT) : null;
@@ -1065,17 +1237,40 @@ export function applyTarget(save, result, opts = {}) {
     /* the rating window — written on EVERY staked target, shielded or not (G3.7 #10, G12 #26) */
     const qHat = call.qHatFor(s, t.make, { cards: opts.cards ?? cardById });
     const entry = call.callEntry({ call: callId, ok, qHat, skill: t.make, at: now });
-    entryW = entry.w;
+    /* `call.weightOf`, not `entry.w`: since round-4 verify a q̂-derived slot stores the q̂ and the
+       weight is derived from it (`call.callEntry`'s banner says why — the rank cap needs the
+       evidence, not just the weight). `weightOf` reads BOTH forms. */
+    entryW = call.weightOf(entry);
     credit = call.creditOf(callId, ok);
     const p = playerOf(s);
     p.rating.calls = call.windowPush(p.rating.calls, entry, { N: CAPS.calls });
-    const detail = call.ratingDetail(p.rating.calls, CAPS.calls);
+    /* THE RANK IS A RATCHET (S3). `{ rank: p.rank }` floors the computed rank on the rank already
+       held: the RATING falls as the student masters their makes — that is the deflation G2 wants —
+       but the rank it bought does not, because rank gates the 95 rung and guardMult (tools), and
+       this layer never removes a tool you own. Read BEFORE the write on the next line, which is
+       why this writer was the reason the two displays that already passed `{rank}` were dead on
+       arrival: they floored on a `p.rank` this line had already overwritten with 2.
+
+       AND THE AUDIT RECORD BELOW IS `detail.earned`, NOT `detail.value` (verify round 2). THE CAP
+       prices the rank off `earned = ceiling`: `value` is what the dice paid, `earned`
+       is what the student's own reports were WORTH, and only the second buys a rung. `rankFor` is
+       monotone, so a high-water over `earned` is exactly the number the held rank recomputes from —
+       `p.rank === max(the rank the save started at, rankFor(p.records.bestRating))`, which is the
+       whole of G9 #4's one exception. Storing `value` published a record that bought nothing: on a
+       capped window it printed `Called 3 · best rating 10.00`, a pair no reviewer can reconcile.
+       `bestRating20` is the separate, honestly-labelled high-water of the PRINTED rating and stays
+       on `value`. (COMPOSED-GAME G2 "Rank", G9 #4, G12 #78.) */
+    const detail = call.ratingDetail(p.rating.calls, CAPS.calls, { rank: p.rank });
     p.rating.value = detail.value;
     p.rating.n = detail.n;
     p.rank = detail.rank;
+    /* the ratchet's audit record (S3.1(c)): a floored `p.rank` is no longer recomputable from the
+       window, so the high-water rating that bought it is kept beside it. Written at EVERY writer of
+       `p.rating.value` — here, `endJob`, and `screens/mock.js applyMockCall`. */
+    p.records.bestRating = Math.max(num(p.records.bestRating, 0), detail.earned);
     p.records.bestChain = Math.max(num(p.records.bestChain, 0), g.chain);
 
-    g.calls.push(cleanCall({ call: callId, ok, w: entry.w, skill: t.make, rung, d: settled.delta, at: now }));
+    g.calls.push(cleanCall({ call: callId, ok, w: entryW, skill: t.make, rung, d: settled.delta, at: now }));
     g.last = {
       n: int(it.n, idxOf(s) + 1), d: settled.delta, rung, ok,
       chainBefore, looseBefore, shielded: false,
@@ -1088,9 +1283,20 @@ export function applyTarget(save, result, opts = {}) {
   /* ---- THE FAULT INDEX (G2, G5 #5) -------------------------------------------------------
      A miss triggers every tag the grader returned; a clean clear of a target whose make carried a
      LIVE tell resolves it, which drops `econ.tellFor` to 1.00 on this same tick and advances the
-     seal. `tellFor` only ever offers an unsealed, uncleared tag, so a returned record is live by
-     construction. The day is required or the seal cannot count a third distinct day. */
-  const tell = t ? t.tell : (typeof opts.tellFor === 'function' ? (opts.tellFor(it.skill, it) ?? null) : null);
+     seal. `tellFor` never offers a SEALED tag; it may offer a cleared-but-unsealed one, ranked
+     behind every live tag, which is how resolutions #2 and #3 reach the seal (`job/index.js`
+     header, and `tests/job-index.test.mjs` §2b proves it through this machine). It is priced at
+     1.00 by `econ.tellFor`, so resolving it again moves no payout. The old second clause here —
+     "a returned record is live by construction" — was false against the shipped `index.js`
+     (notes/repair-index.md Request 1; `index.tellFor(save,'FAC2',…).live === false` for a resolved
+     tag). The day is required or the seal cannot count a third distinct day. */
+  /* A DECLINED tell is not resolved either (verify round 4): `pricedTarget` already nulled `t.tell`,
+     and the stakes-off fallback is gated on the same flag so the two paths cannot disagree. Refusing
+     the disclosure leaves the fault LIVE — it goes on paying ×1.25 on the later targets of this make
+     and it does not advance toward the seal. That is the whole price of the option, and it is the
+     study half, not the loot half, which is why the option is a decision rather than a discount. */
+  const tell = declinedTell ? null
+    : (t ? t.tell : (typeof opts.tellFor === 'function' ? (opts.tellFor(it.skill, it) ?? null) : null));
   let sealedTag = null;
   if (ok) {
     const tag = isObj(tell) ? tell.tag : null;
@@ -1521,7 +1727,20 @@ export function brief(save, actions = {}, opts = {}) {
     if (res && res.ok === true) { gameOf(s).crew = { ...res.crew }; took.push('crew'); }
   }
   if (isObj(actions.commit)) { commitBind(s, actions.commit, opts); took.push('commit'); }
-  if (actions.tell === true || actions.tell === false) took.push(actions.tell ? 'tell' : 'no-tell');
+  /* G1's fourth option, IMPLEMENTED (verify round 4, exploit-hunt). This used to be the whole of it:
+     `took.push(actions.tell ? 'tell' : 'no-tell')` — a string, and nothing else. Forked three ways on
+     40 windows, `brief({tell:true})`, `brief({tell:false})` and `brief({})` left the next envelope
+     identical in `{posted, tell, make}` on 40/40 and the entire `inProgress.game` record byte-
+     identical with `took` stripped, so "Decline the tell" spent the window and bought nothing while
+     `econ.tellFor` went on paying ×1.25 on the refused tag.
+     Now: `tell: false` sets `g.tellOff`, which `pricedTarget` reads (no tag on the envelope, ×1.00 on
+     the payout) and `applyTarget` spends (no RESOLVE, so the fault stays live and keeps paying on the
+     rest of this make). `tell: true` is the affirmative and CLEARS a refusal staged earlier in the
+     same window, so the last button pressed is the one that stands. */
+  if (actions.tell === true || actions.tell === false) {
+    g.tellOff = actions.tell === false;
+    took.push(actions.tell ? 'tell' : 'no-tell');
+  }
 
   g.briefs.push({ at: now, took });
   setPhase(g, targetsLeft(s) === 1 ? 'getaway' : 'envelope', now);
@@ -1650,9 +1869,28 @@ export function canCallIt(save) {
 }
 
 /**
- * CALL IT — one tap ends the stakes, the job is recorded **walked at posted 0**, and the remaining
- * targets continue as a no-stakes calm page **with hints on**. *The game stops; the studying does
- * not.* (G1 "Failure states", G10 #7.)
+ * CALL IT — one tap ends the stakes, the job is recorded **walked at the posted value of the part
+ * that was played**, and the remaining targets continue as a no-stakes calm page **with hints on**.
+ * *The game stops; the studying does not.* (G1 "Failure states", G10 #7.)
+ *
+ * **Round 4: the mercy button erased the job instead of recording it.** It wrote `posted 0`, and a
+ * posted-0 row is invisible to both of the systems that adapt to a student who is struggling:
+ * `guard.flowControl`'s `under(r)` requires `posted > 0`, so the row could not be a bad job and it
+ * RESET the two-job streak — `[bad, CALL IT, bad]` fired nothing where `[bad, bad]` fires
+ * `deltaPlayer −40` and the FOOTHOLD board (3 tier-1 dues at guard ×0.5). The student who took the
+ * button the design offers them was the one student denied the help the design owes them.
+ *
+ * `postedAnswered` is the fix and it is exact, not an estimate: the same `it.posted` values, from the
+ * same queue, that `startJob` summed to build `g.posted` in the first place — restricted to the
+ * targets the student actually answered. So a job bagged at target 5 and then called records
+ * `bagged ≈ posted` and is NOT a bad job (that student was not struggling), while a job that missed
+ * its way to target 5 records `bagged < 0.5 · posted` and is (they were).
+ *
+ * What it deliberately does NOT change: `CALLED` stays out of `GETAWAY_OUTCOMES`, so a called job
+ * still rates no Elo. It is a mid-job abandonment, the same shape as `QUIT`, and `eloOutcome` scores
+ * a WIN at `bagged >= posted` — rating the prefix would hand the mercy button an Elo win for bagging
+ * and calling, which is worse than the hole it closes. The flow-control half is the half that reads
+ * the struggle, and it is the half that is fixed.
  */
 export function callIt(save, opts = {}) {
   const s = guardSave(save);
@@ -1661,7 +1899,9 @@ export function callIt(save, opts = {}) {
   const now = num(opts.now, 0) || Date.now();
   g.stakes = false;
   g.locked = null;
-  g.posted = STATES.CALL_IT.postedRecorded ?? 0;               // recorded walked at posted 0
+  g.tellOff = false;
+  /* the answered prefix, not the whole queue and not `STATES.CALL_IT.postedRecorded` (0) */
+  g.posted = postedAnswered(s);
   setPhase(g, 'envelope', now);
   return { stakes: false, hints: hintsOn(), left: targetsLeft(s), posted: g.posted, phase: g.phase };
 }
@@ -1746,7 +1986,14 @@ export function endJob(save, outcome, opts = {}) {
 
   const complete = targetsLeft(s) === 0;
   const honoured = word === OUTCOMES.COMMIT;
-  const bonusRate = honoured ? COMMIT_BONUS : (complete && g.stakes !== false ? COMPLETION : 0);
+  /* === econ lane, verify round 3 (one-line change in a file this lane does not own; BUILD-POLICY
+     §2, recorded in notes/repair-econ.md). The rule itself — including the getaway-walk PARITY
+     clause that kills the CRACK@50-then-miss arbitrage — now lives in `econ.exitBonusRate`, with
+     the measurement in its docblock and `PUBLISHED.getawayParity`. `COMPLETION`/`COMMIT_BONUS` stay
+     imported here because the debrief still prints them. === */
+  const bonusRate = econ.exitBonusRate({
+    honoured, complete, stakes: g.stakes !== false, getawayWalk: word === OUTCOMES.WALKED,
+  });
   const baseBagged = g.bagged;
   const finalBagged = econ.round(baseBagged * (1 + bonusRate));
   g.bagged = finalBagged;
@@ -1756,9 +2003,19 @@ export function endJob(save, outcome, opts = {}) {
      `records.cracked`, the debrief's `cracked` and Stats' "Vaults cracked".
      The COMPLETION bonus is NOT gated on it: G1 line 259 is "completion = +10 % on BAGGED **if every
      drafted target was answered**", and a knocked vault answered every one of them. What G1's Knocked
-     forfeits is the stamp, not the completion. */
+     forfeits is the stamp, not the completion. Verify round 3 added the other half of that sentence
+     rather than taking this one back: a WALK at the getaway — whose ONE unanswered target is the
+     vault, and which banks the same pile at the same full rate — is paid the same bonus, because the
+     difference between the two exits was a free option (`econ.exitBonusRate`). */
   const cracked = word === OUTCOMES.CRACKED && complete && g.stakes !== false;
-  const postedRecorded = g.stakes === false ? 0 : Math.max(0, num(g.posted, 0));
+  /* `g.posted` IS the recorded value, for every word (verify round 4). The old `g.stakes === false ?
+     0 :` in front of it was a SECOND zeroing on top of the two transitions that already zero the
+     field themselves, and it is what made `callIt`'s repair unreachable: the two stakes-off paths are
+     `callIt`, which now writes the answered prefix's posted, and `quietClose`, which writes 0 on its
+     own line (the 22:00 close banks the job in full and is not a result). Reading the field the
+     transitions wrote is what lets them differ — and they SHOULD differ: one is a student calling it,
+     the other is a clock. */
+  const postedRecorded = Math.max(0, num(g.posted, 0));
   /* A declaration is scoped to THE JOB IT WAS MADE ON — `commitBind` even stamps `job: g.seed` on its
      own return value. `commitFire` cleared `bound`, and nothing else did, so a declaration that was
      never reached ("a declaration that is never reached simply never fires", G3.9) stayed bound for
@@ -1782,7 +2039,8 @@ export function endJob(save, outcome, opts = {}) {
   /* NOT `p.rating.value`: that is already the AFTER value by the time this runs (notes/J6b.md R2).
      `startJob` snapshotted the real one into `g.rating0`, and it survives a reload. */
   const ratingBefore = num(g.rating0, num(p.rating.value, RATING_DEFAULT));
-  const detail = call.ratingDetail(p.rating.calls, CAPS.calls);
+  /* the rank is a ratchet — see `applyTarget`'s note on the same call (S3) */
+  const detail = call.ratingDetail(p.rating.calls, CAPS.calls, { rank: p.rank });
   p.rating.value = detail.value;
   p.rating.n = detail.n;
   p.rank = detail.rank;
@@ -1790,14 +2048,64 @@ export function endJob(save, outcome, opts = {}) {
   const rec = p.records;
   rec.bestBag = Math.max(num(rec.bestBag, 0), finalBagged);        // bestChain is kept per target, in applyTarget
   rec.bestRating20 = Math.max(num(rec.bestRating20, 0), call.ratingFrom(p.rating.calls.slice(-20), 20));
+  // the ratchet's audit record (S3.1(c)) — `detail.earned`, the number that BOUGHT the rank, not
+  // `detail.value`, which is what the dice paid; see `applyTarget`'s note on the same line
+  rec.bestRating = Math.max(num(rec.bestRating, 0), detail.earned);
   if (cracked) rec.cracked = num(rec.cracked, 0) + 1;
   if (word === OUTCOMES.WALKED || word === OUTCOMES.QUIT || word === OUTCOMES.CALLED) rec.walked = num(rec.walked, 0) + 1;
   if (complete && g.stakes !== false && g.calls.length > 0 && g.calls.every((c) => c.ok)) rec.cleanJobs = num(rec.cleanJobs, 0) + 1;
 
-  /* the log (G7, ≤ 30) */
+  /* THE LOG (G7, ≤ 30) — AND THE TWO FIELDS THAT STOP IT DESCRIBING TWO DIFFERENT JOBS.
+     `targets` is the ANSWERED count and `posted` is the WHOLE drafted queue's value, so a job walked
+     at target 3 of 10 logged `{targets: 3, posted: 200}` against an answered prefix worth 33 — the
+     entry priced 6.06× what happened, and on a 1-of-10 walk 26×. `posted` still means exactly what it
+     meant (`eloOutcome`, `pushHeat` and the debrief headline all read `postedRecorded` and all want
+     the full-queue value, and notes/repair-board.md Requests 1 asks in terms for a field to be ADDED
+     rather than for this one to be redefined), and the two ADDED fields make the row self-describing:
+
+       · `queueTargets` — the drafted queue's own length. `board.js queuedTargetsOf` prefers it and
+         retires its stand-in the moment it appears; that stand-in is `min(the shape's published row,
+         tonight's drafted length)`, measured wrong by up to 3 of 12 on a JOB12.
+       · `calls` — how many calls the student locked. notes/repair-board.md Requests 1: with it a
+         walked job's decision expectation is exact instead of a one-cycle interval, and the board's
+         projection can stop abstaining. `debriefOf` reads `g.calls.length` on the next line, so
+         nothing new is computed here.
+
+     What is deliberately NOT added is `postedAnswered`. The board lane MEASURED it (notes/repair-
+     board.md "REFUTED"): `fix/t7plus.mjs base half → 25 failures of 600 cells`, `posted half → 51`.
+     A posted value carries the day's realised ×2 marks, which cost no answer seconds, so on a short
+     prefix it is a factor of two on the denominator — the exact field makes the projection twice as
+     wrong as the estimate it replaces. `postedAnswered(save)` is exported for the callers that want
+     the quantity (it is what `callIt` records), and it stays off the row.
+
+     `calls: g.calls.length` is the other field notes/repair-board.md Requests 1 asks for, and it is
+     the one thing on that list that did NOT fit. The row is byte-locked, and not by a constant this
+     lane may restate: `tests/job-save.test.mjs` closes on `T01_STUDY_BOUND + SAVE_BUDGET_KB
+     .totalAdded x 1024 < S6_BUDGET` — `500 000 + 39.7 x 1024 = 540 652.8` against COMPOSED.md S6's
+     `528 x 1024 = 540 672`, i.e. **19 chars**, which pins `totalAdded` at its current 39.7 and caps
+     the WHOLE game layer's growth at `39.7 x 1024 - 40 332 = 320 B`. Measured, `calls` is 11 B a row
+     and **330 B over the thirty-row log**: ten bytes short. It lands the day COMPOSED.md S6 or T01's
+     study bound moves, and notes/repair-state.md Requests 1 carries the arithmetic.
+
+     (The finding prices the pair at "+29 B a row, +290 B over the window". +29 B a row is right;
+     +290 B is the wrong array — that is notes/repair-guard.md's price for the TEN-row
+     `game.heat.window`, and over this THIRTY-row log the pair is +870 B against 320 B of headroom.)
+
+     `queueTargets` fits because the row PAID for it — see `rating` below. */
   const entry = {
-    day, shape: g.shape, targets: answered(s), bagged: finalBagged, posted: postedRecorded,
-    rating: detail.value, guard: postedRecorded > 0 ? (str(g.guard?.wing) ?? null) : null,
+    day, shape: g.shape, targets: answered(s), queueTargets: queueOf(s).length,
+    bagged: finalBagged, posted: postedRecorded,
+    /* ROUNDED, and that is what buys `queueTargets` its 18 B a row (verify round 4). This field is
+       the HISTORY of a number every surface prints at two decimals (`stats.js n2`, the debrief's own
+       line); storing `detail.value` raw put up to 24 characters of a 0-10 score on the disk, thirty
+       times over, of which no reader has ever used more than two. Four decimals is two orders of
+       magnitude more precision than anything displays, and its widest JSON form is 6 characters, so
+       the row is byte-neutral: 18 B saved here, 18 B spent on `queueTargets`.
+       `player.rating.value` — the LIVE rating, which `call.ratingDetail` clamps rather than rounds
+       and which every later window is computed from — is deliberately NOT rounded. This is the
+       log's copy, and only the log's. */
+    rating: econ.round(detail.value, 4),
+    guard: postedRecorded > 0 ? (str(g.guard?.wing) ?? null) : null,
     cracked, tGame: Math.round(num(g.tGame, 0)), tAnswer: Math.round(num(g.tAnswer, 0)),
   };
   gm.log = [...gm.log, entry].slice(-CAPS.log);
@@ -1813,7 +2121,18 @@ export function endJob(save, outcome, opts = {}) {
   const flow = guard.applyFlowControl(eloAfter, gm.log);            // moves R_player only (G12 #8)
   p.elo = { player: flow.player, house: flow.house };
 
-  /* the guard's own input — the stake-weighted press window (G3.4, notes/J3.md Requests) */
+  /* THE GUARD'S OWN INPUT — the stake-weighted press window (G3.4, notes/J3.md Requests).
+     `{targets, shape}` are deliberately still NOT handed over, and this is the second half of
+     finding 4, MEASURED AND REFUSED HERE rather than left unexamined (notes/repair-state.md §4).
+     Passing them was implemented and measured: it puts every row in `withLogEvidence`'s tier 1, and
+     it costs (i) +290 B on `game.heat.window`, (ii) `guard.workedPosted`'s PRO-RATING, which turns
+     `heat.weight` and `heat.press[*]` from `econ.round`ed integers into 18-character doubles — a
+     leaf `tests/_helpers.mjs` prices at 7 — and (iii) with the two log fields, `game` at 15.97 KB
+     against `SAVE_BUDGET_KB.game = 14.9`. The guard lane priced exactly this trade in its own
+     docblock and deferred it ("closing this needs `SAVE_BUDGET_KB` in `site/data/job.js` and G7's
+     save-schema table moved together with the fixture, which is the save lane's call and not this
+     file's"), and it changes x̂ numerics the guard lane pins. It is a THREE-LANE change, not a
+     one-line one; notes/repair-state.md Requests 1 carries the measurement to the two owners. */
   gm.heat = guard.pushHeat(gm.heat, { press: g.tokens, posted: postedRecorded });
 
   /* the measured ledger (G1 statement 1: the board's projection reads THIS) */

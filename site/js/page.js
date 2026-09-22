@@ -563,13 +563,36 @@ export function describeQueue(queue) {
 
    ROUND 3 — WHAT "UNTOUCHED" DOES AND DOES NOT MEAN, because the old wording here said "stays
    byte-identical for the same seed" and that was false by one save in four hundred. The FUNCTION is
-   byte-identical to pre-ticket; the composed PAGE is not always, because the layer's one
-   content-adjacent edit — J5b's `data/templates.js` entry for `T-asn-reason` — is read by
-   `templateForSkill` → `templatesForSkill` above, so a save whose weak-skill draw lands on ASN-PLP
-   or ASN-ANG now draws a template that did not exist before the ticket. Measured against
-   `git archive HEAD` over 400 saves: one divergence (save 102), and with that one template taken
-   back out of the registry all 400 reproduce HEAD exactly — which is the assertion the test makes.
-   The fifty-digest pin could not see it, because the first divergence is at 102.
+   byte-identical to pre-ticket — `git diff` against the pre-ticket tree removes exactly two lines
+   from this file, both of them `import` statements; what moves a Page is a new file in a protected
+   directory (`js/gen/asn-reason.js`) reached through the registry. The composed PAGE is not always,
+   because the layer's one content-adjacent edit — J5b's `data/templates.js` entry for
+   `T-asn-reason` — is read by `templateForSkill` → `templatesForSkill` above, so a save whose
+   weak-skill draw lands on ASN-PLP or ASN-ANG now resolves that slot differently.
+
+   ROUND-2 VERIFICATION — THE RATE AND THE SECOND MECHANISM. "One divergence (save 102)" is what the
+   400-save pin can SEE, not the rate, and it describes only one of the two ways the registry entry
+   moves a Page. Swept to 2 000 saves against the same pre-ticket registry (deleting the one J5b
+   entry IS the pre-ticket registry — `allTemplates()` reads the object live):
+
+       13 divergences of 2 000 = 0.65 %, not 1 in 400 — 2.6× what the pinned window can see
+       12 of them DRAW `T-asn-reason` into the weak slot
+        1 of them (save 656) draws no template at all and comes out one item SHORTER (14 against 15)
+
+   The second mechanism is step 5 below, the weak-skill loop. Pre-ticket `templateForSkill` returned
+   null for ASN-PLP, the loop fell through to the ASN fallback and took the ORIGINAL card `fact-01`.
+   With J5b registered it returns `T-asn-reason`, builds a Variant, the Variant does not fit the
+   minute budget, `if (item && !fits(item)) break;` leaves the loop — and the fallback card is never
+   taken. So registering a template can make a Page SHORTER, and "except where the template is drawn"
+   is not the whole exception. Global rule 5 is intact either way: `fact-01` is still scheduled and
+   returns on a later Page.
+
+   THE OBVIOUS FIX IS REFUTED, WITH THE MEASUREMENT: making that `break` fall through to the ASN
+   fallback moves 667 of the same 2 000 Pages (33.4 %), 123 of them inside the pinned 400, because
+   every weak slot with a generator also stops breaking. One save gets its item back and a third of
+   the corpus gets a different Page. The wording is what is wrong, not the loop
+   (`tests/job-board.test.mjs` "…and the J5b exception is BOTH mechanisms, swept to 2000 saves";
+   designs/SPEC-CORRECTIONS.md A-4).
 
    Three functions are added beside `composePage`, and the game layer never composes: it partitions
    what the composer composed.
@@ -583,7 +606,13 @@ export function describeQueue(queue) {
      jobBudget(shape) → the shape's target/tier/minute/second budget, recomputed from `econ.js`.
 
    COMPOSED Global rule 5 holds by construction: nothing here marks, drops or re-schedules an item.
-   A target a job does not reach is simply not posted tonight; it stays due and leads the next board.
+   A target a job does not reach is simply not posted tonight; it stays DUE and returns on a later
+   Page. It is not guaranteed to be on the NEXT Page, and that is `composePage`'s business rather
+   than the game's: `LIMITS.dues` serves twelve, so the least overdue of eighteen waits (4 of 1 162
+   boards over 400 saves × every shape), and a deferred critical does not always lead the review
+   block (14 of 1 162 — a TIER-4 one can never lead a Page at all, because a hard item is never
+   first). The schedule itself is intact on 1 162 of 1 162
+   (`tests/job-board.test.mjs` "a target a job does not reach stays due…"; SPEC-CORRECTIONS A-5).
    ========================================================================================== */
 
 /** The five contract letters (G1's board prints `A`–`E`). */
@@ -968,6 +997,10 @@ export function composeBundles(save, opts = {}) {
     supply: supply.wings,
     minutes: jobRound(pool.reduce((s, t) => s + t.minutes, 0), 1),
     supplyLines: supply.lines,
+    /* the wing order `wingSupply` built those lines in — `supply` is a record, and a board that
+       re-prints the numbers in a shorter form (round 3, player-feel: `job/board.js supplyRow`) has
+       to keep the supply file's own order rather than invent one. */
+    supplyOrder: supply.order,
     supplyThin: supply.thin,
     deferred,
     page,
@@ -1248,7 +1281,30 @@ export function draftUnion(bundles, picks, opts = {}) {
   let arranged = arrangeJob(union.map(u => u.target), { sameSkillRun });
   const spread = spreadSkills(arranged, { sameSkillRun });
   if (spread.dropped.length === 0) arranged = spread.queue;
-  /* composePage's own two ordering laws: a hard lock is never first, a Rematch is never item 1 */
+  /**
+   * composePage's own two ordering laws: a hard lock is never first, a Rematch is never item 1.
+   *
+   * THIS PASS OUTRANKS THE 1→4 RAMP, AND THE PUBLISHED LAW NOW SAYS SO (round-3 verification,
+   * board-schedule). COMPOSED-GAME G1 read "`LIMITS.sameSkillRun = 2` holds inside a job absolutely,
+   * and the 1→4 tier ramp holds wherever an order under that cap admits one", and the escape clause
+   * named only the run cap. It is not the only law that can win: when the drafted queue's ONLY
+   * tier-1 lock is a Rematch, no order is both monotone and legally led, and this splice promotes a
+   * tier-2 lock to the front and breaks the ramp. Over every shape × 2 000 seeded saves × every legal
+   * draft (8 000 boards, 79 968 drafts, the `job-board-corpus` generator):
+   *
+   *      run-cap breaks                                           0
+   *      ramp breaks (a monotone run-safe order exists)          11, on 3 save/shape pairs
+   *        …of which on the RECOMMENDED draft                     2   (RUN save 918, VAULT save 918)
+   *      ramp breaks (…AND a non-Rematch tier-1 lead exists)      0
+   *
+   * — the last row is the whole point: model this law in the feasibility oracle and every break is
+   * accounted for, so the composer is not myopic here and there is nothing to repair in the arranger.
+   * The splice is already MINIMAL: `arranged` is in ramp order, so `findIndex(firstOk)` takes the
+   * lead from the lowest tier band that has a legal one, which keeps the ramp whenever the leading
+   * band holds any non-Rematch at all. The breaks are all at 400 < i < 1 000, which is why the suite
+   * saw none of them; `tests/job-board.test.mjs` now runs the order laws to `ORDER_N` and its
+   * `existsMonotone` requires a legal lead.
+   */
   const firstOk = t => !t.item?.isRematch && t.tier < 4;
   if (arranged.length && !firstOk(arranged[0])) {
     const j = arranged.findIndex(firstOk);
