@@ -14,6 +14,11 @@
 // Flags: --only <state-id-prefixes,comma> --vp <all|phone|tablet|desktop|WxH,...> --engine <chromium|webkit|both>
 //        --theme <light|dark|both> --max-findings N --json <path> --workers N --no-confirm --no-selftest
 //        --no-extra (skip the text-zoom and reduced-motion passes) --quiet
+//
+// --vp ADDS to a state's pinned sizes, it does not replace them. A state may declare its own `vps`
+// (the keyboard-open phone, 375x331, is why), and those rows are always measured; `--vp` unions its
+// list on top. The text-zoom pass runs at the NARROWEST size in that union as well as at 1900x1200
+// — before round 2 it ran only at 1900x1200, the one width where 20 px text has room to reflow.
 //        --inject "<css>"  mutation-test: inject CSS into every page of the run (nothing on disk is
 //                          touched) and check the net still fires. See notes/AUDIT.md "Trusting the net".
 //
@@ -73,6 +78,7 @@ function parseVps(spec) {
 
 const CFG = {
   only: (opt('only', '') || '').split(',').map((s) => s.trim()).filter(Boolean),
+  vpSpec: opt('vp', 'all'),
   vps: parseVps(opt('vp', 'all')),
   engines: (() => { const e = opt('engine', 'both'); return e === 'both' ? ['chromium', 'webkit'] : [e]; })(),
   themes: (() => { const t = opt('theme', 'both'); return t === 'both' ? ['light', 'dark'] : [t]; })(),
@@ -180,7 +186,16 @@ const H = {
 function pageDetect(opts) {
   const { tags = [], allow = [], phase = 'top', maxCands = 1000 } = opts || {};
   const F = [];
-  const vw = innerWidth, vh = innerHeight;
+  /* THE FOLD IS THE VISUAL VIEWPORT, not the layout one (round 3, layout-safari). `innerHeight` does
+     not move when a soft keyboard opens — iOS Safari and Android Chrome shrink the VISUAL viewport
+     only (`site/js/widgets/base.js:234`), and `site/index.html` carries no `interactive-widget`, so
+     Chrome's resizes-visual default applies too. Every detector that asks "is this below the fold"
+     was therefore asking about a fold 336 px below the student's on a keyboard-open state. With no
+     keyboard the two are identical, so nothing else in the corpus moves. */
+  const vw = innerWidth;
+  const vh = window.visualViewport
+    ? Math.round(window.visualViewport.offsetTop + window.visualViewport.height)
+    : innerHeight;
   const de = document.documentElement;
   const VIEW = document.getElementById('view') || document.body;
   const HDR = document.querySelector('header.hdr, header[role="banner"]');
@@ -1026,6 +1041,23 @@ async function runState({ browser, engine, theme, state, allow: allEntries, vps,
   };
   try {
     await state.prepare(page);
+    // THE STATE HAS TO HAVE ARRIVED (ticket fix:tests r1, layout-safari finding 2).
+    // `state.root` is the catalog's own proof that it did — audit-states.mjs:15 "the CSS selector that
+    // proves the state actually happened (prepare waits for it)". That wait swallows its timeout
+    // (`.catch(() => {})`), and `prepare` does not throw on a state that never arrived, so without this
+    // check an unreachable state silently measures whatever screen happened to be up and contributes
+    // ZERO findings — a PASS that means nothing. That is exactly how `job-payout` reported clean for
+    // three rounds while sitting on the answer screen. Fail loudly and skip the sweep: measuring the
+    // wrong screen is worse than not measuring at all.
+    if (state.root && !(await page.$(state.root))) {
+      out.push({
+        type: 'unreached', severity: 'BLOCKER', state: state.id, describe: state.describe,
+        viewport: 'n/a', theme, engine, selector: state.root,
+        detail: 'the state never arrived: prepare() finished but its declared root is not in the DOM, '
+          + 'so nothing below was measured on the screen this state names',
+      });
+      return;
+    }
     const suspects = [];
     for (const vp of vps) {
       await page.setViewportSize({ width: vp[0], height: vp[1] });
@@ -1033,16 +1065,36 @@ async function runState({ browser, engine, theme, state, allow: allEntries, vps,
       const { findings } = await measure(page, { tags, allow });
       if (findings.length) suspects.push({ vp, findings });
     }
-    // extra passes (text zoom + reduced motion) at the student's own window size
+    /* TEXT ZOOM (`html{font-size:20px}`) — at the student's own window size AND at the narrowest
+       viewport this state is measured at.
+       ROUND 2 (layout-safari). This pass used to run at 1900x1200 and nowhere else, which is the one
+       width where text zoom cannot bite: a desktop has horizontal room to spare, so 20 px text
+       reflows into it. The same net, the same CSS, at 320–390 px:
+
+         node qa/layout-audit.mjs --only job --vp all --engine both --theme both
+           → 0 findings, PASS
+         node qa/layout-audit.mjs --only job --vp 375x667,320x568,390x844 --engine both --theme light \
+              --no-extra --inject "html{font-size:20px !important}"
+           → 8 findings, all BLOCKER, FAIL
+
+       States with their OWN `vps` were skipped entirely, on the grounds that resizing to 1900x1200
+       un-pins the configuration they exist to measure. True — and the fix is to zoom at their own
+       size rather than to skip them: a pinned keyboard and a text-zoom setting are independent
+       things a student can have at once. */
     if (extraPasses) {
-      const vp = [1900, 1200];
-      await page.setViewportSize({ width: vp[0], height: vp[1] });
-      const handle = await page.addStyleTag({ content: 'html{font-size:20px !important}' });
-      await settle(page, 200);
-      const z = await measure(page, { tags, allow });
-      if (z.findings.length) suspects.push({ vp, findings: z.findings, pass: 'zoom20' });
-      await handle.evaluate((el) => el.remove()).catch(() => {});
-      await settle(page, 120);
+      const narrowest = vps.slice().sort((a, b) => a[0] - b[0])[0];
+      const zoomVps = [narrowest, [1900, 1200]]
+        .filter(Boolean)
+        .filter((vp, i, xs) => xs.findIndex((o) => o[0] === vp[0] && o[1] === vp[1]) === i);
+      for (const vp of zoomVps) {
+        await page.setViewportSize({ width: vp[0], height: vp[1] });
+        const handle = await page.addStyleTag({ content: 'html{font-size:20px !important}' });
+        await settle(page, 200);
+        const z = await measure(page, { tags, allow });
+        if (z.findings.length) suspects.push({ vp, findings: z.findings, pass: 'zoom20' });
+        await handle.evaluate((el) => el.remove()).catch(() => {});
+        await settle(page, 120);
+      }
     }
 
     // Confirm by re-navigating at the offending size. Viewports that produced the SAME set of findings
@@ -1052,7 +1104,7 @@ async function runState({ browser, engine, theme, state, allow: allEntries, vps,
     // is-this-a-resize-artefact question is answered per group, on the group's widest viewport.
     const groups = new Map();
     for (const s of suspects) {
-      const sig = (s.pass || '') + ' ' + [...new Set(s.findings.map(keyOf))].sort().join('\n');
+      const sig = (s.pass || '') + ' ' + [...new Set(s.findings.map(keyOf))].sort().join('\n');
       if (!groups.has(sig)) groups.set(sig, []);
       groups.get(sig).push(s);
     }
@@ -1286,10 +1338,28 @@ for (const engine of CFG.engines) {
   catch (e) { console.error(`cannot launch ${engine}: ${String(e && e.message || e).slice(0, 200)} — skipping engine`); continue; }
   const tasks = [];
   for (const theme of CFG.themes) for (const state of STATES) {
-    // main sweep: the whole viewport list, reduced motion (stable geometry), + the text-zoom pass
-    tasks.push({ theme, state, vps: CFG.vps, extraPasses: CFG.extra, motion: true, vpSuffix: '' });
+    // A state may declare its OWN viewport list (`vps`). The keyboard-open phone is the case that
+    // forced it: J6's acceptance is "375×667 with the keyboard open", and an open keyboard leaves
+    // ~331 px of height — a size no row of VP_ALL carries, and one that would invent a configuration
+    // no student can reach if it were swept across every state (a 2560 px desktop with a soft
+    // keyboard). An explicit `--vp` on the command line still wins, so `--vp 375x667` means what it
+    // says. (ticket fix:tests r1, layout-safari finding 4.)
+    /* ROUND 2 (layout-safari, second half of finding 9): a state's own `vps` used to be dropped
+       ENTIRELY whenever `--vp` was given (`CFG.vpSpec === 'all'`), silently. So `--vp phone`
+       measured `job-answer-kb` / `job-payout-kb` at seven phone widths and NOT at 375x331 — the
+       keyboard height those two states exist to measure — and the flag help said nothing about it.
+       The pinned rows are now UNIONED with whatever `--vp` asks for, so an explicit `--vp` adds
+       sizes instead of removing the one that matters. */
+    const own = (Array.isArray(state.vps) && state.vps.length) ? state.vps : null;
+    const vps = own
+      ? [...own, ...(CFG.vpSpec === 'all' ? [] : CFG.vps)]
+        .filter((vp, i, xs) => xs.findIndex((o) => o[0] === vp[0] && o[1] === vp[1]) === i)
+      : CFG.vps;
+    /* main sweep: the whole viewport list, reduced motion (stable geometry), + the text-zoom pass.
+       A state with its own sizes gets the zoom pass too, at its own narrowest size — see runState. */
+    tasks.push({ theme, state, vps, extraPasses: CFG.extra, motion: true, vpSuffix: '' });
     // animations-enabled pass at the student's own window (a transform mid-animation can overlap text)
-    if (CFG.extra) tasks.push({ theme, state, vps: [[1900, 1200]], extraPasses: false, motion: false, vpSuffix: '@motion' });
+    if (CFG.extra) tasks.push({ theme, state, vps: own ? [own[0]] : [[1900, 1200]], extraPasses: false, motion: false, vpSuffix: '@motion' });
   }
   let next = 0, done = 0;
   const worker = async () => {

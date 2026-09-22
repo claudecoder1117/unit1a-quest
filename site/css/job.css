@@ -1,0 +1,635 @@
+/* === J6 === css/job.css — THE JOB's screen: the board sheet, the guard bars, the sealed envelope,
+   the call row, the payout beat, the chain ticks, the brief, the getaway and the debrief.
+   Linked LAST from index.html (one line, BUILD-POLICY §2) so it can neutralise `.screen`'s own cap.
+
+   CONVENTIONS THIS FILE OBEYS — notes/LAYOUT-ROOT.md, notes/AUDIT.md.
+
+   This screen hosts `screens/card.js` inside a NEW container, which is exactly the shape that
+   collapsed the placement's stem to one letter per line at 1900 px (`.card-paper` resolved
+   `0px 250px`). So, without exception:
+
+   1. **Nothing here sizes from the viewport.** `.job-board`, `.job-panel` and `.job-beat` each carry
+      `container-type: inline-size; container-name: job`, and every column decision is a
+      `@container job (…)` query against the box it actually decides. There is not one `@media
+      (min-width: …)` rule in this file.
+   2. **Every text track has a ch floor**, written `minmax(min(100%, N ch), …)` so a floor can never
+      be wider than the grid it sits in, and **every multi-column grid has a one-column fallback**
+      (the narrow form is the DEFAULT; the query only ever adds columns).
+   3. **The board collapses from `:has(.card-screen)`, not from a class the screen must remember.**
+      `LAYOUT.boardCollapsedPx` = 36 px, and the rule fires the instant a stem is in the DOM.
+   4. **Nothing is `position: fixed`** (G12: the tile mint stays the product's only full-screen
+      moment), so no container here captures an overlay.
+   5. **Colour is only ever a token, and only ever an `-ink` token for text**, so both themes clear
+      4.5:1 by construction (`css/theme.css`'s FILL vs INK note).
+
+   The six animation cues are `data/job.js ANIMATION.cues`, by name, all transform/opacity, all
+   ≤ 600 ms, none of them a rotate (G11 killed the envelope tilt; G12 #J12 greps for it). */
+
+.job-screen {
+  /* `.screen` caps at --col; the job hosts a 1024 px card, and a width that changes between the
+     envelope and the stem would move the board under the student's thumb. So the SCREEN is free and
+     the reading panels carry the cap themselves (below). polish.css's general host rule sets the
+     same value once a `.card-screen` is mounted; this makes it true in every phase. */
+  max-width: none;
+  --job-col: min(100%, var(--col));
+  --job-board-collapsed: 36px;   /* data/job.js LAYOUT.boardCollapsedPx */
+  --job-board-sheet: 264px;      /* data/job.js LAYOUT.boardSheetPx — G6's phone sheet */
+  --job-rail: var(--rail);       /* theme.css's own 320 px rail token — G6's "320 px right rail" */
+  --job-dock-h: 0px;             /* screens/job.js measures card.js's sticky dock into this */
+  /* The screen is the box the two-column form is decided from. polish.css already makes
+     `.run-screen` the container `run` (the Page Summary's own rule queries it, and the debrief IS a
+     Page Summary), so this ADDS a name rather than replacing one — dropping `run` here would
+     un-style `.sum-bar` at the debrief. A container cannot query itself, which is why the grid
+     lives on `.job-body` one level down. */
+  container-type: inline-size;
+  container-name: run jobscreen;
+}
+
+/* `.job-body` is the board + the reading column; `.job-main` is the reading column alone (the walk
+   prompt, the stage, the payout beat). Narrow, both are plain one-column grids and the order on
+   screen is exactly what it was: board, then panel. */
+.job-body, .job-main { display: grid; gap: inherit; min-width: 0; align-content: start; }
+
+.job-head { row-gap: 8px; }
+.job-head .run-titles { min-width: min(100%, 12ch); }
+
+/* ---- progress ---- */
+.job-progress { display: grid; gap: 4px; margin-left: auto; min-width: min(100%, 12ch); }
+.job-progress-track { height: 6px; border-radius: 3px; background: var(--surface2); overflow: hidden; }
+.job-progress-fill {
+  height: 100%; background: var(--accent); border-radius: 3px;
+  transform-origin: left center; transition: transform var(--dur-2) var(--ease);
+}
+.job-progress-n { color: var(--muted); }
+
+/* ---- the beat line: a PERSISTENT aria-live region, visible because its copy is G1's own
+   (`GUARD: WORDS. your tokens: …`, `bagged 24 · fee 2 · chain 1 → 0`). Empty until something has
+   happened, so it costs no space on the board. ---- */
+.job-say {
+  margin: 0;
+  max-width: var(--job-col);
+  min-width: 0;
+  color: var(--text);
+  line-height: 1.5;
+}
+.job-say:empty { display: none; }
+/* While a stem is on screen the vertical budget is the scarce one (375x667 with the keyboard open
+   leaves ~331 px), and the guard is already restated in the board's own collapsed line. So the beat
+   line clamps to ONE line with a declared ellipsis — it stays in the accessibility tree and keeps
+   announcing, which `display: none` would not. */
+.job-screen:has(.card-screen) .job-say {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ==========================================================================================
+   The board sheet — open at all times (G3.6), one 36 px line once a stem is in the DOM (G1)
+   ========================================================================================== */
+
+.job-board {
+  container-type: inline-size;
+  container-name: job;
+  box-sizing: border-box;
+  max-width: var(--job-col);
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+}
+
+.job-board-line { display: none; color: var(--text); margin: 0; }
+.job-board-body { display: grid; gap: 8px; min-width: 0; }
+.job-board-head { display: flex; flex-wrap: wrap; gap: 4px 8px; margin: 0; align-items: baseline; }
+.job-board-title { font-weight: 650; letter-spacing: .04em; }
+
+/* THE COLLAPSE. Driven by the stem's own presence, so it can never be forgotten by a renderer:
+   whenever a `.card-screen` is mounted anywhere in this screen the sheet is exactly one line.
+   `block-size` + `border-box` + `overflow: hidden` pin the measured height at 36 px in both
+   engines; the rows are `display: none`, so nothing clipped can sit on the card below it.
+
+   …and AT THE BRIEF, which is the second place the sheet was in the way. Between targets the board
+   sprang back to its full ~280 px and the brief panel opened under it, which put the brief's own
+   primary ("Skip") ~680 px below the fold on an 812 px phone while the student scrolled past
+   contract rows they had already drafted (round 1, player-feel). The brief is a decision about the
+   NEXT target, not about the board, so the sheet stays the one 36 px line it was during the stem.
+   `[data-phase]` is `render()`'s own attribute, set on every single render.
+
+   BOTH are scoped to the narrow form: above `--job-rail-at` the board is a permanently-visible rail
+   and there is nothing to make room for (see THE RAIL). */
+@container jobscreen (max-width: 895.98px) {
+  /* **THE 264 px SHEET, WHICH HAD NEVER BEEN BUILT** (round 2, layout-safari). G6's phone paragraph
+     is load-bearing and exact: *"Board sheet 264 px … during the decision phases; it collapses to a
+     single 36 px line at call-lock."* Shipped, the sheet ran to its content — 477 px measured at
+     375×667 — at every phase that was not the stem or the brief, which put the four call rungs at
+     y 809–869 and the getaway's CRACK/WALK at 738–782 on a 667 px screen: the decision the beat
+     exists for was below the fold at rest, in both engines.
+     The cap is `LAYOUT.boardSheetPx` with the sheet's own scrollbar, so G3.6's "the exact remaining
+     composition" is still all there — it is read by scrolling the SHEET instead of the page.
+     `dvh` is the second term because a cap in px alone is not a cap on a 390 px-tall landscape
+     phone, where 264 px of board leaves 70 px for the panel. It is a HEIGHT, which is the one thing
+     a container query cannot express (and the one thing this file's no-viewport rule is not about:
+     that rule is about which COLUMN form a box takes, and no column here is decided by the window).
+     The collapse rules below are more specific and still win outright at call-lock and at the
+     brief. ≥ 896 px the board is the rail, where `position: sticky` really is sticky (a sticky grid
+     item can only travel inside its own grid area, and in the narrow one-column form that area is
+     the board itself — so sticky there would be a decoration, not a promise). */
+  /* **AND A THIRD TERM, MEASURED** (round 3, layout-safari). The two terms above are tuned to ONE
+     phone: at 375×667 they leave 5 px of clearance under the last call rung, and at 320×568 — row
+     1 of `qa/layout-audit.mjs`'s own `VP_ALL`, an iPhone SE the repo's net calls supported — the
+     call row sits 110 px BELOW the fold at rest, the vault's 93 px and the getaway's CRACK/WALK
+     52 px, in both engines; 360×640 misses by 12 px. Neither `dvh` nor a second `max-height`
+     breakpoint can express the real budget, because it depends on the WIDTH too: `.job-say` is one
+     line at 375 px and two at 320 px, so the chrome above and below the sheet is not a function of
+     height alone. `screens/job.js` measures it per render into `--job-board-fit` (see
+     `syncBoardFit`) — `clientHeight − the board's own top − (the decision's bottom − the board's
+     bottom) − one 8 px step`, both terms invariant under the board's own height, so one pass
+     converges. It only ever takes MORE away: with no measurement the `min()` falls back to the two
+     published terms exactly as before. */
+  .job-board {
+    max-block-size: min(var(--job-board-sheet), 38dvh, var(--job-board-fit, 100dvh));
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  .job-screen:has(.card-screen) .job-board,
+  .job-screen[data-phase="brief"] .job-board {
+    block-size: var(--job-board-collapsed);
+    max-block-size: var(--job-board-collapsed);
+    padding-block: 0;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+  }
+  .job-screen:has(.card-screen) .job-board-body { display: none; }
+  .job-screen[data-phase="brief"] .job-board-body { display: none; }
+  .job-screen:has(.card-screen) .job-board-line,
+  .job-screen[data-phase="brief"] .job-board-line {
+    display: block;
+    width: 100%;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;   /* declared ellipsis INTENT: one line is the design, not an accident */
+  }
+}
+
+/* ---- THE LANDSCAPE PHONE: a sheet and a decision do not both fit in 390 px of height ----
+   G6's sheet is a phone-PORTRAIT number (375×667). Turned sideways the same phone has 390 px of
+   height, and a 148 px sheet there leaves 70 px for an envelope whose call row is 59 px tall: the
+   four rungs measured y 456–515 of 390, and the getaway's CRACK/WALK 414–458 (round 2,
+   layout-safari, at rest, no scrolling, both engines). So below ~520 px of height the decision
+   phases get the SAME one-line strip call-lock already gives them, and the panel tightens by one
+   step. This is a HEIGHT query, which is the one measurement a container query cannot make and the
+   one this file's no-viewport rule does not cover — no column, anywhere, is decided by the window;
+   `@container job` still decides every one of them. */
+@media (max-height: 520px) {
+  .job-screen[data-phase="envelope"] .job-board,
+  .job-screen[data-phase="call"] .job-board,
+  .job-screen[data-phase="payout"] .job-board,
+  .job-screen[data-phase="bagpush"] .job-board,
+  .job-screen[data-phase="getaway"] .job-board {
+    block-size: var(--job-board-collapsed);
+    max-block-size: var(--job-board-collapsed);
+    padding-block: 0;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+  }
+  .job-screen[data-phase="envelope"] .job-board-body,
+  .job-screen[data-phase="call"] .job-board-body,
+  .job-screen[data-phase="payout"] .job-board-body,
+  .job-screen[data-phase="bagpush"] .job-board-body,
+  .job-screen[data-phase="getaway"] .job-board-body { display: none; }
+  .job-screen[data-phase="envelope"] .job-board-line,
+  .job-screen[data-phase="call"] .job-board-line,
+  .job-screen[data-phase="payout"] .job-board-line,
+  .job-screen[data-phase="bagpush"] .job-board-line,
+  .job-screen[data-phase="getaway"] .job-board-line {
+    display: block;
+    width: 100%;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  /* one step tighter, so the rungs clear the fold with the strip rather than only just missing it */
+  .job-screen .job-panel { gap: 8px; --job-panel-pad: 10px; }
+}
+
+/* The posted column is a price. With the stakes off (CALL IT, the 22:00 close) nothing is charged,
+   so the prices go to --muted rather than sitting live under a `REVIEW · no stakes` header. */
+.job-contract[data-stakes="false"] .job-c-posted { color: var(--muted); }
+
+/* ---- contracts ---- */
+.job-contracts { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; min-width: 0; }
+.job-contracts > li { min-width: 0; }
+
+.job-contract {
+  display: grid;
+  width: 100%;
+  min-height: var(--tap);
+  align-items: center;
+  gap: 2px 10px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  /* THE NARROW FORM IS TWO TRACKS, NOT THREE (round 2, layout-safari — the one horizontal scroll in
+     the whole app). The floors here are per-track and the file's own convention says a floor "can
+     never be wider than the grid it sits in"; that is true of each `min(100%, N ch)` and says
+     nothing about their SUM. At 320 px with the browser's text size at 125 % the three tracks
+     resolved `31.2px 149.8px 120.4px` + 2×10 px gap = 321 px inside a 279 px content box, and the
+     document scrolled sideways (359 px against a 320 px viewport, chromium and webkit; the same
+     mutation over all 68 non-job states finds nothing).
+     The price is a whole row of its own below the name, so the widest track in the sum is gone and
+     the remaining floor — 2.5ch + 12ch — is bounded by construction. `.job-c-posted` keeps its
+     `nowrap`: it is `posted 175` on one line in a 1fr track, not a third column fighting for width.
+     Above 48ch the four-column form is unchanged. */
+  grid-template-columns: 2.5ch minmax(min(100%, 12ch), 1fr);
+  grid-template-areas:
+    "key name"
+    "key meta"
+    "key posted";
+}
+button.job-contract { cursor: pointer; }
+button.job-contract:hover { background: var(--surface2); }
+.job-contract[data-picked="true"] { border-color: var(--accent); background: var(--accent-alpha); }
+.job-c-key { grid-area: key; color: var(--muted); align-self: center; }
+.job-c-name { grid-area: name; min-width: 0; }
+.job-c-id { color: var(--accent-ink); font-weight: 650; }
+.job-c-label { font-weight: 600; }
+.job-c-meta { grid-area: meta; min-width: 0; }
+.job-c-posted { grid-area: posted; white-space: nowrap; color: var(--text); }
+
+/* …and the moment the row has 30ch to work in, the price goes back beside the name. `ch` is the
+   right unit for exactly this: it scales with the student's own text size, so ONE query covers both
+   ends — the 375 px phone at 100 % measures 31.5ch and keeps the compact two-row card, and the same
+   sheet at 125 % text measures 25.4ch (320 px at 125 %: 21ch) and stacks, which is the case that
+   used to scroll the document sideways. The tracks sum to ~26.5ch at their floors (2.5 + 12 + a
+   ~10ch `posted 1750` + two 1ch gaps), so 30ch is a measured threshold and not a taste. */
+@container job (min-width: 30ch) {
+  .job-contract {
+    grid-template-columns: 2.5ch minmax(min(100%, 12ch), 1fr) auto;
+    grid-template-areas:
+      "key name posted"
+      "key meta meta";
+  }
+}
+
+@container job (min-width: 48ch) {
+  .job-contract {
+    grid-template-columns:
+      2.5ch
+      minmax(min(100%, 12ch), 1fr)
+      minmax(min(100%, 16ch), 1.4fr)
+      auto;
+    grid-template-areas: "key name meta posted";
+  }
+}
+
+.job-supply, .job-x2, .job-vault, .job-thin, .job-dry, .job-projection { margin: 0; min-width: 0; }
+.job-thin, .job-dry { color: var(--warn-ink); }
+
+/* ==========================================================================================
+   The panels — every phase's reading column
+   ========================================================================================== */
+
+.job-panel {
+  container-type: inline-size;
+  container-name: job;
+  box-sizing: border-box;
+  max-width: var(--job-col);
+  min-width: 0;
+  display: grid;
+  gap: 12px;
+  /* the panel's own padding is a VARIABLE because the brief's pinned footer bleeds to its edges
+     with a negative margin; a padding one rule can change and a margin another rule cannot is how
+     a 2 px horizontal overflow gets built (see the max-height block above). */
+  --job-panel-pad: 14px;
+  padding: var(--job-panel-pad);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+}
+.job-panel h2 { margin: 0; }
+.job-panel p { margin: 0; min-width: 0; }
+
+/* ---- the guard bars (G3.4: the odds are printed BEFORE you press) ---- */
+.job-bars { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; min-width: 0; }
+.job-bar {
+  display: grid;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  grid-template-columns: minmax(min(100%, 7ch), auto) minmax(min(100%, 6ch), 1fr) auto;
+}
+.job-bar-name { font-weight: 600; }
+.job-bar-track { height: 10px; border-radius: 5px; background: var(--surface2); overflow: hidden; min-width: 0; }
+.job-bar-fill {
+  display: block; height: 100%; border-radius: 5px; background: var(--accent);
+  transform-origin: left center;
+  animation: job-guard-bars 250ms var(--ease) both;
+}
+.job-bar-pct { color: var(--text); white-space: nowrap; }
+.job-bar[data-blocked="true"] .job-bar-fill { background: var(--muted); }
+
+/* ---- the token press ---- */
+.job-tokens { display: grid; gap: 6px; min-width: 0; }
+.job-token {
+  display: grid;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  grid-template-columns: var(--tap) minmax(min(100%, 7ch), 1fr) auto var(--tap);
+  padding: 2px 4px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+}
+.job-token[data-sel="true"] { border-color: var(--accent); background: var(--accent-alpha); }
+.job-token-btn { min-width: var(--tap); min-height: var(--tap); padding: 0; justify-content: center; }
+.job-token-name { font-weight: 600; min-width: 0; }
+.job-token-n { color: var(--accent-ink); white-space: nowrap; }
+.job-token-hint { color: var(--muted); }
+
+.job-commit { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.job-commit-btn { min-height: var(--tap); }
+
+/* ==========================================================================================
+   The sealed envelope + the call row (G1 — the stem is NOT here)
+   ========================================================================================== */
+
+.job-envelope {
+  animation: job-envelope-flip 180ms var(--ease) both;   /* no rotate: G11 killed the tilt */
+  transform-origin: top center;
+}
+.job-env-n { color: var(--muted); }
+.job-x2-mark { color: var(--gold-ink); font-weight: 700; }
+.job-env-line { font-size: var(--fs-2); line-height: 1.5; }
+.job-env-evidence { color: var(--muted); }
+.job-env-note { color: var(--warn-ink); }
+.job-env-note.muted { color: var(--muted); }
+.job-envelope[data-guarded="true"] { border-color: var(--warn); }
+
+.job-calls {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 8ch), 1fr));
+}
+.job-call {
+  display: grid;
+  gap: 2px;
+  justify-items: center;
+  min-height: var(--tap);
+  padding: 6px 4px;
+}
+.job-call-key { color: var(--muted); font-size: var(--fs-1); }
+.job-call-n { font-weight: 700; font-size: var(--fs-3); }
+.job-call:hover { border-color: var(--accent); }
+.job-call:active { animation: job-call-lock-snap 120ms var(--ease) both; }
+.job-call-hint { color: var(--muted); }
+
+/* ==========================================================================================
+   The payout beat — the continue row, occupied (G10 #10)
+   ========================================================================================== */
+
+/* THE PAYOUT DOCK. G1 counts BAG / PUSH nine times a job and calls it the headline decision; at rest
+   on a 375x812 phone the payout line rendered at y = 1016 and BAG at y = 1100, so the only control a
+   student could see was card.js's sticky dock — relabelled PUSH, full width. Nine times a job the
+   game showed one button and it was the greedy one (round 1, player-feel).
+   So the beat STICKS, exactly `--job-dock-h` above card.js's dock (measured per render by
+   `screens/job.js`, because the dock's height changes with the key row). `sticky` keeps the box in
+   flow — it still ends the column, nothing is overlapped permanently — and it is not `fixed`, so
+   G10 #13's "the tile mint is the only full-screen moment" is untouched. `z-index` stays UNDER the
+   dock's 18. */
+.job-beat {
+  container-type: inline-size;
+  container-name: job;
+  box-sizing: border-box;
+  max-width: var(--job-col);
+  min-width: 0;
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface2);
+  color: var(--text);
+  position: sticky;
+  /* …AND ABOVE THE ON-SCREEN KEYBOARD, WHICH THE DOCK IT SITS ON WAS ALREADY CLEARING AND THIS BOX
+     WAS NOT (round 3, layout-safari). `--job-dock-h` is the dock's HEIGHT; the dock is additionally
+     lifted by `translateY(calc(-1 * var(--kb)))` (css/widgets.css:476), and `--kb` is the visual
+     viewport's keyboard inset published on `<html>` by `widgets/base.js keyboardInset()`. Measured
+     at 375×667 with `--kb: 336px`: the dock rode up to y 270–331 and stayed visible while the beat
+     stayed at 429–606 — the payout line at 442 and BAG at 549, both ~100–260 px below the 331 px
+     band the keyboard leaves, in chromium and webkit to the pixel. Scrolling cannot rescue a
+     sticky box: `bottom` is measured from the LAYOUT viewport's floor, which the keyboard does not
+     move. `.job-beat[data-dock="true"] .job-push { display: none }` then left the dock's
+     relabelled full-width PUSH as the only control on screen — verbatim the round-1 regression the
+     block above says it killed. The job's own queue off `qa/fixtures/midweek.json` mounts live text
+     inputs on three of its ten targets and `screens/card.js` never blurs on grade, so this is a
+     configuration a student reaches, not a hypothetical. */
+  bottom: calc(var(--job-dock-h, 0px) + var(--kb, 0px));
+  z-index: 4;
+}
+.job-qstar { color: var(--muted); }
+.job-payout { margin: 0; font-size: var(--fs-2); line-height: 1.5; min-width: 0; }
+.job-payout[data-tone="ok"] { color: var(--ok-ink); }
+.job-payout[data-tone="bad"] { color: var(--bad-ink); }
+.job-payout { animation: job-loose-tween 300ms var(--ease) both; }
+.job-ladder { margin: 0; min-width: 0; }
+
+.job-chain { margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 2px; color: var(--muted); }
+.job-tick { animation: job-chain-tick 150ms var(--ease) both; }
+.job-chain[data-tone="amber"] .job-tick { color: var(--gold-ink); }
+.job-chain[data-tone="violet"] .job-tick { color: var(--violet-ink); }
+.job-chain-mult { color: var(--text); }
+
+.job-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: stretch; min-width: 0; }
+.job-actions .btn { min-height: var(--tap); }
+/* In the sticky beat BAG takes the row: PUSH is the dock's relabelled Continue directly under it
+   (G10 #10), and `data-dock` says so, measured, rather than the two being printed twice. */
+.job-beat .job-actions > .btn { justify-content: center; text-align: center; }
+.job-beat .job-bag { order: 0; flex: 1 1 14ch; }
+.job-beat .job-push { order: 1; flex: 1 1 8ch; white-space: nowrap; }
+.job-beat[data-dock="true"] .job-push { display: none; }
+.job-beat .job-backcheck, .job-beat .job-callit { order: 2; flex: 1 1 100%; }
+.job-bag, .job-push, .job-crack, .job-walk, .job-backcheck, .job-callit {
+  display: inline-flex; align-items: center; gap: 8px; min-width: 0;
+}
+.job-key {
+  display: inline-grid; place-items: center;
+  min-width: 2.2ch; padding: 0 4px;
+  border: 1px solid currentColor; border-radius: 4px;
+  font-size: var(--fs-1); opacity: .8;
+}
+
+/* ==========================================================================================
+   Brief · getaway · quit · debrief
+   ========================================================================================== */
+
+.job-brief-opts { display: grid; gap: 8px; min-width: 0; grid-template-columns: minmax(min(100%, 20ch), 1fr); }
+.job-brief-opts .btn { min-height: var(--tap); text-align: left; justify-content: flex-start; }
+@container job (min-width: 46ch) {
+  .job-brief-opts { grid-template-columns: repeat(2, minmax(min(100%, 20ch), 1fr)); }
+}
+
+/* THE BRIEF'S PRIMARY, PINNED. The panel is ~900 px tall (four guard bars, three token rows, four
+   brief options, the crew grid, the commit row) and G1 budgets 20 s for the whole beat on the
+   default path — `Enter` to skip. On a phone the tap path was a ~700 px scroll hunt for a button
+   that was never on screen. `sticky` again, not `fixed`: it holds the bottom edge of the panel and
+   stops travelling when the panel's real end arrives, and it clears card.js's dock by the same
+   measured `--job-dock-h` the payout beat uses. */
+.job-brief > .run-actions {
+  position: sticky;
+  /* the same `--kb` term as `.job-beat`, for the same reason: a sticky box's `bottom` is measured
+     from the layout viewport's floor and the keyboard only shrinks the VISUAL one */
+  bottom: calc(var(--job-dock-h, 0px) + var(--kb, 0px));
+  z-index: 3;
+  margin: 0 calc(-1 * var(--job-panel-pad, 14px)) calc(-1 * var(--job-panel-pad, 14px));
+  padding: 10px var(--job-panel-pad, 14px);
+  border-top: 1px solid var(--line);
+  border-end-start-radius: var(--radius);
+  border-end-end-radius: var(--radius);
+  background: var(--surface);
+}
+/* a pinned footer whose one control is a small left-aligned button reads as an accident; it is the
+   beat's default path (`Enter` skips), so it takes the row and the thumb reaches it anywhere */
+.job-brief > .run-actions .btn-primary { flex: 1 1 auto; justify-content: center; }
+
+/* THE THREE TEACHING SENTENCES — one per verb, at the place the verb first appears (round 2,
+   player-feel: "nothing teaches the game; the rulebook is Settings, written in Greek letters"). They
+   are `--muted` because they are scaffolding beside a live number, never the number. */
+.job-board-teach, .job-token-teach, .job-call-teach { margin: 0; min-width: 0; color: var(--muted); }
+
+/* G1's swap option, rendered at last: the label carries its own price, so it wraps rather than
+   truncating (a price that ends in an ellipsis is not a printed price). */
+.job-swap { white-space: normal; }
+
+/* the crew re-rank: the ordering G3.8 is a theorem about, and the price of each rung */
+.job-crew-order, .job-crew-legend, .job-crew-key, .job-crew-align, .job-crew-board,
+.job-crew-supply, .job-crew-thin { color: var(--muted); }
+.job-crew-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; min-width: 0; }
+.job-crew-make { font-weight: 650; color: var(--accent-ink); }
+.job-crew-rank { min-height: var(--tap); }
+
+.job-vault-line, .job-getaway-nums { min-width: 0; }
+.job-getaway-nums { color: var(--muted); }
+
+.job-quit {
+  box-sizing: border-box;
+  max-width: var(--job-col);
+  min-width: 0;
+  display: grid;
+  gap: 8px;
+  padding: 14px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+}
+.job-quit-q { margin: 0; font-size: var(--fs-3); font-weight: 650; }
+.job-quit-nums { margin: 0; color: var(--muted); }
+
+.job-debrief-line { font-size: var(--fs-2); line-height: 1.5; }
+.job-debrief-split, .job-debrief-rating, .job-debrief-deflation { color: var(--muted); }
+.job-debrief-left { color: var(--accent-ink); }
+
+/* ==========================================================================================
+   THE RAIL — G6, verbatim: "≥ 1024 px: the board lives in the 320 px right rail, permanently
+   visible." That sentence described a layout that did not exist: this file had no width rule at all,
+   the `:has(.card-screen)` collapse fired unconditionally, and the board measured 36 px at 1024,
+   1440, 1900 and 2560 px alike with ~780 px of empty page beside it (round 1, layout-safari).
+
+   WHY 896 px AND NOT 1024. The rule may not read the window (LAYOUT-ROOT: a component queries the
+   box it actually decides, and `job.css` carries no `@media (min-width: …)`), and the box here is
+   `#view`'s content width, which is capped at `--col` (680 px) until base.css lifts it to
+   `--col + 24 + --rail` at a 1024 px window — where `.job-screen` measures 992 px. So the screen box
+   is ≤ 680 px below G6's 1024 and 992 px above it: any threshold inside that gap IS G6's 1024, and
+   896 px sits in the middle of it rather than on either edge.
+
+   At 992 px the reading column is 992 − 16 − 320 = 656 px, inside `--col`, and the board is the
+   320 px rail, sticky under the header, never collapsed — there is no stem to make room for when
+   the stem is beside it rather than under it.
+   ========================================================================================== */
+
+@container jobscreen (min-width: 896px) {
+  .job-body {
+    grid-template-columns: minmax(min(100%, 40ch), 1fr) var(--job-rail);
+    align-items: start;
+  }
+  .job-main { grid-column: 1; grid-row: 1; }
+  .job-board {
+    grid-column: 2;
+    grid-row: 1;
+    max-width: none;
+    position: sticky;
+    top: calc(var(--header-h) + 8px);
+  }
+  /* the debrief RETIRES the sheet (`boardEl.hidden`), so the track goes with it rather than leaving
+     320 px of nothing beside the result */
+  .job-screen[data-phase="debrief"] .job-body { grid-template-columns: minmax(min(100%, 40ch), 1fr); }
+}
+
+/* ==========================================================================================
+   The header's three stake read-outs (app.js paints them; G7 / G10 #22 — five items during a job)
+   ========================================================================================== */
+
+.hdr-stake {
+  display: inline-flex; align-items: baseline; gap: 4px;
+  font-family: var(--font-mono); font-size: var(--fs-1); color: var(--text);
+  white-space: nowrap;
+}
+.hdr-stake .hdr-stake-k { color: var(--muted); }
+#hdr-loose .hdr-stake-v { color: var(--accent-ink); }
+#hdr-bag .hdr-stake-v { color: var(--ok-ink); }
+#hdr-bag[data-drop="true"] .hdr-stake-v { animation: job-bag-drop 600ms var(--ease) both; }
+
+/* ==========================================================================================
+   The six cues — data/job.js ANIMATION.cues, by name. transform/opacity only, all ≤ 600 ms.
+   ========================================================================================== */
+
+@keyframes job-envelope-flip {
+  from { opacity: 0; transform: scaleY(.88); }
+  to { opacity: 1; transform: scaleY(1); }
+}
+@keyframes job-call-lock-snap {
+  from { transform: scale(1); }
+  50% { transform: scale(.96); }
+  to { transform: scale(1); }
+}
+@keyframes job-loose-tween {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes job-chain-tick {
+  from { transform: translateY(2px); opacity: .4; }
+  to { transform: translateY(0); opacity: 1; }
+}
+@keyframes job-guard-bars {
+  from { transform: scaleX(0); }
+}
+@keyframes job-bag-drop {
+  from { transform: translateY(-1.2em); opacity: 0; }
+  60% { opacity: 1; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+/* base.css already zeroes every duration under reduced motion; this says it again for THIS file so
+   the rule travels with the cues, and it keeps every colour (G12: reduced motion zeroes duration,
+   never contrast). */
+@media (prefers-reduced-motion: reduce) {
+  .job-screen *, .job-screen *::before, .job-screen *::after,
+  .hdr-stake, .hdr-stake .hdr-stake-v {
+    animation-duration: 0s !important;
+    animation-delay: 0s !important;
+    transition-duration: 0s !important;
+  }
+}
+/* === /J6 === */

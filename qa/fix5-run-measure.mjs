@@ -84,6 +84,21 @@ if (flag('kb')) {
     await page.goto(base + 'version.js'); await page.goto(base + '#/run/page', { waitUntil: 'networkidle' }); await ready(page);
   } else { await page.goto(base + '#/card/wp-01', { waitUntil: 'networkidle' }); await ready(page); }
   const inp = await page.$('.card-parts .card-part:not([data-optional="true"]) input:not([disabled])') || await page.$('.card-parts input:not([disabled])');
+  if (!inp) {
+    /* A dev tool that dies on `null.focus()` names nothing. `--kbitem N` pins an ordinal of Today's
+       Page, and the composer is free to put a widget with no <input> there (MC, classify, pairs…),
+       in which case there is no keyboard to open and this measurement has no subject. Say so. */
+    const what = await page.evaluate(() => ({
+      widget: document.querySelector('.card-parts [data-widget]')?.dataset?.widget ?? null,
+      id: document.querySelector('.card-screen')?.dataset?.id ?? null,
+      inputs: document.querySelectorAll('.card-parts input').length,
+    }));
+    console.log(`FAIL keyboard-open: ${kbItem ? 'page item ' + kbItem : 'wp-01'} has no focusable input `
+      + `(card ${what.id ?? '?'}, widget ${what.widget ?? '?'}, ${what.inputs} input(s)) — pick an item that types.`);
+    process.exitCode = 1;
+    await ctx.close();
+    process.exit(1);
+  }
   await inp.focus();
   await page.setViewportSize({ width: 375, height: 380 }); await page.waitForTimeout(500);
   const kb = await page.evaluate(() => { const v = (e) => { if (!e || e.hidden) return null; const b = e.getBoundingClientRect(); return { top: Math.round(b.top), bottom: Math.round(b.bottom), inView: b.top >= 0 && b.bottom <= innerHeight }; }; return { input: v(document.activeElement), keys: v(document.querySelector('#dock .w-keys:not([hidden])')), submit: v(document.querySelector('.card-submit')), kb: document.documentElement.dataset.kb }; });

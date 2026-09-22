@@ -19,6 +19,7 @@ import { coverageCount } from '../site/js/readiness.js';
 import { foilClass, foilRule } from '../site/js/rarity.js';
 import { sheets } from '../site/data/sheets.js';
 import { bosses } from '../site/data/modules.js';
+import { TAGS as MISCONCEPTION_TAGS } from '../site/data/misconceptions.js';   // J7: the Fault Index fixtures
 
 /* ------------------------------------------------------------------ fixture helpers */
 
@@ -94,7 +95,23 @@ const FIXTURES = {
 
   'streak-3': (s) => { s.streak.best = 3; return s; },
   'streak-7': (s) => { s.streak.count = 7; return s; },
+
+  // THE JOB's six predicates (COMPOSED-GAME G7 · J7). One fixture each, added by J7 with the six
+  // trophies; nothing above this line is changed. `fresh()` already ships `save.player` / `save.game`.
+  'crew-held': (s) => { s.game.crew = { VOC: 1, PAIRS: 1, 'CS-LIN': 1, FAC2: 2 }; return s; },
+  'index-25': (s) => { s.game.tags = sealedTags(25); return s; },
+  'index-68': (s) => { s.game.tags = sealedTags(68); return s; },
+  'chain-8': (s) => { s.player.records.bestChain = 8; return s; },
+  calibrated: (s) => { s.player.rating.calls = Array.from({ length: 20 }, (_, i) => ({ p: 0.85, ok: true, w: 0.51, skill: 'FAC2', at: AT + i })); return s; },
+  'clean-getaway': (s) => { s.player.records.cleanGetaway = true; return s; },
 };
+
+/** n sealed Fault Index records, keyed by the real tag ids so the 68-tag cap is honest. */
+function sealedTags(n) {
+  const out = {};
+  for (const tag of MISCONCEPTION_TAGS.slice(0, n)) out[tag] = { resolved: 3, triggered: 1, days: 3, lastDay: '2026-09-16', cleared: true, sealed: true };
+  return out;
+}
 
 for (const sh of TROPHY_SHEETS) {
   FIXTURES[`sheet-clear:${sh.id}`] = (s) => clearAll(s, sh.ids, { rarity: 'bronze' });

@@ -1507,3 +1507,105 @@ body:has(.sw-pill:not([hidden])) .set-msg { top: calc(var(--header-h) + 64px); }
 }
 .set-unit-name { font-weight: 650; }
 /* === /W5 === */
+
+/* === G-job === THE JOB's surfaces that live on screens THIS file already styles (J12).
+   `css/job.css` owns the job screen itself (`#/run/job`); this block owns the three places the game
+   layer surfaces inside an existing screen: Home's Board panel (J11), the three `#/stats` panels
+   (J7) and Settings' pseudo-code formula blocks (J7).
+
+   FIVE LAWS, each one pinned by `tests/job-juice.test.mjs`:
+
+   1. **No `@keyframes` here.** G6's animation budget is SIX cues and all six are implemented in
+      `css/job.css` under their `data/job.js ANIMATION.cues` ids. A second set in this file would
+      ship twelve. This block declares no `animation` and no `transition` at all, so there is nothing
+      in it for `prefers-reduced-motion` to zero — `css/base.css`'s global rule and `css/job.css`'s
+      own reduced-motion block already cover every duration the layer ships, and neither touches a
+      colour.
+   2. **Nothing is `position: fixed` and nothing covers the viewport.** The tile mint on the Page
+      Summary stays the product's only full-screen moment (COMPOSED S9 #7, G10 #13).
+   3. **No rotation.** G11 killed the 0.4° envelope tilt as the one off-grid element in a product
+      built on an 8 px grid with a 1 px register; this block keeps that register.
+   4. **Colour is only ever a token, and text only ever `--text` / `--muted` / an `-ink` token**, so
+      both themes clear 4.5:1 by construction. No literal hex, `rgb()` or `hsl()` below.
+   5. **The Board never reflows between its two passes** (G7 "Home paints the board in two passes",
+      J13). `home.js`'s `numeral()` reserves each numeral's final width in pass 1, so nothing here may
+      size a row from its content: the rows are flow text with a hairline rule, never a grid whose
+      tracks would resize when the dots become digits.
+
+   Responsive rules follow notes/LAYOUT-ROOT.md: the Fault Index queries the `stats` container (which
+   `.screen` caps at `--col` = 680 px, so 568 px is the only reachable threshold — 2×24 ch + gap),
+   and the Board takes no responsive rule at all. */
+
+/* ---------------------------------------------------------------- Home · the Board panel (G1/G6) */
+.home-board { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; min-width: 0; }
+.home-board > h2 { margin: 0; }
+.home-board [data-pending="1"] { color: var(--muted); }
+.board-line { margin: 0; line-height: 1.5; }
+.board-night { justify-self: start; min-height: var(--tap); }
+.board-keep { margin: 0; }
+
+/* Reads like a job sheet, not a menu: one hairline per contract, tabular numerals so the posted
+   column lines up, and one rule under the block for the shape / minutes / end time / split. */
+/* `align-content: start` is load-bearing: `home.js` reserves `rows × BOARD_ROW_PX` as a `min-height`
+   on `.board-rows` so pass 2 cannot move the panel, and a grid would otherwise STRETCH five one-line
+   rows across it. Packing them at the top keeps the reserve (no shift) and the rhythm (no stretch). */
+.board-rows, .board-supply { display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; min-width: 0; }
+.board-rows, .board-row, .board-meta, .board-supply, .board-crew { font-variant-numeric: tabular-nums; }
+/* 40 px is `home.js`'s own `BOARD_ROW_PX`, the unit its `min-height` reserve is counted in. Making
+   the styled row exactly that tall is what keeps the reserve honest at EVERY width: at 375 px a row
+   wraps to two lines and fills it, at 1280 px it is one line and this floor holds the rhythm, so the
+   only slack left over is the row a thin board actually hid. */
+.board-row {
+  box-sizing: border-box; min-height: 40px;
+  padding: 6px 0; min-width: 0;
+  border-top: 1px solid var(--line);
+  font-size: var(--fs-1); line-height: 1.45; color: var(--text);
+}
+.board-row:first-child { border-top: 0; }
+.board-row .b-id { font-weight: 650; }
+.board-row .b-label { font-weight: 650; }
+.board-row .b-posted { color: var(--accent-ink); }
+.board-meta { margin: 0; padding-top: 5px; border-top: 1px solid var(--line); color: var(--muted); }
+.board-meta .b-shape { color: var(--text); font-weight: 650; }
+.board-supply { gap: 2px; }
+.board-sup { min-width: 0; }
+.board-crew { margin: 0; color: var(--warn-ink); }
+/* Cold crew is a CONDITIONAL board state (G11), so `home.js` gives the strip a box in pass 1 only
+   when the save already says one is possible. When pass 2 then finds nothing idle after all, the ink
+   goes out and the BOX STAYS: removing it would take ~48 px out of a panel the student is already
+   reading, and pass 2 may change ink but never geometry (G7, notes/J13.md Request 1). */
+.board-crew[data-empty] { visibility: hidden; }
+
+/* ------------------------------------------------------- #/stats · the Ledger, Crew, Fault Index */
+.st-ledger, .st-crew, .st-index, .st-reliability { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; min-width: 0; }
+.st-ledger-rating, .st-crew-count, .st-index-head, .st-calibration {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px;
+  margin: 0; min-width: 0; font-variant-numeric: tabular-nums;
+}
+.st-ledger-rating b, .st-index-head b, .st-crew-count b { color: var(--text); }
+.st-calibration b { color: var(--accent-ink); }
+
+/* The 68 cells. `.st-pattern li` (above, T11) already draws the card and the left rule; the state
+   colours the rule, which is the whole visual difference between a live tell and a sealed one. */
+.st-index-cells { gap: 6px; }
+.st-index-cells li[data-state="sealed"] { border-left-color: var(--gold); }
+.st-index-cells li[data-state="cleared"] { border-left-color: var(--ok); }
+.st-index-cells li[data-state="live"] { border-left-color: var(--warn); }
+.st-index-cells li[data-state="untouched"] { border-left-color: var(--line); }
+.st-index-cells li[data-state="untouched"] .st-pat-count { color: var(--muted); }
+.st-index-cells li[data-state="sealed"] .st-pat-count { color: var(--gold-ink); }
+.st-index-cells li[data-state="cleared"] .st-pat-count { color: var(--ok-ink); }
+@container stats (min-width: 568px) {   /* LAYOUT-ROOT: 2 × 24 ch + 6 px gap, inside `--col` */
+  .st-index-cells { grid-template-columns: repeat(2, minmax(min(100%, 24ch), 1fr)); }
+}
+
+/* --------------------------------------------- #/settings · the five printed-formula panels (G7) */
+/* `.set-formula` is authored `white-space: normal` so a ONE-LINE formula wraps with a hanging
+   indent on a 375 px phone. A pseudo-code block has to keep its own line breaks instead, which is
+   the whole difference — and it belongs here rather than inline in `screens/settings.js`. */
+pre.set-formula {
+  white-space: pre-wrap; text-indent: 0;
+  padding-left: 12px; margin: 8px 0;
+  overflow-x: auto;
+}
+/* === /G-job === */

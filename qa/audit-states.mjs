@@ -259,7 +259,7 @@ async function attemptWrong(page, info, attempt = 0) {
     return n;
   }, WRONG[attempt % WRONG.length]);
   if (typed) return true;
-  return page.evaluate((i) => {
+  return page.evaluate(({ i, wrong }) => {
     const q = (s) => [...document.querySelectorAll(`.card-parts ${s}`)].filter(b => !b.disabled && b.getClientRects().length);
     // The notation builder — matched on the WIDGET, not on an enabled letter: once a build is complete the
     // letter row disables itself, so Clear has to come first. Stay on a TWO-letter kind (ray / line /
@@ -275,12 +275,54 @@ async function attemptWrong(page, info, attempt = 0) {
       ls[(i + 2) % ls.length]?.click();
       return true;
     }
-    for (const sel of ['.wd-opts button', '.w-cls-btn', '.w-asn-btn', '.w-tm-term', '.w-cz-slot', '.wd-chip', '.w-pairs-angle', '.w-segbtn']) {
+    // THE CLOZE, and why it needs its own branch (ticket fix:tests r1, layout-safari finding 1).
+    // `.w-cz-slot` is a BLANK, not an answer: clicking it only calls `setActive(i)`, which opens the
+    // `.w-cz-picker` underneath. The generic loop below used to match `.w-cz-slot` before `.wd-chip`,
+    // so every attempt on a cloze selected a blank, left it empty, and graded `almost` — free by
+    // Global law 2, therefore never a rung, therefore never a payout beat. The job's first target off
+    // `midweek.json` is the VOC cloze `def-02`, so that fired on EVERY job state in this catalog.
+    // Fill every blank (chips through their own picker, typed blanks with a well-formed wrong value)
+    // and let Submit grade a complete answer.
+    if (document.querySelector('.card-parts .w-cz-slot, .card-parts .w-cz-in')) {
+      let filled = 0;
+      for (const [k, slot] of [...document.querySelectorAll('.card-parts .w-cz-slot')].entries()) {
+        if (slot.disabled || !slot.getClientRects().length) continue;
+        slot.click();                                            // opens .w-cz-picker for THIS blank
+        const chips = q('.w-cz-picker .wd-chip');
+        if (!chips.length) continue;
+        // vary with the attempt: card.js refuses to charge the same wrong answer twice, so a fixed
+        // pick would stall the card at attempt 2 instead of forcing the worked solution.
+        chips[(i + k + 1) % chips.length].click();
+        filled++;
+      }
+      for (const inp of document.querySelectorAll('.card-parts .w-cz-in')) {
+        if (inp.disabled || inp.readOnly || !inp.getClientRects().length) continue;
+        inp.focus(); inp.value = wrong; inp.dispatchEvent(new Event('input', { bubbles: true })); filled++;
+      }
+      if (filled) return true;
+    }
+    // PAIRS: one angle is not an answer — a pair is two, and the part wants `data-count` of them.
+    // Clicking a single `.w-pairs-angle` (what the generic loop below did) leaves the submission
+    // incomplete, which grades `almost` and is free, so the card never reaches a graded outcome and
+    // a job target never reaches its payout beat. (ticket fix:tests r1.)
+    const pairsWidget = document.querySelector('.card-parts .w-pairs');
+    if (pairsWidget) {
+      const need = Math.max(1, Number(pairsWidget.dataset.count) || 1);
+      const btns = q('.w-pairs-angle');
+      if (btns.length >= 2) {
+        for (let k = 0; k < need; k++) {
+          btns[(i + 2 * k) % btns.length]?.click();
+          btns[(i + 2 * k + 1) % btns.length]?.click();
+        }
+        return true;
+      }
+    }
+    for (const sel of ['.wd-opts button', '.w-cls-btn', '.w-asn-btn', '.w-tm-term', '.wd-chip', '.w-pairs-angle', '.w-segbtn']) {
       const btns = q(sel);
       if (btns.length) { btns[(btns.length - 1 - i + btns.length * 2) % btns.length].click(); return true; }
     }
     return false;
-  }, attempt);
+  }, { i: attempt, wrong: WRONG[attempt % WRONG.length] });
 }
 
 /**
@@ -299,6 +341,218 @@ async function missOn(page, { max = 5, boss = false } = {}) {
     }
   }
   return has(page, '.card-continue:not([hidden])') ? 'done' : 'stuck';
+}
+
+/* ---- driving a JOB (ticket fix:tests r1 — layout-safari findings 1, 3 and 5) ----------------
+   Five job states used to be the whole game layer's layout coverage, and two of them never arrived:
+   `job-payout` timed out on its own root on every run (the cloze branch in `attemptWrong` above),
+   and `job-debrief` measured the QUIT debrief, which has no regret lines, no mint, no histogram and
+   no skill bars. The getaway, the brief window and the vault target had no state at all. These
+   helpers make all of them reachable in seconds instead of by answering eleven targets. */
+
+/** The height an open phone keyboard takes off the VISUAL viewport (iOS 15 / Android ≈ 290–340 px).
+ *  336 leaves 331 px of a 667 px phone — the band this file used to model as a LAYOUT viewport of
+ *  375x331, which is not a configuration any device produces. */
+export const KB_PX = 336;
+
+/** The keyboard-open phone — J6's own acceptance configuration ("a full 10-target job at 375×667
+ *  **with the keyboard open**"). These are LAYOUT viewports: real phones, at their real heights,
+ *  with `pinKeyboard` taking KB_PX off the visual viewport of each. Round 3 (layout-safari): the
+ *  list used to be `[[375, 667], [375, 331], [390, 400], [320, 460]]` — a 667 px row with `--kb: 0`
+ *  (keyboard open, nothing lifted: impossible) followed by three shrunken LAYOUT viewports (a
+ *  keyboard does not resize the layout viewport: every sticky dock rides up with the fold and
+ *  nothing can ever be found underneath). Both mistakes hid the same class of defect. */
+export const VP_KB = [[375, 667], [390, 844], [360, 640], [320, 568]];
+
+/** Post the board off a fixture and take the job: the first sealed envelope is up. */
+async function jobToEnvelope(H, page, { save = 'midweek.json' } = {}) {
+  await go(H, page, '#/run/job', { save: await fixture(H, save), root: '.job-screen' });
+  await page.waitForSelector('.job-screen .job-primary', { timeout: 20000 }).catch(() => {});
+  await tap(page, '.job-screen .job-primary', { wait: 700 });
+  await page.waitForSelector('.job-screen .job-envelope', { timeout: 20000 }).catch(() => {});
+}
+
+/** Lock a call on the live envelope. The stem is not in the DOM until this happens (G1). */
+async function jobLockCall(page) {
+  await page.waitForSelector('.job-screen .job-call', { timeout: 20000 }).catch(() => {});
+  return tap(page, '.job-screen .job-call[data-call="70"], .job-screen .job-call', { wait: 700 });
+}
+
+/**
+ * Answer the live target — correctly if the card's own stored answer can drive its widget, by
+ * missing out if not — and wait for the payout beat. `cardInfo` cannot help here: it reads the id
+ * out of `#/card/<id>`, and inside a job the hash is `#/run/job`, so the target has to be read off
+ * the save's own `inProgress.queue[idx]` (state.js `queueOf` / `idxOf` read exactly that).
+ */
+async function jobAnswerOne(page, { clear = false } = {}) {
+  await jobLockCall(page);
+  await cardLive(page);
+  const cleared = clear ? await jobClearLive(page) : false;
+  if (!cleared) await missOn(page);
+  await page.waitForSelector('.job-screen .job-beat:not([hidden])', { timeout: 20000 }).catch(() => {});
+  return has(page, '.job-screen .job-beat:not([hidden])');
+}
+
+/** The job screen's own `data-phase`, or null when the job screen is not mounted. */
+const jobPhase = (page) => page.evaluate(() => document.querySelector('.job-screen')?.dataset?.phase ?? null);
+
+/** The debrief's root — the one screen `job-debrief` and `job-debrief-quit` both name. */
+const DEBRIEF_ROOT = '.job-screen .sum-job-take, .job-screen .run-summary';
+
+/**
+ * Play the live job to its DEBRIEF, driven by the screen's own `data-phase` rather than by a fixed
+ * tap sequence (ticket integrate:r1).
+ *
+ * Why it is a loop. The old choreography was a straight line — answer, push, wait for the getaway,
+ * crack, answer, push, wait for the summary — which is only correct when every answer CLEARS. A
+ * missed target is requeued (`requeueReview`), so one miss grows the queue, `targetsLeft` never
+ * reaches 0, and every later step lands on the wrong screen; the state then reports `unreached`
+ * having measured nothing. `trimJob` now keeps the vault clearable, which removes the usual cause,
+ * but a fixed line stays wrong in principle: this loop reaches the debrief for ANY queue, whether
+ * its targets clear or miss, and it is bounded so it can never hang the audit.
+ *
+ * It does not paper over a broken app: every exit is a real control the student has, the bound is
+ * generous, and reaching the bound still leaves the root absent, so the `unreached` BLOCKER fires
+ * exactly as it should when the debrief genuinely cannot be reached.
+ */
+async function jobPlayToDebrief(page, { max = 16 } = {}) {
+  for (let i = 0; i < max; i++) {
+    if (await has(page, DEBRIEF_ROOT)) return true;
+    const phase = await jobPhase(page);
+    if (phase == null) break;                               // the job screen went away: nothing to drive
+    if (phase === 'getaway') {                              // the one all-in: CRACK, never WALK
+      await tap(page, '.job-screen .job-crack', { wait: 800 });
+      continue;
+    }
+    if (await has(page, '.job-screen .job-beat:not([hidden])')) {
+      // the payout beat — PUSH keeps the pile riding; on the last target it banks free
+      await tap(page, '.job-screen .job-push, .job-screen .job-bag', { wait: 900 });
+      continue;
+    }
+    if (await has(page, '.job-screen .job-call')) {         // a sealed envelope: call it and answer
+      await jobAnswerOne(page, { clear: true });
+      continue;
+    }
+    if (phase === 'brief') { await tap(page, '.job-screen .job-brief-go, .job-screen .btn-primary', { wait: 700 }); continue; }
+    await nap(page, 400);                                   // a beat mid-transition: let it land
+  }
+  await page.waitForSelector(DEBRIEF_ROOT, { timeout: 20000 }).catch(() => {});
+  return has(page, DEBRIEF_ROOT);
+}
+
+/** Answer the live job target from its own stored answer. Returns true only if it actually cleared. */
+async function jobClearLive(page) {
+  const filled = await page.evaluate(async () => {
+    let s = null;
+    try { s = JSON.parse(localStorage.getItem('u1a.save') || 'null'); } catch { return 0; }
+    const ip = s?.inProgress;
+    const it = Array.isArray(ip?.queue) ? ip.queue[Math.max(0, ip.idx | 0)] : null;
+    if (!it?.id) return 0;
+    let card = null;
+    try { const m = await import('/data/cards.js'); card = m.byId[it.id] || null; } catch { return 0; }
+    if (!card) return 0;                                  // a generated Variant has no bank entry
+    let n = 0;
+    const set = (inp, v) => { inp.focus(); inp.value = String(v); inp.dispatchEvent(new Event('input', { bubbles: true })); n++; };
+    for (const p of card.parts || []) {
+      if (p.type === 'num' && p.answer != null) {
+        const inp = document.querySelector('.card-parts .w-field input');
+        if (inp && !inp.disabled) set(inp, p.answer);
+      } else if (p.type === 'multi') {
+        for (const f of p.fields || []) {
+          const inp = document.querySelector(`.card-parts .w-field[data-key="${f.key}"] input`);
+          if (inp && !inp.disabled && f.answer != null) set(inp, f.answer);
+        }
+      } else if (p.type === 'cloze') {
+        for (const [i, b] of (p.blanks || []).entries()) {
+          const want = String((b.answers ? b.answers[0] : b.answer) ?? '').trim();
+          if (!want) continue;
+          const slot = document.querySelector(`.card-parts .w-cz-slot[data-i="${i}"]`);
+          if (slot) {
+            slot.click();                                  // opens this blank's picker
+            const chip = [...document.querySelectorAll('.card-parts .w-cz-picker .wd-chip')]
+              .find((c) => ((c.dataset.text ?? c.textContent) || '').trim() === want);
+            if (chip) { chip.click(); n++; }
+            continue;
+          }
+          const inp = document.querySelector(`.card-parts .w-cz-in[data-i="${i}"]`);
+          if (inp && !inp.disabled) set(inp, want);
+        }
+      } else if (p.type === 'mc' && p.answer != null) {
+        const want = String(p.answer).trim();
+        const btn = [...document.querySelectorAll('.card-parts .wd-opts button')]
+          .find((b) => ((b.dataset.value ?? b.textContent) || '').trim() === want);
+        if (btn) { btn.click(); n++; }
+      }
+    }
+    return n;
+  });
+  if (!filled) return false;
+  await submit(page);
+  // `.card-continue` appears on a clear AND on a forced solution. card.js stamps each part box
+  // (`data-state`): 'ok' on a correct part, 'revealed' on one the solution was shown for.
+  const ok = await page.evaluate(() => !!document.querySelector('.card-continue:not([hidden])')
+    && !!document.querySelector('.card-parts [data-state="ok"]')
+    && !document.querySelector('.card-parts [data-state="revealed"]'));
+  if (ok) await tap(page, '.card-continue:not([hidden])', { wait: 500 });
+  return ok;
+}
+
+/**
+ * Cut the drafted queue down to `n` targets and re-enter the job. `state.queueOf` reads
+ * `inProgress.queue` directly and `setPhase` flips to the getaway at `targetsLeft === 1`, so a
+ * two-target queue reaches the getaway, the vault and a FINISHED debrief after one answer instead
+ * of eleven. The store's write is debounced (250 ms), so the save is given time to land first.
+ *
+ * r1 INTEGRATION FIX — the kept targets are chosen, not sliced. `q.slice(0, n)` took whatever the
+ * composer happened to put first, and a drafted queue is a mix of bank cards and GENERATED VARIANTS
+ * (`T-cs-lin#1cb4fa`). `jobClearLive` can only clear a bank card — it reads the stored answer out of
+ * `data/cards.js` and a variant has no entry there ("a generated Variant has no bank entry") — so
+ * whenever the slice put a variant last, the VAULT target could only be missed. A missed target is
+ * requeued, the two-target queue grows back to three, `targetsLeft` never reaches 0, and the job
+ * never finishes: `job-debrief` ended on the getaway and reported BLOCKER `unreached`.
+ *
+ * It is a CLOCK-dependent failure, which is why it read as an engine or a flake: `composePage`
+ * picks by what is due now, so the identity of `q[1]` changes through the day. The full catalog run
+ * of 2026-09-21 passed on every chromium unit and on webkit light, then failed on webkit dark
+ * twenty minutes later; re-run in isolation afterwards, chromium AND webkit both failed. Nothing
+ * about the app changed between those runs — only which card the composer put second.
+ *
+ * So: prefer bank-backed targets, in the composer's own order, and top up with whatever is left
+ * only if there are not `n` of them. The LAST kept target is the vault, and it is bank-backed
+ * whenever the queue holds one at all. `reachable` is reported back so a caller that needs a
+ * clearable vault can say so instead of silently mis-choreographing.
+ */
+async function trimJob(H, page, n) {
+  await nap(page, 400);
+  // Leave the app FIRST. The store flushes its in-memory save on unload, so editing localStorage
+  // under a live page and then navigating writes the untrimmed queue straight back over the edit —
+  // which is the same trap `H.setSave` documents ("warm up on a non-app URL first").
+  await page.goto(H.base + 'version.js', { waitUntil: 'load' });
+  await killServiceWorkers(page);
+  const ok = await page.evaluate(async (k) => {
+    let s = null;
+    try { s = JSON.parse(localStorage.getItem('u1a.save') || 'null'); } catch { return false; }
+    const q = s?.inProgress?.queue;
+    if (!Array.isArray(q) || q.length <= k) return false;
+    let byId = null;
+    try { byId = (await import('/data/cards.js')).byId; } catch { byId = null; }
+    // Bank-backed first, in queue order; then the rest, in queue order. With no bank to consult
+    // this degrades to exactly the old `slice(0, k)`.
+    const banked = byId ? q.filter((it) => it && byId[it.id]) : [];
+    const rest = byId ? q.filter((it) => !(it && byId[it.id])) : q.slice();
+    const kept = [...banked, ...rest].slice(0, k);
+    if (kept.length < k) return false;
+    s.inProgress.queue = kept;
+    if (s.inProgress.idx != null) s.inProgress.idx = 0;
+    if (s.inProgress.game && kept[k - 1]?.id) s.inProgress.game.vault = kept[k - 1].id;
+    localStorage.setItem('u1a.save', JSON.stringify(s));
+    return { clearableVault: !!(byId && byId[kept[k - 1]?.id]), kept: kept.map((it) => it.id) };
+  }, n);
+  if (!ok) return false;
+  await H.gotoRoute(page, '#/run/job');                    // a real load, so the store re-reads it
+  await page.waitForSelector('.job-screen', { timeout: 20000 }).catch(() => {});
+  await H.waitReady(page);
+  return ok;                                               // { clearableVault, kept } — truthy
 }
 
 /** Drive the rootcase widget on the live card to 'roots' | 'reject' | 'cases'. */
@@ -565,6 +819,136 @@ export function states(h) {
   add('run-upgrade', 'Upgrade run: every Bronze/Silver original, hints off, first try only', ['run', 'card', 'host', 'fixture'], '.run-screen .card-screen',
     async (page) => { await go(H, page, '#/run/upgrade', { save: await fx('midweek.json'), root: '.run-screen' }); await cardLive(page); });
 
+  /* ---------------- THE JOB (J6) — the game layer's one screen ----------------
+     Added by ticket J6 (COMPOSED-GAME G8): `node qa/layout-audit.mjs --only job` is one of that
+     ticket's acceptance criteria, and a criterion with no state in this catalog cannot be measured.
+     Additive only — nothing above or below is touched. See notes/J6.md → Requests (AUDIT-STATES). */
+  add('job-board', "THE JOB · the board: five contracts, the guard's published odds, the token press", ['job', 'game', 'phone-critical', 'fixture'], '.job-screen[data-phase="board"] .job-contracts',
+    async (page) => {
+      await go(H, page, '#/run/job', { save: await fx('midweek.json'), root: '.job-screen' });
+      await page.waitForSelector('.job-screen .job-contracts li', { timeout: 20000 }).catch(() => {});
+      await nap(page, 300);
+    });
+
+  add('job-envelope', 'THE JOB · the SEALED envelope and the call row — the stem is not in the DOM yet', ['job', 'game', 'phone-critical', 'regression', 'fixture'], '.job-screen .job-envelope .job-calls',
+    async (page) => {
+      await go(H, page, '#/run/job', { save: await fx('midweek.json'), root: '.job-screen' });
+      await page.waitForSelector('.job-screen .job-primary', { timeout: 20000 }).catch(() => {});
+      await tap(page, '.job-screen .job-primary', { wait: 700 });
+      await page.waitForSelector('.job-screen .job-envelope', { timeout: 20000 }).catch(() => {});
+      await nap(page, 300);
+    });
+
+  // The regression state: a card hosted inside a NEW container, with the board collapsed above it.
+  // This is the shape that printed one letter per line in the placement (notes/LAYOUT-ROOT.md).
+  add('job-answer', 'THE JOB · a stem live inside the job stage, board collapsed to one 36 px line', ['job', 'game', 'card', 'host', 'phone-critical', 'regression', 'fixture'], '.job-screen .card-screen',
+    async (page) => {
+      await go(H, page, '#/run/job', { save: await fx('midweek.json'), root: '.job-screen' });
+      await page.waitForSelector('.job-screen .job-primary', { timeout: 20000 }).catch(() => {});
+      await tap(page, '.job-screen .job-primary', { wait: 700 });
+      await page.waitForSelector('.job-screen .job-call', { timeout: 20000 }).catch(() => {});
+      await tap(page, '.job-screen .job-call[data-call="70"], .job-screen .job-call', { wait: 700 });
+      await cardLive(page);
+    });
+
+  add('job-payout', 'THE JOB · the payout beat: the line, the chain ticks and BAG / PUSH under the card', ['job', 'game', 'card', 'host', 'fixture'], '.job-screen .job-beat:not([hidden])',
+    async (page) => {
+      await jobToEnvelope(H, page);
+      await jobAnswerOne(page);
+      await nap(page, 300);
+    });
+
+  /* The keyboard-open phone. J6's acceptance is "a full 10-target job at 375×667 WITH THE KEYBOARD
+     OPEN, no horizontal scroll", and until this landed the layout net measured neither half of it:
+     no job state pinned `data-kb`, and VP_ALL's shortest phone row is 568 px tall. `vps` gives these
+     two states the height an open keyboard actually leaves (layout-safari finding 4). */
+  add('job-answer-kb', 'THE JOB · the stem and the Answer Dock with the on-screen keyboard open — J6\'s own acceptance configuration', ['job', 'game', 'card', 'host', 'dock', 'keyboard', 'phone-critical', 'fixture'], '.job-screen .card-screen',
+    async (page) => {
+      await jobToEnvelope(H, page);
+      await jobLockCall(page);
+      await cardLive(page);
+      await pinKeyboard(page);
+      await nap(page, 300);
+    }, { vps: VP_KB });
+
+  add('job-payout-kb', 'THE JOB · the payout beat and BAG / PUSH with the on-screen keyboard open', ['job', 'game', 'card', 'host', 'dock', 'keyboard', 'phone-critical', 'fixture'], '.job-screen .job-beat:not([hidden])',
+    async (page) => {
+      await jobToEnvelope(H, page);
+      await jobAnswerOne(page);
+      await pinKeyboard(page);
+      await nap(page, 300);
+    }, { vps: VP_KB });
+
+  /* The three beats that had no state at all until fix:tests r1 (layout-safari finding 5): the
+     brief window, the getaway and the vault target. Each is a decision G1 counts, each is drawn by
+     `screens/job.js` and by nothing else, and none of them was measured by any detector at any
+     viewport in either engine. */
+  add('job-brief', 'THE JOB · the brief window: guard bars, the token press, the crew re-rank and the walk-away minute', ['job', 'game', 'phone-critical', 'long', 'fixture'], '.job-screen .job-brief',
+    async (page) => {
+      await jobToEnvelope(H, page);
+      for (let i = 0; i < 6; i++) {
+        if (await has(page, '.job-screen .job-brief')) break;
+        if (!(await jobAnswerOne(page))) break;
+        await tap(page, '.job-screen .job-push', { wait: 800 });
+      }
+      await page.waitForSelector('.job-screen .job-brief', { timeout: 20000 }).catch(() => {});
+      await nap(page, 300);
+    });
+
+  add('job-getaway', "THE JOB · the getaway: the job's one all-in, CRACK against WALK, with what each banks", ['job', 'game', 'phone-critical', 'fixture'], '.job-screen .job-getaway',
+    async (page) => {
+      await jobToEnvelope(H, page);
+      await trimJob(H, page, 2);
+      await jobAnswerOne(page);
+      await tap(page, '.job-screen .job-push', { wait: 800 });
+      await page.waitForSelector('.job-screen .job-getaway', { timeout: 20000 }).catch(() => {});
+      await nap(page, 300);
+    });
+
+  add('job-vault', 'THE JOB · the vault target: the last envelope, opened with the whole pile riding on it', ['job', 'game', 'phone-critical', 'fixture'], '.job-screen .job-envelope .job-calls',
+    async (page) => {
+      await jobToEnvelope(H, page);
+      await trimJob(H, page, 2);
+      await jobAnswerOne(page);
+      await tap(page, '.job-screen .job-push', { wait: 800 });
+      await page.waitForSelector('.job-screen .job-getaway', { timeout: 20000 }).catch(() => {});
+      await tap(page, '.job-screen .job-crack', { wait: 800 });
+      await page.waitForSelector('.job-screen .job-envelope .job-calls', { timeout: 20000 }).catch(() => {});
+      await nap(page, 300);
+    });
+
+  /* Added at integration: `screens/job.js renderDebrief` now mounts `run.js`'s Page Summary (G7,
+     notes/J6b.md R1) instead of a placeholder panel, so the debrief is a REAL screen with blocks
+     nothing else in this catalog draws — the take, the two regret lines, the guard redraw and the
+     Fault Index deltas. `run-page-summary` covers the shared half; this covers the job half.
+     THE QUIT DEBRIEF IS NOT THE DEBRIEF (ticket fix:tests r1, layout-safari finding 3). Walking out
+     after one target reaches a Page Summary that says "Left mid-job · 0 of 11 · 0 XP this run" and
+     draws NONE of the blocks this state's describe used to promise: no `sum-regret`, no `sum-mint`
+     / `sum-tiles`, no `sum-hist`, no `sum-bars`, no `sum-bag-bonus`. Those live on a job that
+     FINISHED. So the walk-out keeps its own state under its own name, and `job-debrief` now plays a
+     two-target job to the end — which is what the catalog's preamble means by opening the same
+     components through every host they live in. */
+  add('job-debrief-quit', 'THE JOB · the QUIT debrief: the Page Summary of a job walked out of mid-run — no take, no mint, no bars', ['job', 'game', 'summary', 'fixture'], '.job-screen .sum-job-take, .job-screen .run-summary',
+    async (page) => {
+      await jobToEnvelope(H, page);
+      await jobAnswerOne(page);
+      await tap(page, '.job-screen .run-quit', { wait: 400 });
+      await tap(page, '.job-screen .job-quit-bag', { wait: 900 });
+      await page.waitForSelector('.job-screen .sum-job-take, .job-screen .run-summary', { timeout: 20000 }).catch(() => {});
+      await nap(page, 700);                      // the bag drop is 600 ms; measure it settled
+    });
+
+  add('job-debrief', 'THE JOB · the debrief of a FINISHED job: the take, the regret lines, the tile mint, the rung histogram, the skill bars and the guard redraw', ['job', 'game', 'summary', 'mint', 'long', 'fixture'], '.job-screen .sum-job-take, .job-screen .run-summary',
+    async (page) => {
+      await jobToEnvelope(H, page);
+      await trimJob(H, page, 2);                 // keeps a CLEARABLE vault — see trimJob's note
+      // Phase-driven, not a fixed tap sequence: one missed target is requeued and every later step
+      // of a straight line then lands on the wrong screen (integrate:r1 — this state was reporting
+      // BLOCKER `unreached` whenever the composer's clock put a generated Variant on the vault).
+      await jobPlayToDebrief(page);
+      await nap(page, 700);                      // the bag drop is 600 ms; measure it settled
+    });
+
   add('run-baseline', 'Baseline: the 10-item mini-mock under Mock rules (delegated to the Mock engine)', ['run', 'mock', 'fixture'], '.mock-screen, .run-screen',
     async (page) => { await go(H, page, '#/run/baseline', { save: await fx('aced.json'), root: '.mock-screen, .run-screen' }); });
 
@@ -610,20 +994,67 @@ export function states(h) {
    * still mounted, in both of the strip's shapes: heart lost (a "Drill 5" link) and the empty equation
    * setup (a "Skip the setup" button).
    *
-   * The `-kb` state pins `data-kb="open"` the way an OS keyboard would: only while the viewport is
-   * phone-sized, and re-applied after every resize, because the app's own keyboardInset() watcher
-   * rewrites the attribute on every visualViewport resize and would otherwise wipe it the moment the
-   * auditor changed size. Pinning it at every width would invent a configuration (a 2560 px desktop
-   * with an on-screen keyboard) that no student can reach.
+   * The `-kb` state models an OS keyboard: only while the viewport is phone-sized, and re-applied
+   * after every resize, because the app's own keyboardInset() watcher rewrites the attribute on
+   * every visualViewport resize and would otherwise wipe it the moment the auditor changed size.
+   * Pinning it at every width would invent a configuration (a 2560 px desktop with an on-screen
+   * keyboard) that no student can reach.
+   *
+   * ROUND 3 (layout-safari). It used to set `data-kb="open"` and NOTHING ELSE — never `--kb` — so
+   * every dock's `transform: translateY(calc(-1 * var(--kb)))` (css/widgets.css:477) and every
+   * `bottom: calc(… + var(--kb))` resolved to 0: the page was STYLED keyboard-open while nothing was
+   * actually lifted, which is a state no device produces and the exact state in which a dock cannot
+   * be caught sitting under the keys. It now does what the platform does — shrink the VISUAL
+   * viewport — and publishes `--kb` beside `data-kb`, so what the auditor measures is a real
+   * configuration and `pageDetect`'s fold (the visual viewport, since round 3) is the band the
+   * student can see.
    */
-  const pinKeyboard = (page) => page.evaluate(() => {
+  const pinKeyboard = async (page, KB = KB_PX) => {
+    /* A keyboard is opened by FOCUSING a field, and the app answers that focus with
+       `widgets/base.js keepVisible()`, which scrolls the field back above the keyboard and the dock.
+       Pinning the inset without the focus would invent a state no student sits in — keys up, nothing
+       focused, nothing scrolled — and every "behind the dock" finding it produced would be an
+       artefact of the harness rather than a defect of the page. So the focus comes first. */
+    await page.evaluate(() => {
+      const f = [...document.querySelectorAll('.card-parts input:not([type="hidden"]), .card-parts textarea')]
+        .find((e) => !e.disabled && !e.readOnly && e.getClientRects().length);
+      if (f) { f.focus(); f.dispatchEvent(new Event('focus', { bubbles: true })); }
+      return !!f;
+    });
+    return page.evaluate((KB2) => {
     const root = document.documentElement;
-    const pin = () => { if (innerWidth <= 480 && root.dataset.kb !== 'open') root.dataset.kb = 'open'; };
-    new MutationObserver(pin).observe(root, { attributes: true, attributeFilter: ['data-kb'] });
+    const phone = () => innerWidth <= 480;
+    const KB = KB2;
+    const vv = window.visualViewport;
+    /* the VISUAL viewport shrinks and the LAYOUT viewport does not — the one asymmetry that makes a
+       keyboard a keyboard. Patched once; the getters fall through to the real ones off phone. */
+    if (vv && !vv.__kbPinned) {
+      const proto = Object.getPrototypeOf(vv);
+      const realH = Object.getOwnPropertyDescriptor(proto, 'height')?.get;
+      if (realH) {
+        Object.defineProperty(vv, '__kbPinned', { value: true });
+        Object.defineProperty(vv, 'height', {
+          configurable: true,
+          get() { const h = realH.call(this); return phone() ? Math.max(120, h - KB) : h; },
+        });
+      }
+    }
+    const pin = () => {
+      const inset = phone() ? KB : 0;
+      const want = inset > 80 ? 'open' : 'closed';
+      const wantPx = inset + 'px';
+      if (root.style.getPropertyValue('--kb') !== wantPx) root.style.setProperty('--kb', wantPx);
+      if (root.dataset.kb !== want) root.dataset.kb = want;
+    };
+    new MutationObserver(pin).observe(root, { attributes: true, attributeFilter: ['data-kb', 'style'] });
     addEventListener('resize', pin);
-    window.visualViewport?.addEventListener('resize', pin);
+    vv?.addEventListener('resize', pin);
     pin();
-  });
+    /* …and let the app's own `keepVisible` answer, exactly as it does on a phone: the focused field
+       is scrolled back above the keyboard by the page, not by this harness. */
+    document.activeElement?.dispatchEvent?.(new Event('focus', { bubbles: true }));
+    }, KB);
+  };
   /** Boss B4 at its first miss, card still mounted so the strip is re-homed into the dock. */
   async function bossFirstMiss(page, { setup = false } = {}) {
     await go(H, page, '#/boss/B4?start=1', { save: await fx('midweek.json'), root: '.boss-screen' });

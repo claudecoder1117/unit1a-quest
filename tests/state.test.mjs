@@ -9,10 +9,15 @@ import {
   UNIT_ID, LEGACY_UNIT_ID, ARCHIVED_KEYS, KEPT_KEYS, archiveUnit, archivedUnits,
 } from '../site/js/store.js';
 import { todayISO, parseISO, diffDays, addDays, daysUntilTest, dayIndex, nextSchoolDay, weekday, testMoment } from '../site/js/days.js';
+// J10 / COMPOSED-GAME G7 — the game layer's half of the worst case. Pure fixtures, parameterised by
+// `CAPS.game` and this suite's own clock, so they can never disagree with the shipped caps.
+import { GAME_RUN_FIELDS, worstCasePlayer, worstCaseGame, inProgressJob12, worstCaseBench, worstCaseJobQueue, worstCaseGameTrophies, withoutGameKeys } from './_helpers.mjs';
+import { SAVE_BUDGET_KB } from '../site/data/job.js';
 
 const T0 = Date.UTC(2026, 8, 16, 12);   // 2026-09-16 noon UTC — a fixed clock for every store
 const SCHEMA_KEYS = ['v', 'unitId', 'profileId', 'createdAt', 'settings', 'xp', 'streak', 'daily', 'cards', 'variants', 'frozen', 'skills',
-  'errors', 'counters', 'trophies', 'runs', 'inProgress', 'forecastLog', 'seedCounter', 'placement', 'jumps', 'postTest', 'archive'];
+  'errors', 'counters', 'trophies', 'runs', 'inProgress', 'forecastLog', 'seedCounter', 'placement', 'jumps', 'postTest', 'archive',
+  'player', 'game'];   // J10 / COMPOSED-GAME G7: v2's two new top-level keys
 
 /** In-memory Storage double. `failSet` / `failGet` make the next accesses throw (Safari private mode, quota). */
 function fakeStorage(init = {}) {
@@ -47,6 +52,8 @@ export function worstCaseSave() {
       kind: 'mock', n: i, seed: 'mock#' + i, startedAt: T0, submittedAt: T0 + 2400000, limitMs: 2400000, tabAway: 3, status: 'done',
       items: Array.from({ length: 20 }, () => ({ id: 'T-wp-07#a91f2c1', skill: 'CS-RATIO', tier: 3, raw: 'x = 3 or x = -1/2 and 174.5', credit: 0.4, ms: 123456, flagged: true, work: 'k'.repeat(CAPS.workChars + 1000) })),
       score: 81, pred: 88, splits: Array.from({ length: 20 }, (_, k) => 12345 + k), flagged: false,
+      // J10 / G7 "The measured budget": the seven fields a job adds to every run record.
+      ...GAME_RUN_FIELDS,
     });
   }
   for (let i = 0; i < CAPS.errors + 50; i++) s.errors.push({ item: 'T-wp-07#a91f2c1', seed: 'a91f2c1', t: T0 + i, got: 'x = 3 or x = -1/2', tags: ['gave-complement', 'stopped-early'], cleared: i % 3 === 0 });
@@ -56,9 +63,25 @@ export function worstCaseSave() {
   for (let i = 0; i < CAPS.daily + 60; i++) s.daily[addDays('2026-01-01', i)] = { xp: 612, clears: 14, goalMet: true, mockDone: true };
   for (let i = 0; i < CAPS.forecastLog + 60; i++) s.forecastLog.push({ day: addDays('2026-01-01', i), r: 73 });
   for (let i = 0; i < 40; i++) s.trophies['sheet-gold:AP-' + i] = { at: T0 };
+  /* the six trophies only a JOB can earn (`site/data/trophies.js:308-334`, each predicate reading
+     `ctx.save.player` / `ctx.save.game` and nothing else). Round 3: `js/trophies.js` writes them
+     into a top-level STUDY key, `withoutGameKeys` kept them, and neither carrier held one — so the
+     199 B were charged to the study half and priced in neither measurement. */
+  Object.assign(s.trophies, worstCaseGameTrophies(T0));
   for (let i = 0; i < 30; i++) s.counters['counter-name-' + i] = 1234;
-  s.inProgress = { kind: 'page', seed: 123456789, queue: Array.from({ length: 24 }, (_, k) => ({ id: 'T-wp-07#a91f2c1', kind: 'variant', seed: 'a91f2c' + k, forCard: 'wp-07', isRematch: false })), idx: 5, hearts: 3, xp: 120, startedAt: T0 };
+  /* `bench` is the GAME layer's third key on `inProgress` — `job.startJob` writes it and
+     `page.startPage` does not — so it belongs on this carrier and `withoutGameKeys` deletes it.
+     Round 1 had neither, which charged ~1.9 KB of game bytes to the STUDY half of the split and left
+     them out of G7's addition at the same time (notes/save-fix.md round 2 §5). */
+  /* ROUND 3 — a REAL job queue, not 24 synthetic items carrying study keys only. `job.startJob`
+     writes the queue `page.draftUnion` builds, which adds `from, sources, wing, posted, x2,
+     critical` to every entry (and `basePosted, declined` on the ones `state.swapIn` splices in);
+     the synthetic items carried none of them, so the 8 fields appeared in NO measurement — not in
+     the study half, not in the addition. `worstCaseJobQueue` is the same record at its widest. */
+  s.inProgress = { kind: 'job', seed: 123456789, queue: worstCaseJobQueue(T0), idx: 5, hearts: 3, xp: 120, startedAt: T0, game: inProgressJob12(T0, CAPS.game), bench: worstCaseBench(T0) };
   s.settings.testDate = '2026-09-22'; s.placement = { done: true, at: T0 }; s.jumps = { M10: true, M9: true };
+  s.player = worstCasePlayer(T0, CAPS.game);
+  s.game = worstCaseGame(T0, CAPS.game);
   return s;
 }
 
@@ -502,13 +525,34 @@ describe('packed disk format', () => {
 });
 
 describe('size bound', () => {
+  // Two bounds, because the worst case now has two halves and each has its own published number.
+  // T01's 500 000 still binds exactly the bytes T01 measured — the study layer at every S6 cap. The
+  // game layer's addition is bound separately by COMPOSED-GAME G7's own "≤ 26 KB added" (J10, and
+  // the integration ruling under G7's budget table: `game.heat.window` was added to the schema after
+  // the 25 KB line was written, and G3.4's stake-weighted `x̂` cannot be computed without it). Every
+  // per-line figure in SAVE_BUDGET_KB was restated at the round-1 save audit — see notes/save-fix.md.
+  const BUDGET = 500_000;          // chars of JSON ≈ 1 MB of the 5 MB localStorage quota (UTF-16)
+  const GAME_BUDGET = SAVE_BUDGET_KB.totalAdded * 1024;   // G7 "The measured budget", with a 12-target job live
+
+  /* ROUND 3 — THE STUDY HALF MOVED, AND IT IS WORTH KNOWING WHY BEFORE READING THE SLACK. The
+     carrier's `inProgress.queue` used to be 24 synthetic items of study keys only (~2.1 KB). A job
+     writes the queue `page.draftUnion` builds — the same items plus 8 fields — and a real PAGE
+     answered to the end reaches 43 entries and 14.3 KB, so the old figure was not a worst case for
+     either half. With `worstCaseJobQueue` the study half measures ≈ 498 K chars against T01's
+     500 000: roughly 1.5 KB of slack, where it used to read 480 K.
+     That slack is thin, and it is a STUDY-layer number, not this layer's: T01 set the 500 000 bound
+     against the 2.1 KB queue. It is recorded as an open issue for that owner in notes/save-fix.md
+     round 3 §Requests rather than papered over by narrowing the queue fixture. */
   test('a save with EVERY cap saturated stays under the budget (see notes/T01.md for the arithmetic)', () => {
-    const BUDGET = 500_000;   // chars of JSON ≈ 1 MB of the 5 MB localStorage quota (UTF-16)
     const s = applyCaps(worstCaseSave());
     const text = JSON.stringify(pack(s));
+    const study = JSON.stringify(pack(withoutGameKeys(s)));
     const parts = Object.fromEntries(Object.keys(s).map(k => [k, JSON.stringify(pack(s)[k]).length]));
-    console.log(`  worst-case save: ${text.length} chars (cards ${parts.cards}, runs ${parts.runs}, errors ${parts.errors}, frozen ${parts.frozen})`);
-    assert.ok(text.length < BUDGET, `worst case ${text.length} ≥ ${BUDGET}`);
+    console.log(`  worst-case save: ${text.length} chars = ${study.length} study + ${text.length - study.length} game (cards ${parts.cards}, runs ${parts.runs}, errors ${parts.errors}, frozen ${parts.frozen}, inProgress ${parts.inProgress})`);
+    console.log(`  slack: study ${BUDGET - study.length} chars of ${BUDGET} · game ${GAME_BUDGET - (text.length - study.length)} B of ${GAME_BUDGET}`);
+    assert.ok(study.length < BUDGET, `study layer worst case ${study.length} ≥ ${BUDGET} — T01's bound. It was set against a 24-item synthetic inProgress.queue; a real one is ~25 KB (notes/save-fix.md round 3)`);
+    assert.ok(text.length - study.length <= GAME_BUDGET, `the game layer added ${text.length - study.length} > ${GAME_BUDGET}`);
+    assert.ok(text.length < BUDGET + GAME_BUDGET, `worst case ${text.length} ≥ ${BUDGET + GAME_BUDGET}`);
     assert.deepEqual(applyCaps(unpack(JSON.parse(text))), s, 'round-trips through disk unchanged');
   });
 });

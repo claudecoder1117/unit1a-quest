@@ -15,6 +15,17 @@ import { swState, subscribe as swSubscribe, checkForUpdate, clearCaches } from '
 // The formulas and the bands are printed from T10's own constants, so Settings can never publish a
 // formula the app does not use (notes/T10.md: "T15 reads FORMULA_FULL / FORMULA_PROVISIONAL").
 import { readiness, BANDS, FORMULA_FULL, FORMULA_PROVISIONAL } from '../readiness.js';
+// THE JOB (COMPOSED-GAME G7 · J7): the game toggle and the five printed-formula panels. Every formula
+// below is RENDERED FROM THE LAYER'S OWN CONSTANTS AND FUNCTIONS, exactly as the Readiness panel is
+// rendered from readiness.js's — so Settings can never publish an arithmetic the game does not use.
+// This screen is also the one place the EV-max table is allowed to appear before a call (Global law 6):
+// it is attached to no target, so printing it teaches instead of instructing.
+import {
+  CALL_LEVELS, carryIndifference, ratingIndifference, disagreementBands, evMaxBands, evTable,
+  argmaxCall, weightFor, informativeBand, ratingDetail, rankNameFor, rankOf, RATING, CREDIT, RANKS,
+} from '../job/call.js';
+import { LADDER, LOOT, CHAIN, COLD, TELL, FEE, COMPLETION, COMMIT_BONUS, SCOPE_MIRROR, X2, RUNG_ROWS, GUARD, ELO, VAULT_GRADE, CREW, CREW_RANKS, BACKCHECK, FAULT_INDEX } from '../../data/job.js';
+import { rhoFor, chainMult, coldFor, shallowQStar, guardMultFor } from '../job/econ.js';
 
 /* ---------------- small builders ---------------- */
 
@@ -272,6 +283,276 @@ export function mountSettings() {
           + 'that happens — that is what the word provisional was warning about.'));
     }
 
+    /* ===================================================================== THE JOB (G7 · J7) ===== */
+
+    /**
+     * A multi-line formula block. `.set-formula` is authored `white-space: normal` so a one-line
+     * formula wraps on a 375 px phone with a hanging indent; a pseudo-code block has to keep its own
+     * line breaks, and the two inline declarations here are the whole difference. (No CSS file is
+     * touched by this ticket — `css/screens.css` belongs to J12; see notes/J7.md Requests.)
+     */
+    const pseudo = (text) => h('pre.set-formula.mono', {
+      style: { whiteSpace: 'pre-wrap', textIndent: '0', paddingLeft: '12px', overflowX: 'auto', margin: '8px 0' },
+    }, text);
+
+    /** The app's minus is U+2212, everywhere a number is printed (COMPOSED S5 · the copy tables). */
+    const neg = (t) => t.replace('-', '−');
+    const f1 = (x) => (Number.isFinite(x) ? neg(x.toFixed(1)) : '—');
+    const f2 = (x) => (Number.isFinite(x) ? neg(x.toFixed(2)) : '—');
+    const f3 = (x) => (Number.isFinite(x) ? neg(x.toFixed(3)) : '—');
+    const pc = (x) => `${Math.round(x * 100)}%`;
+
+    /** A small table, built from the layer's own constants. Reuses the shipped `.st-table` styling. */
+    function table(head, rows) {
+      return h('div.table-wrap', h('table.st-table',
+        h('thead', h('tr', ...head.map(c => h('th', c)))),
+        h('tbody', ...rows.map(r => h('tr', ...r.map(c => (c && c.nodeType ? h('td', c) : h('td.mono', String(c)))))))));
+    }
+
+    /* ----- the one switch that kills the layer ----- */
+    function gameCard(s) {
+      const on = s.settings.game !== false;
+      const sw = toggle({
+        id: 'set-game', checked: on, label: 'The Job',
+        onchange: (v) => {
+          update((st) => { st.settings.game = v; });
+          say(v ? 'The Job is on.' : 'The Job is off. The app is the study tool it was.', 'ok');
+          paint();
+        },
+      });
+      return card('The Job',
+        row('Play the game layer', sw, {
+          id: 'set-game',
+          note: 'The board, the Call, the Guard, the crew, the chain and the Fault Index. Off, this is the '
+            + 'study tool with nothing added: Today’s Page, Leitner, the seven Bosses, the Mock and the Night '
+            + 'Before all behave exactly as they do now, and Readiness is the same number either way.',
+        }),
+        hint('The game never touches what the study layer records. XP, mastery, Leitner buckets, rarity tiles, '
+          + 'the error log, trophies and Readiness are written at the moment you clear a card and are never '
+          + 'staked, never rolled back and never forfeited. A bust costs the loose pile and nothing else.'));
+    }
+
+    /* ----- 1. How the Call is scored ----- */
+    function callCard() {
+      const carry = carryIndifference();
+      const brier = ratingIndifference();
+      const bands = disagreementBands();
+      const qs = [0.50, 0.60, 0.70, 0.80, 0.90, 0.95];
+      return card('How the Call is scored',
+        h('p', 'Before every target you call how likely you are to clear it. One button sets two prices at '
+          + 'once — what the target pays and what it is worth to your rating — and the two ladders do not always '
+          + 'agree. This is both of them, in full.'),
+        h('h3.set-sub', 'The two ladders'),
+        table(['Call', 'W (clear)', 'P (miss)', 'Credit clear', 'Credit miss', 'Needs'],
+          CALL_LEVELS.map(c => [c.id, `×${c.W.toFixed(1)}`, `×${c.P.toFixed(1)}`,
+            c.creditClear > 0 ? `+${f1(c.creditClear)}` : f1(c.creditClear),
+            f1(c.creditMiss), c.minRank > 1 ? `${rankNameFor(RANKS[c.minRank - 1].min)}` : '—'])),
+        h('h3.set-sub', 'What it pays'),
+        formula('EV = q·W − (1 − q)·P          (in units of L · ρ · m_chain · scope · wing)'),
+        hint(`Indifference between the rungs falls exactly at q = ${f3(carry[0])}, ${f3(carry[1])} and ${f3(carry[2])}.`),
+        h('h3.set-sub', 'What it is worth to the rating'),
+        formula(`c(p, o) = ${CREDIT.base} − ${CREDIT.k}(p − o)²        o = 1 on a clear, 0 on a miss`),
+        formula(`E[c] = ${CREDIT.base} − ${CREDIT.k}·[ q(1 − p)² + (1 − q)p² ]     dE/dp = 0  ⟺  p = q`),
+        hint(`The second derivative is −${2 * CREDIT.k}, so p = q is the unique maximum: the only way to score well is to say `
+          + `what you actually believe. On the four buttons that lands at q = ${f3(brier[0])}, ${f3(brier[1])} and ${f3(brier[2])}.`),
+        h('h3.set-sub', 'Where the two disagree'),
+        h('ul.set-bandlist', bands.map(b => h('li.fs-1',
+          h('span.mono', `q ∈ [${f3(b.from)}, ${f3(b.to)})`),
+          ` — the money says call ${b.money}, the rating says call ${b.rank}. `,
+          h('span.muted', `${b.widthPoints.toFixed(1)} points wide.`)))),
+        hint('Two bands, both narrow, both on purpose. They are the only place in the game where you have to pick '
+          + 'what you are playing for.'),
+        h('h3.set-sub', 'The EV-max rung, by true clear rate'),
+        table(['q', ...CALL_LEVELS.map(c => String(c.id)), 'EV-max'],
+          qs.map((q) => {
+            const t = evTable(q);
+            return [f2(q), ...CALL_LEVELS.map(c => f2(t[c.id])), argmaxCall(q, { rank: 5 })];
+          })),
+        h('p.set-bands', ...evMaxBands().flatMap((b, i) => [
+          i ? ' · ' : null, h('span.mono', `≤ ${f3(b.to)}`), ` call ${b.call}`,
+        ])),
+        hint('This table is here and nowhere else. It never appears on an envelope, because a target that tells you '
+          + 'which button to press is measuring whether you can follow instructions, not whether you know what you '
+          + 'know. After the job, the debrief prints what the EV-max call would have been on each envelope you '
+          + 'already answered.'));
+    }
+
+    /* ----- 2. How the Guard draws ----- */
+    function guardCard() {
+      return card('How the Guard draws',
+        h('p', 'The House guards exactly one wing each job, and the wing is drawn from a published distribution '
+          + 'built out of your own pressing habits. The bars and the percentages are on screen before you press.'),
+        formula(`y = project( (1 − ε)·x̂ + ε·uniform_n ,  cap = ${GUARD.cap} )`),
+        h('dl.set-legend',
+          h('dt.mono', 'x̂'), h('dd', 'your own token shares over the last '
+            + `${GUARD.xHatWindowJobs} jobs, weighted by what each job was worth: `
+            + `x̂ᵢ = Σⱼ(ωⱼ · shareᵢⱼ) / Σⱼ ωⱼ with ωⱼ = min(postedⱼ, ${GUARD.jobWeightCap} · Σₖ postedₖ). `
+            + 'A short RUN counts about a fifth of a VAULT, and no single job may be more than a quarter of the '
+            + 'window — so the guard cannot be walked onto a wing with throwaway jobs.'),
+          h('dt.mono', 'ε'), h('dd', 'the mix floor, set by your rank: '
+            + RANKS.map(r => `${r.name} ${r.eps}`).join(' · ')
+            + '. It falls as you climb, so the guard aims better at you the better you get.'),
+          h('dt.mono', 'n'), h('dd', 'the support — the wings the drafted contracts actually touch. The board prints it '
+            + `before you press, and the five posted contracts always span at least ${GUARD.postedSpanWings} wings.`),
+          h('dt.mono', 'cap'), h('dd', `no wing may be drawn with probability above ${GUARD.cap}, and the guard may not `
+            + `take the same wing more than ${GUARD.sameWingMaxRuns} jobs running.`)),
+        h('h3.set-sub', 'project — the water-filling step, in full'),
+        pseudo([
+          'project(y, cap):',
+          '  loop:',
+          '    over = { i : y_i > cap }        // an index that has been capped stays capped',
+          '    if over is empty: return y',
+          '    excess = Σ_{i∈over} (y_i − cap)',
+          '    for i in over: y_i = cap',
+          '    free = { i : i not capped }',
+          '    if Σ_{i∈free} y_i > 0: share excess over `free` in proportion to y_i',
+          '    else:                  share excess over `free` uniformly',
+        ].join('\n')),
+        hint('Worked, and pinned by the tests: with three wings, ε = 0.10 and every token on one wing, '
+          + '(1, 0, 0) → (0.9333, 0.0333, 0.0333) → (0.750, 0.125, 0.125), which sums to 1.000. '
+          + 'With two wings it is (0.75, 0.25). On job one there is no x̂ at all, so the distribution is uniform '
+          + 'and the board says “no data”, rather than inventing a number.'),
+        h('h3.set-sub', 'What a token is worth'),
+        formula(`unguarded wing: ×(1 + ${GUARD.tokenBonus}·tokens)     guarded wing: ×guardMult(rank), and a miss there costs ×${GUARD.wingPenGuarded}`),
+        h('p.set-bands', ...RANKS.flatMap((r, i) => [i ? ' · ' : null, h('span.mono', `${r.name}`), ` ×${guardMultFor(r.rank).toFixed(2)}`])),
+        hint('A token pays only where the guard is not. The unexploitable answer is to spread pressure across the '
+          + 'wings in proportion to their study value — which is interleaved practice, weighted by test weight and '
+          + 'overdue-ness. That is a fixed point, not a slogan: yᵢ = 1 − k/vᵢ with k = (n − 1)/Σ(1/vᵢ).'),
+        h('h3.set-sub', 'And how the House’s own number moves'),
+        formula(`E = 1 / (1 + 10^((R_house − R_player)/${ELO.divisor}))      K = ${ELO.k}`),
+        hint(`Both ratings start at ${ELO.seedBase} — and if you skipped the placement, both start at exactly `
+          + `${ELO.skippedPlacementSeed} with nothing inferred about you. A job counts as a win when BAGGED ≥ posted. `
+          + `Your number, never the House’s, sets the vault grade: under ${VAULT_GRADE[1].from} it is tier ≤ ${VAULT_GRADE[0].tierMax}, `
+          + `to ${VAULT_GRADE[2].from - 1} it is tier ${VAULT_GRADE[1].tier}, above that tier ${VAULT_GRADE[2].tier}. `
+          + `After ${ELO.flowJobs} jobs bagging under ${pc(ELO.flowThreshold)} of posted, your number drops ${Math.abs(ELO.flowPenalty)} `
+          + 'and the next board opens with a FOOTHOLD — stated on the board, never silent.'));
+    }
+
+    /* ----- 3. How the payout ladder works ----- */
+    function ladderCard() {
+      return card('How the payout ladder works',
+        h('p', 'How you cleared a target sets ρ, the fraction of its posted value it pays. Nothing random touches it.'),
+        table(['Result', 'Rung', 'ρ', 'Chain', 'What the study layer records'],
+          RUNG_ROWS.map(r => [r.label, r.rung, r.rung === RUNG_ROWS.length - 1 ? 'miss' : r.rho.toFixed(2), r.chain, r.ledgerA])),
+        formula(`LADDER = [${LADDER.map(x => x.toFixed(2)).join(', ')}]        ρ_eff = LADDER[ max(0, rung − crew rank) ]`),
+        hint('This is the whole hint economy. Hints stay free and infinite everywhere — a gate may gate loot, never '
+          + `learning — and what a hint costs is ${pc(1 - LADDER[1])} of the payout on that target, nothing else.`),
+        h('h3.set-sub', 'What a crew does'),
+        table(['Rank', 'Cost', 'Forgives', 'Also', 'Requires'],
+          CREW_RANKS.filter(r => r.rank > 0).map(r => [r.name, r.cost, `${r.forgives} rung${r.forgives === 1 ? '' : 's'}`,
+            r.chainHold ? `holds the chain at ${CREW.chainHoldMinChain}+` : '—', r.requires ?? '—'])),
+        hint(`Capacity = ${CREW.base} + floor(level / ${CREW.levelsPerPoint}) + boss stamps, from ${CREW.capacityMin} to `
+          + `${CREW.capacityMax}, and at most ${CREW.mannedMax} of the ${CREW.makes} makes may be manned at once — so `
+          + `${CREW.maxBuildAtCeiling.bare} are always bare. Playing more jobs grants no capacity at all: only levelling `
+          + 'and beating bosses do. A crew stands down on one target only — the review that made its make cold — and '
+          + 'forgives normally on every other target of that make in the same job.'),
+        h('h3.set-sub', 'The chain, and when to bank it'),
+        formula(`m_chain = 1 + ${CHAIN.step}·min(chain, ${CHAIN.cap}) ,  capped at ×${chainMult(CHAIN.cap).toFixed(1)}`),
+        formula(`PUSH − BAG = ${FEE}·S + q·L·ρ̄·W·(m − 1) − (1 − q)·min(S, L·m·P)`),
+        pseudo('deep pile    q* = θ*/(1 + θ*),  θ* = m·P / (ρ̄·W·(m − 1))\n'
+          + `shallow pile q* = ${(1 - FEE).toFixed(1)}·S / ( L·ρ̄·W·(m − 1) + S )`),
+        hint('S is the loose pile, m the chain multiplier. With no chain the shallow form is exactly '
+          + `${f2(shallowQStar({ loose: 40, chain: 0, call: 70, tier: 1 }))} whatever the target is worth `
+          + `(and ${f2(shallowQStar({ loose: 300, chain: 0, call: 95, tier: 4 }))} on a tier-4 at call 95) — pushing buys nothing but the fee. `
+          + 'As the chain deepens the threshold falls and the amount at risk grows: the escalation is in the stake, '
+          + 'not in the odds, and it comes entirely from your own miss rate. The app prints your q* before every '
+          + 'bag-or-push, computed from your own rung distribution on that make.'),
+        hint(`Bagging costs ${pc(FEE)} mid-job and resets the chain to 0; bagging at the getaway is free; finishing every `
+          + `drafted target pays +${pc(COMPLETION)} on the bag; an honoured walk-away declaration pays +${pc(COMMIT_BONUS)} and `
+          + 'forfeits the completion bonus. Quitting auto-banks half, so leaving is never catastrophic and never '
+          + 'better than banking.'));
+    }
+
+    /* ----- 4. How posted is computed ----- */
+    function postedCard() {
+      return card('How posted is computed',
+        h('p', 'Every envelope prints what the target is worth before you call it. This is the product it is.'),
+        formula('posted = round( L · scope · wing · cold · tell · ×2 )'),
+        pseudo('clear:  Δloose = round( L · ρ_eff · m_chain · W · scope · wing · cold · tell )\n'
+          + 'miss:   Δloose = −min( LOOSE, round( L · m_chain · P · wing_pen ) ),  chain → 0'),
+        h('dl.set-legend',
+          h('dt.mono', 'L'), h('dd', `the tier’s loot: ${Object.entries(LOOT).map(([t, v]) => `tier ${t} ${v}`).join(' · ')}. `
+            + 'Per answer-minute that is 12.0, 12.0, 12.7 and 14.0, and per minute as you actually live it — answering '
+            + 'plus deciding — 8.2, 9.5, 10.9 and 12.5. Both rows rise with the tier, so easy work is never the better deal.'),
+          h('dt.mono', 'scope'), h('dd', `the study layer’s own multiplier, used verbatim: ${Object.entries(SCOPE_MIRROR).map(([k, v]) => `${k} ${v}`).join(' · ')}. `
+            + 'A due review is the best-paying thing on the board and a mastered make pays half.'),
+          h('dt.mono', 'cold'), h('dd', `1 + ${COLD.slope}·min(1, overdue ÷ that card’s own interval), capped at ${COLD.cap.toFixed(2)}. `
+            + 'A bucket-1 card one day late and a bucket-5 card fourteen days late are equally cold, and letting a card '
+            + 'rot past its own interval buys nothing at all.'),
+          h('dt.mono', 'tell'), h('dd', `×${TELL} while the make has a triggered, unresolved, unsealed tag in your error log — `
+            + 'and ×1.00 the instant you resolve it. Sealing a tag retires it for good. Deliberately collecting mistakes '
+            + 'is a depreciating asset, on purpose.'),
+          h('dt.mono', 'wing'), h('dd', `×(1 + ${GUARD.tokenBonus}·tokens) on an unguarded wing; on the guarded wing the tokens pay `
+            + 'nothing and the loot is multiplied by your rank’s guard multiplier instead.'),
+          h('dt.mono', '×2'), h('dd', `an independent 1-in-${Math.round(1 / X2.p)} per target — that is the real, whole use of `
+            + 'variable reward in this game. It is drawn from the day’s seed and the job’s index, it is marked on the '
+            + 'envelope BEFORE you call, and it multiplies the clear and the miss identically. On a ten-target job the '
+            + `expected count is ${(10 * X2.p).toFixed(2)}, and the board prints the realised count before you draft.`)),
+        hint(`The one worked example: a tier-1 review one day overdue in bucket 1 is L ${LOOT[1]} × scope `
+          + `${SCOPE_MIRROR.review} × cold ${coldFor(1, 1).toFixed(2)} = ${Math.round(LOOT[1] * SCOPE_MIRROR.review * coldFor(1, 1))} posted, `
+          + `and at crew STEADY a one-hint clear pays ρ ${rhoFor(1, 1).toFixed(2)} of it instead of ${rhoFor(1, 0).toFixed(2)}.`),
+        hint('posted falls as you master the material. That is the point: cold drops as buckets rise, scope halves on a '
+          + 'mastered make, tells retire as they seal, and the rating’s own weight collapses as you get good. The game '
+          + 'has a terminus and says so.'),
+        h('h3.set-sub', 'Backchecks'),
+        hint(`Max ${BACKCHECK.max} held. One is minted per day on which you had at least ${BACKCHECK.requiresDuesAtLeast} review due and `
+          + 'cleared every one of them — a day with no dues mints nothing — and one per vault cracked without spending '
+          + 'one. Spending a Backcheck on a miss holds the chain and saves the loose pile, and changes nothing else at '
+          + 'all: the bucket still drops, the mastery hit still lands, the error is still logged, the Rematch is still '
+          + 'queued, and the call still scores exactly what it would have scored unshielded. It is not available on the '
+          + 'vault.'));
+    }
+
+    /* ----- 5. How the rating is computed ----- */
+    function ratingCard(s) {
+      /* THE RANK IS READ, NOT RE-DERIVED (round 3). The game gates the 95 call and the guard
+         multiplier on `player.rank`, so this panel prints THAT — the rank the student actually
+         holds — and never `rankFor(value)`, which is a different number the moment the window
+         carries no measurement. `ratingDetail`'s own header says why: `value === 5.00` means
+         either fifty measured 50-calls (cowardice) or NO MEASUREMENT AT ALL, and the second is
+         where a student who mastered their makes lives. Printing that as `Called 2` demotes
+         someone for improving. `opts.rank` holds it; `held` says the hold fired. */
+      const live = ratingDetail(s.player?.rating?.calls ?? [], RATING.N, { rank: s.player?.rank });
+      const band = informativeBand(RATING.informativeMin);
+      return card('How the rating is computed',
+        h('p.set-now',
+          h('strong.set-now-n.mono', live.value.toFixed(2)),
+          h('span', ` · ${rankOf(live.rank).name}`),
+          h('span.muted', ` · ${live.n} of ${live.N} informative calls`)),
+        live.held
+          ? hint(`No informative call in the window, so the rating reads exactly ${RATING.base.toFixed(2)} and measures `
+            + 'nothing at all. The rank beside it is the one your ledger holds, not one this window measured: '
+            + 'mastering your makes empties the window, and getting better may not take the 95 call or the guard '
+            + 'multiplier away from you.')
+          : null,
+        formula(`rating = clamp(0, 10, ${RATING.base} + ${RATING.scale}·Σ(wᵢ · cᵢ) / N )        N = ${RATING.N}, fixed`),
+        formula(`w = ${RATING.weightK}·q̂(1 − q̂)        a call counts only when w ≥ ${RATING.informativeMin}`),
+        h('dl.set-legend',
+          h('dt.mono', 'q̂'), h('dd', `your CLEAR rate on that make over the trailing ${RATING.qHatWindow} sittings — a sitting you `
+            + 'cleared counts whatever attempt it landed on and however many hints it took, because none of those change o '
+            + 'in c(p, o); the ρ ladder is where they cost you. '
+            + `w ≥ ${RATING.informativeMin} means q̂ between ${f3(band[0])} and ${f3(band[1])}: a call on material you already `
+            + 'know cold, or cannot do at all, is not informative about your calibration and never enters the window.'),
+          h('dt.mono', 'N'), h('dd', `the window is ${RATING.N} slots, not ${RATING.N} calls you happened to make. An unfilled slot `
+            + 'contributes 0, which pulls the rating toward exactly 5.00 — which is why farming cards you have '
+            + 'already mastered produces a rating of 5.00 and not a high one.'),
+          h('dt.mono', 'the Mock'), h('dd', `its prediction slider is scored by the same c(p, o) and enters the window as one `
+            + `call at w = ${RATING.mockWeight.toFixed(1)}: it has no make, so it has no q̂, and the weight is defined rather than guessed.`)),
+        h('p.set-bands', ...RANKS.flatMap((r, i) => [i ? ' · ' : null,
+          h('span.mono', i === RANKS.length - 1 ? `≥ ${r.min.toFixed(1)}` : `${r.min.toFixed(1)}–${r.bandTop.toFixed(1)}`), ` ${r.name}`])),
+        h('p.set-bands', ...[0.5, 0.7, 0.8, 0.85, 0.9, 0.95].flatMap((q, i) => [i ? ' · ' : null,
+          h('span.mono', `q̂ ${q.toFixed(2)}`), ` w ${f2(weightFor(q))}`])),
+        hint('Calling 50 on everything scores exactly 5.00 for ever — cowardice keeps its money and buys no rank. '
+          + 'Deliberately over-calling scores worse than that. The rating is earned in the band q̂ ≈ 0.76 to 0.93, on '
+          + 'material you have just learned and are still fumbling one time in six, and it is carried hardest by calls '
+          + 'near q̂ = 0.5, where each one counts most in both directions. It can go down; it recovers inside fifty '
+          + 'informative calls; and it never takes a tool away from you.'),
+        h('h3.set-sub', 'The Fault Index'),
+        hint(`${FAULT_INDEX.tags} tags, grouped by the same ${FAULT_INDEX.areas} areas the Patterns panel uses. A tag seals after `
+          + `${FAULT_INDEX.sealResolutions} clean resolutions on ${FAULT_INDEX.sealDistinctDays} different days with no re-trigger in between. `
+          + 'Stats shows all of them, sealed or not.'));
+    }
+
     /* ----- Your data ----- */
     function dataCard() {
       const outBox = rawText(h('textarea.set-json.mono', { id: 'set-export', readonly: true, rows: 4, 'aria-label': 'Your save, as JSON' }));
@@ -462,11 +743,16 @@ export function mountSettings() {
       msgEl = h('p.set-msg', { role: 'status', 'aria-live': 'polite', hidden: true });
       dateSlot = dateCard(s);
       aboutEl = aboutCard();
+      const game = s.settings.game !== false;
       el.replaceChildren(h('section.screen.settings',
         h('h1', 'Settings'),
         h('p.set-lede.muted', 'Everything here is stored in this browser only.'),
-        lookCard(s), soundCard(s), goalCard(s), dateSlot, answerCard(s),
-        readinessCard(), unitsCard(s), dataCard(), aboutEl,
+        lookCard(s), soundCard(s), goalCard(s), dateSlot, answerCard(s), gameCard(s),
+        readinessCard(),
+        // G9 #4: every probability the game puts on a screen has its formula printed here. With the
+        // layer off there are no such screens, so the five panels go with it.
+        ...(game ? [callCard(), guardCard(), ladderCard(), postedCard(), ratingCard(s)] : []),
+        unitsCard(s), dataCard(), aboutEl,
         msgEl));
     }
 

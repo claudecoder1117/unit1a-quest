@@ -11,9 +11,21 @@
 
 import { h, bus, navigate, setHeader, levelFor, xpForLevel, rankFor, softWrap } from '../app.js';
 import { getState, update } from '../store.js';
-import { todayISO, daysUntilTest, addDays, weekday } from '../days.js';
+import { todayISO, daysUntilTest, addDays, weekday, timeHM, isQuietHours, testMoment } from '../days.js';
 import { readiness, logForecast, weakSpots, skillStates, startedSkills, coverageCount, sparkline, latestMock } from '../readiness.js';
-import { housekeep } from '../schedule.js';
+import { housekeep, dueList } from '../schedule.js';
+// J11 — TONIGHT'S BOARD, painted in two passes (G7). `data/job.js` has ZERO imports and `job/econ.js`
+// imports only xp / schedule / data-job, so neither puts a byte of data/cards.js (233 KB) or
+// data/templates.js (311 KB) on Home's static graph — which is the whole point of home-r2's rule.
+// `PUBLISHED.shapeTable` rather than `econ.shapeTable()`: J7's `job-index.test.mjs` forbids a static
+// `../job/*` import in Home, and PUBLISHED is not a second source of truth — `job-econ.test.mjs`
+// COMPUTES every one of its cells from the constants and asserts the table, so a constant that moves
+// moves this line too. (tests/job-week.test.mjs re-pins the two here.)
+import { WEEK, SHAPES, BOARD, WINGS, WING_IDS, WING_OF_SKILL, COPY, PUBLISHED } from '../../data/job.js';
+const shapeTable = (id) => {
+  const p = PUBLISHED.shapeTable[SHAPES[id] ? id : 'JOB'];
+  return { wallS: { default: p.wallS[0], full: p.wallS[1] }, split: { default: p.split[0], full: p.split[1] }, targets: p.targets };
+};
 // home r2 (visual QA): page.js and plan.js are LAZY. page.js drags data/cards.js (233 KB) + data/templates.js →
 // every js/gen/* (311 KB) onto Home's static graph, and a cold 3G-class open measured 7.7 s to the CTA against
 // S9 #1's "< 1 s". Home now paints the hero, today's stats, the weak spots and the fallback plan pills from
@@ -40,6 +52,27 @@ if (typeof window !== 'undefined') heavy();   // start the fetch the moment this
 // tests/integration-w4.test.mjs), while an EXPLICIT q switches off page.js's session budget — which turned
 // a 25-item page into a 33-item, 44-minute one. The day's target spreads over the day's Pages (S1).
 const planOpts = (save, D) => { const { q, ...rest } = composeOpts(save, { D }); return rest; };
+
+// J11 — pass 2's modules. Deliberately NOT part of `heavy()`: the board's numerals may arrive after the
+// primary button and must never be able to delay it. `job/board.js` reaches page.js (already in
+// `heavy()`), `job/crew.js` is the cold-crew strip's idle rule.
+let postBoard = null, crewIdleFor = null, crewOf = null, nextActionFor = null, payCleanGetaway = null, refuseFor = null;
+/* The tell hook `screens/job.js` posts with. Home must post with the SAME one or the posted value the
+   student reads here is re-priced the moment the job screen opens (G1 law 4; notes/J13.md Request 2).
+   `job/board.js` already imports `data/cards.js`, so `byId` costs pass 2 nothing new. */
+let tellHookFor = null;
+let boardP = null;
+const boardReady = () => postBoard != null && nextActionFor != null;
+let jobRouteOK = false;      // J6 owns run.js's `job` KIND_META entry; until it lands, no primary points at it
+const boardMods = () => (boardP ??= Promise.all([import('../job/board.js'), import('../job/crew.js'), import('../plan.js'), import('./run.js'), import('../job/index.js'), import('../../data/cards.js')])
+  .then(([b, c, pl, r, ix, cards]) => {
+    postBoard = b.postBoard;
+    ({ isIdleFor: crewIdleFor, crewOf } = c);
+    ({ nextActionFor, payCleanGetaway, refuseFor } = pl);
+    jobRouteOK = typeof r.kindMeta === 'function' && r.kindMeta('job') != null;
+    tellHookFor = (save) => ix.tellHookFor(save, { cards: cards.byId });
+    return true;
+  }).catch((err) => { console.error('home: the board layer failed to load', err); boardP = null; return false; }));
 
 const DOW = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
 
@@ -134,6 +167,350 @@ function planStrip(state, today, D) {
   }
   wrap.append(list);
   return wrap;
+}
+
+/* ==========================================================================================
+   J11 — TONIGHT'S BOARD, in two passes (COMPOSED-GAME G5 "the week", G7 "Home paints the board in
+   two passes", G10 #21 "the test wins").
+
+   PASS 1 is static: `store` + `schedule.dueList` + `save.game.log` + `data/job.js`'s constants. It
+   paints the week state, the row frame, the wing labels, `~N min`, the end time and the projected
+   split. Everything it CANNOT know without `data/cards.js` — a contract's label, its wing, its lock
+   count, its posted value, the per-wing supply numeral, the idle-crew count — is a `--muted`
+   placeholder occupying its final width, so pass 2 changes ink and never geometry. There is no spinner
+   and no `aria-busy` on the panel: pass 1 is a real, readable board, not a loading state.
+
+   PASS 2 (`fillBoard`) runs after `job/board.js` resolves and writes the numerals in place.
+
+   `weekGate()` is the static half of `plan.boardPolicy()`. Two implementations exist because Home may
+   not import plan.js (home-r2.test.mjs, G10 #21) and pass 1 must decide whether a board posts at all;
+   `tests/job-week.test.mjs` pins them equal over every (D × weekday × minute) the week contains — the
+   same device `plan.qFor` / `page.qFor` already use.
+   ========================================================================================== */
+
+/** Row height reserved per contract line, px. The panel reserves `BOARD.postedMax` of them so a thin
+ *  board in pass 2 moves nothing below it. css/job.css (J6/J12) replaces the inline reservation. */
+export const BOARD_ROW_PX = 40;   // a contract row wraps to two lines at 375 px until css/job.css lands
+/** page.js `postedCountFor`, re-stated for pass 1 (pinned equal to it by the suite). */
+export const postedCountEstimate = (n) => (n <= 0 ? 0 : n <= 3 ? 1 : n <= 5 ? 2 : n <= 7 ? 3 : n <= 9 ? 4 : BOARD.postedMax);
+/** plan.js `REVIEW_SHAPE` — D = 2 posts the JOB shape, never a VAULT and never JOB12 (pinned by the suite). */
+export const REVIEW_SHAPE = 'JOB';
+/** plan.js `QUIET_READINESS` — G2's terminus (pinned equal to it by the suite). */
+export const QUIET_READINESS = 88;
+/** plan.js `CREW_HELD` — the crew rank G2 calls "held" (`job/crew.js HELD`). */
+export const CREW_HELD = 2;
+
+/**
+ * plan.js `terminusFor`, for the static pass. G2: "At `crew held ∧ Readiness ≥ 88` the board stops
+ * leading with a job: `Board quiet · Readiness 89 · 0 due` — with the job still one tap away."
+ * `readiness` and `dueList` are already on Home's static graph (the hero and the board model both use
+ * them) and `WING_OF_SKILL` comes from `data/job.js`, which has zero imports — so this costs the cold
+ * open nothing, which is why pass 1 may decide it at all.
+ */
+export function terminusStatic(save, { now = Date.now(), today = todayISO(new Date(now)) } = {}) {
+  let r = 0;
+  try { r = readiness(save).r; } catch { r = 0; }
+  const raw = save?.game?.crew;
+  const wings = new Set();
+  if (raw != null && typeof raw === 'object' && !Array.isArray(raw)) {
+    for (const [make, rank] of Object.entries(raw)) {
+      if (rank === CREW_HELD && WING_OF_SKILL[make]) wings.add(WING_OF_SKILL[make]);
+    }
+  }
+  const crew = wings.size >= WING_IDS.length;
+  if (r < QUIET_READINESS || !crew) return { quiet: false, readiness: r, due: 0, crew };
+  let due = 0;
+  try { due = dueList(save, { now, today }).length; } catch { due = 0; }
+  return { quiet: due === 0, readiness: r, due, crew };
+}
+
+const gameIsOn = (save) => save?.settings?.game !== false;
+const minuteOfDay = (d) => d.getHours() * 60 + d.getMinutes();
+
+/** The static half of `plan.modeFor` — days.js only, no plan.js (S7's five modes). */
+export function modeStatic(save, { now = Date.now(), today = todayISO(new Date(now)) } = {}) {
+  const D = daysUntilTest(save?.settings?.testDate, today);
+  if (D == null) return 'nodate';
+  if (D < 0) return 'post';
+  const st = save?.settings ?? {};
+  const at = st.testDate ? testMoment(st.testDate, st.testTime || '08:00') : null;
+  if (D === WEEK.morningD) return at != null && now > at + 90 * 60 * 1000 ? 'post' : 'morning';
+  if (D === WEEK.nightD) return 'night';
+  return 'page';
+}
+
+/**
+ * weekGate(save, opts) → `{ on, post, kind, shape, D, mode, quiet, school }`, the same decision
+ * `plan.boardPolicy` makes, from the static graph only.
+ */
+export function weekGate(save, { now = Date.now(), today = todayISO(new Date(now)) } = {}) {
+  const d = new Date(now);
+  const D = daysUntilTest(save?.settings?.testDate, today);
+  const mode = modeStatic(save, { now, today });
+  const quiet = isQuietHours(d);
+  const school = WEEK.schoolWindow.days.includes(d.getDay())
+    && minuteOfDay(d) >= WEEK.schoolWindow.fromMin && minuteOfDay(d) < WEEK.schoolWindow.toMin;
+  const base = { on: gameIsOn(save), post: false, kind: 'off', shape: null, D, mode, quiet, school };
+  if (!base.on) return base;
+  if (quiet) return { ...base, kind: 'closed' };
+  if (mode === 'nodate') return { ...base, kind: 'nodate' };
+  if (mode === 'post') return { ...base, kind: 'post' };
+  if (mode === 'morning') return { ...base, kind: 'morning', post: true };
+  if (mode === 'night') return { ...base, kind: 'night' };
+  if (D === WEEK.reviewBoardD) return { ...base, kind: 'review', post: true, shape: school ? 'RUN' : REVIEW_SHAPE };
+  if (school) return { ...base, kind: 'school', post: true, shape: 'RUN' };
+  // G2's terminus, ahead of the ordinary evening board — `plan.boardPolicy` branch 5b.
+  const term = terminusStatic(save, { now, today });
+  if (term.quiet) return { ...base, kind: 'quiet', post: false, shape: null, readiness: term.readiness, due: term.due, takeBoard: '#/run/job' };
+  return { ...base, kind: 'job', post: true, shape: null };
+}
+
+/**
+ * boardModel(save, opts) → everything pass 1 can print, and the shape of everything it cannot.
+ * Pure, DOM-free, exported so `tests/job-week.test.mjs` can assert it without a browser.
+ */
+export function boardModel(save, { now = Date.now(), today = todayISO(new Date(now)) } = {}) {
+  const gate = weekGate(save, { now, today });
+  const dues = dueList(save, { now, today });
+  const cold = dues.reduce((m, d) => Math.max(m, Math.floor(d.overdue || 0)), 0);
+  const shape = gate.shape ?? (gate.kind === 'morning' ? 'RUN' : 'JOB');
+  const t = shapeTable(SHAPES[shape] ? shape : 'JOB');
+  /* the projection reads the student's OWN last-5 jobs when the ledger has them (G1 statement 1).
+     A ZERO-TARGET WALK IS NOT ONE. `endJob` writes a log entry for every job, walks included, and a
+     walk's entry has `tAnswer = 0` — so three walks printed `~100 % game · your last 3 jobs`, a
+     sentence with the student's name on a measurement nobody took. `job/board.js jobsOnRecord` is
+     the same predicate (`targets > 0`) and the same sentence ("your last N jobs"); pass 1 and pass 2
+     printed different populations into the same node until this filter agreed with it.
+     Pass 1 may not import `job/*` (see the header), so the form stays this module's own — only the
+     population is now the board's. */
+  const log = (save?.game?.log ?? []).filter((e) =>
+    Number.isFinite(e?.tGame) && Number.isFinite(e?.tAnswer) && Number(e?.targets ?? 0) > 0).slice(-5);
+  const g = log.reduce((s, e) => s + e.tGame, 0), a = log.reduce((s, e) => s + e.tAnswer, 0);
+  const measured = log.length > 0 && g + a > 0;
+  const split = Math.round(measured ? (100 * g) / (g + a) : t.split.default);
+  const wallS = t.wallS.default;
+  const endsAt = now + Math.round(wallS * 1000);
+  const rows = [];
+  const n = Math.max(1, postedCountEstimate(dues.length + SHAPES[shape].targets));
+  for (let i = 0; i < n; i++) rows.push({ id: BOARD_IDS[i], label: null, wing: null, locks: null, cold: null, posted: null, minutes: null });
+  return {
+    gate, shape, rows, reserve: BOARD.postedMax,
+    dues: dues.length, cold,
+    minutes: Math.ceil(wallS / 60), wallS, endsAt, ends: timeHM(new Date(endsAt)),
+    split, projection: COPY.projection({ split, jobs: log.length }), projectionSource: measured ? 'ledger' : 'projected',
+    supply: WINGS.map((w) => ({ wing: w.id, locks: null })),
+    coldCrew: { idle: null, dues: dues.length, minutes: null, manned: mannedCount(save) },
+    line: lineFor(gate, { now, minutes: NIGHT_MIN }),
+  };
+}
+
+const BOARD_IDS = ['A', 'B', 'C', 'D', 'E'];
+const NIGHT_MIN = 30;         // screens/night.js NIGHT_MINUTES; pinned equal by tests/job-week.test.mjs
+
+/**
+ * How many makes are MANNED, read off the save alone (`js/job/crew.js` BARE/STEADY/HELD = 0/1/2).
+ * Pass 1 may not import `job/crew.js` — it is a pass-2 module — but `save.game.crew` is store data,
+ * and manning is the NECESSARY condition for a cold crew: a bare crew can never stand down. That is
+ * enough for pass 1 to decide whether the strip has a box at all, which is what stops pass 2 from
+ * retracting one (integration: notes/J13.md Request 1).
+ */
+function mannedCount(save) {
+  const raw = save?.game?.crew;
+  if (raw == null || typeof raw !== 'object' || Array.isArray(raw)) return 0;
+  let n = 0;
+  for (const r of Object.values(raw)) if (r === 1 || r === 2) n++;
+  return n;
+}
+
+/** The one line the panel prints instead of a board, per week state. */
+export function lineFor(gate, { now = Date.now(), minutes = NIGHT_MIN } = {}) {
+  const ends = timeHM(new Date(now + minutes * 60000));
+  switch (gate.kind) {
+    case 'closed': return COPY.closed({ minutes, ends });
+    case 'night': return COPY.night({ minutes, ends });
+    case 'morning': return COPY.morning();
+    case 'review': return 'REVIEW BOARD · every contract is dues · no vault · no guard · flat ladder';
+    case 'school': return 'School window · RUN only · Mon–Fri 07:00–14:15';
+    // G2's terminus. The one line the game has that says the game is over, and it is the board's own.
+    case 'quiet': return COPY.quiet({ readiness: gate.readiness ?? 0, due: gate.due ?? 0 });
+    default: return '';
+  }
+}
+
+/** A numeral that occupies its final width in pass 1 and takes ink in pass 2. */
+function numeral(cls, chars, text = null) {
+  const n = h(`span.${cls}.mono`, { style: { display: 'inline-block', minWidth: `${chars}ch`, textAlign: 'right' } });
+  if (text == null) { n.dataset.pending = '1'; n.classList.add('muted'); n.textContent = '·'.repeat(Math.max(1, chars - 1)); }
+  else n.textContent = String(text);
+  return n;
+}
+/** Pass 2 writes a numeral in place: same node, same width, ink instead of dots. */
+function setNumeral(node, text) {
+  if (!node) return;
+  node.textContent = String(text);
+  delete node.dataset.pending;
+  node.classList.remove('muted');
+}
+
+/**
+ * The Board panel — pass 1. Above the primary button (G7). `null` when the week has neither a board
+ * NOR a line to print (no test date, post-test, layer off): an empty heading is not a panel.
+ */
+function boardPanel(model) {
+  if (!model || (!model.gate.post && !model.line)) return null;
+  const sec = h('section.card.home-board', {
+    'aria-labelledby': 'board-h',
+    dataset: { kind: model.gate.kind, pass: '1', post: String(model.gate.post) },
+  }, h('h2#board-h.fs-3', model.gate.kind === 'review' ? 'REVIEW BOARD' : "Tonight's Board"));
+
+  if (!model.gate.post) {
+    sec.append(h('p.board-line.muted.fs-1', model.line || ''));
+    if (model.gate.kind === 'night') sec.append(h('a.btn.board-night', { href: '#/run/night' }, 'Night Before'));
+    if (model.gate.kind === 'closed') sec.append(h('p.board-keep.muted.fs-1', COPY.keepGoing()));
+    // G2: "with the job still one tap away". The terminus stops the board LEADING; it closes nothing.
+    if (model.gate.kind === 'quiet') sec.append(h('a.btn.btn-ghost.board-take', { href: model.gate.takeBoard || '#/run/job' }, 'Take a board anyway'));
+    return sec;
+  }
+  if (model.line) sec.append(h('p.board-line.muted.fs-1', model.line));
+
+  const list = h('ol.board-rows', { style: { minHeight: `${model.reserve * BOARD_ROW_PX}px`, listStyle: 'none', margin: '0', padding: '0' } });
+  for (const r of model.rows) {
+    list.append(h('li.board-row', { dataset: { id: r.id } },
+      h('span.b-id.mono', r.id), ' ',
+      numeral('b-label', 8), h('span.b-of.muted.fs-1', ' · '),
+      numeral('b-locks', 2), h('span.b-of.muted.fs-1', ' locks · '),
+      numeral('b-cold', 2), h('span.b-of.muted.fs-1', ' d cold · posted '),
+      numeral('b-posted', 4), h('span.b-of.muted.fs-1', ' · '),
+      h('span.b-wing.muted.fs-1', { dataset: { pending: '1' } }, '—')));
+  }
+  sec.append(list);
+
+  sec.append(h('p.board-meta.mono.fs-1',
+    h('span.b-shape', SHAPES[model.shape].name), ' · ',
+    h('span.b-min', `~${model.minutes} min`), ' · ',
+    h('span.b-ends', `ends ${model.ends}`), ' · ',
+    h('span.b-split', model.projection)));
+
+  const supply = h('ul.board-supply.fs-1.muted', { 'aria-label': 'Supply today', style: { listStyle: 'none', margin: '0', padding: '0' } });
+  for (const s of model.supply) {
+    supply.append(h('li.board-sup', { dataset: { wing: s.wing } }, h('span.b-sup-w', s.wing), ' ', numeral('b-sup-n', 2), h('span.b-of', ' locks available today')));
+  }
+  sec.append(supply);
+
+  // the cold-crew strip (G5 #3): `4 crew idle on their own reviews · 9 dues · clear them first — 4 minutes`
+  // G11 lists Cold crew as a CONDITIONAL board state, so the strip gets a box only when the save
+  // already says one is possible — a manned crew and something due. Pass 2 then writes ink into it
+  // and never takes the box away again (the 48 px pass-1→pass-2 collapse, notes/J13.md Request 1).
+  if (model.coldCrew.manned > 0 && model.coldCrew.dues > 0) {
+    sec.append(h('p.board-crew.fs-1', { dataset: { pending: '1' } },
+      numeral('b-crew-n', 2), h('span', ' crew idle on their own reviews · '),
+      h('span.b-crew-dues.mono', String(model.coldCrew.dues)), h('span', ' dues · clear them first — '),
+      numeral('b-crew-min', 2), h('span', ' minutes')));
+  }
+  return sec;
+}
+
+/**
+ * fillBoard(panel, save, opts) — PASS 2. Writes the posted numerals, the contract labels, the wings,
+ * the per-wing supply and the cold-crew count into the nodes pass 1 already sized. Adds no node that
+ * changes the panel's height, removes no row (a thin board empties its extra rows in place, inside the
+ * reserved `min-height`), and never throws: a failure leaves a readable pass-1 board on screen.
+ */
+export function fillBoard(panel, save, { now = Date.now(), today = todayISO(new Date(now)), gate = null, compose = null, page = null } = {}) {
+  if (!panel || !boardReady()) return null;
+  const g = gate ?? weekGate(save, { now, today });
+  if (!g.post) return null;
+  let board = null;
+  try {
+    board = postBoard(save, today, {
+      ...(compose ?? {}), now, page,
+      ...(tellHookFor ? { tellFor: tellHookFor(save) } : null),
+      ...(g.shape ? { shape: g.shape } : {}),
+    });
+  } catch (err) { console.error('home: postBoard', err); return null; }
+
+  const rows = [...panel.querySelectorAll('.board-row')];
+  board.contracts.slice(0, rows.length).forEach((c, i) => {
+    const row = rows[i];
+    setNumeral(row.querySelector('.b-label'), c.label);
+    setNumeral(row.querySelector('.b-locks'), c.locks.length);
+    setNumeral(row.querySelector('.b-cold'), c.cold ?? 0);
+    setNumeral(row.querySelector('.b-posted'), c.posted);
+    const w = row.querySelector('.b-wing');
+    if (w) { w.textContent = c.wing ?? '—'; delete w.dataset.pending; }
+  });
+  for (let i = board.contracts.length; i < rows.length; i++) rows[i].hidden = true;
+
+  const meta = panel.querySelector('.board-meta');
+  if (meta) {
+    const min = meta.querySelector('.b-min'), ends = meta.querySelector('.b-ends'), split = meta.querySelector('.b-split');
+    if (min) min.textContent = `~${Math.ceil((board.endsAt - board.now) / 60000)} min`;
+    if (ends) ends.textContent = `ends ${board.ends}`;
+    if (split) split.textContent = board.projection;
+    const shape = meta.querySelector('.b-shape');
+    if (shape) shape.textContent = SHAPES[board.shape]?.name ?? board.shape;
+  }
+
+  for (const li of panel.querySelectorAll('.board-sup')) {
+    const s = board.supply?.[li.dataset.wing];
+    setNumeral(li.querySelector('.b-sup-n'), s?.locks ?? 0);
+  }
+
+  const cc = coldCrewOf(save, board);
+  const strip = panel.querySelector('.board-crew');
+  if (strip) {
+    setNumeral(strip.querySelector('.b-crew-n'), cc.idle);
+    setNumeral(strip.querySelector('.b-crew-min'), cc.minutes);
+    /* The box was decided in pass 1 (a manned crew with dues). If nothing landed on tonight's board
+       after all, the ink goes out and the box stays: hiding the node takes ~48 px out of a panel the
+       student is already reading, which is the one thing pass 2 may never do. css/job.css owns it. */
+    strip.toggleAttribute('data-empty', cc.idle === 0);
+    delete strip.dataset.pending;
+  }
+  panel.dataset.pass = '2';
+  return board;
+}
+
+/**
+ * Pass 2's last act: the primary button reprints its own numbers from the drafted board, so `~N min`
+ * and `ends HH:MM` on the CTA and on the panel are the SAME wall clock (G5 — "every primary button
+ * prints cards, minutes and the wall-clock time the run ends"). Not called when the shape was refused:
+ * that button is already the alternative's.
+ */
+export function primaryLineFor(board) {
+  if (!board?.recommend) return null;
+  /* ONE formula, in `job/board.js`. It now prints wall-clock minutes beside its wall-clock `ends`
+     (notes/J11.md §6 → J5), so Home's CTA and the job screen's primary are the same sentence about
+     the same board instead of ~20 min here and ~15 min there (G9 #9; notes/J13.md Request 2). */
+  if (board.primary) return board.primary;
+  return COPY.primary({
+    shape: SHAPES[board.shape]?.name ?? board.shape,
+    targets: board.recommend.queue.length,
+    minutes: Math.ceil((board.endsAt - board.now) / 60000),
+    ends: board.ends,
+    split: Math.round(Number(String(board.projection).replace(/[^\d.]/g, '')) || 0),
+  });
+}
+
+/**
+ * The cold-crew strip's two numerals (G1 "Cold crew", G5 #3): how many MANNED makes are standing down
+ * on their own due review tonight, and how long clearing those reviews takes.
+ */
+export function coldCrewOf(save, board) {
+  const out = { idle: 0, dues: 0, minutes: 0, makes: [] };
+  if (!board || !crewIdleFor || !crewOf) return out;
+  const manned = crewOf(save);
+  const seen = new Set();
+  for (const t of board.pool ?? []) {
+    if (!t?.skill || !manned[t.skill]) continue;
+    if (!crewIdleFor(save, t.skill, t)) continue;
+    out.dues++;
+    out.minutes += t.minutes ?? 0;
+    if (!seen.has(t.skill)) { seen.add(t.skill); out.makes.push(t.skill); }
+  }
+  out.idle = seen.size;
+  out.minutes = Math.ceil(out.minutes);
+  return out;
 }
 
 /** fix5:home r2 — the grey line's phrases: "Just started" is only true below 3 answers; past that it is "no misses yet". */
@@ -249,7 +626,13 @@ function render(el, state, today) {
   const D = daysUntilTest(state.settings?.testDate, today);
   if (!heavyReady()) { renderLight(el, state, rd, today, D); heavy().then((ok) => { if (el.isConnected) render(el, getState(), todayISO()); if (ok) warmNext(); }); return; }
   const pageOpts = planOpts(state, D);                              // W4: the S7 plan's tier-4 cap
-  const act = nextAction(state, { today, compose: pageOpts });
+  // J11: pass 1 of the board, from the static graph. `boardMods()` is pass 2 and re-renders when it lands.
+  const now = Date.now();
+  const gate = weekGate(state, { now, today });
+  const model = gate.on ? boardModel(state, { now, today }) : null;
+  if (gate.on && !boardReady()) boardMods().then(() => { if (el.isConnected) { payGetaway(); render(el, getState(), todayISO()); } });
+  let act = nextAction(state, { today, compose: pageOpts });
+  if (gate.on && boardReady() && jobRouteOK) act = nextActionFor(state, act, { today, now });
   const ip = resumePage(state);
   const boss = bossReady(state)[0] ?? null;
   // W4 integration (notes/T12.md Requests → T10): the intro is worth reading ONCE. After the student has
@@ -264,7 +647,37 @@ function render(el, state, today) {
     breakdown = act.label.replace(/^RUN NEXT · /, '');
     label = `RUN NEXT · ${act.page.queue.length} items`;
   }
-  const primary = h('a.btn.btn-primary.home-primary', { href: act.kind === 'boss' && boss ? bossHref(boss.id) : act.href, dataset: { kind: act.kind } }, label);
+  // J11 / G5: a shape whose PROJECTED end time passes 22:00 is refused — with the one-tap alternative
+  // and the REAL end time on both options. Neither option is removed: G9 #9 locks no study door.
+  //
+  // J13 r1 fix: pass 1's refusal is computed from `econ.shapeTable`, the canonical tier mix. The board
+  // pass 2 actually drafts projects from ITS OWN queue's tiers, so at 21:45 pass 1 said `ends 21:57 ·
+  // refusal null` for a board whose own row read `ends 22:04`. The refusal is therefore re-decided
+  // below against `board.endsAt`, and pass 2 may now RAISE one as well as clear one — the CTA, the
+  // panel and the 22:00 gate are one sentence about one board (COMPOSED wins on quiet hours, G1).
+  const baseLabel = label;
+  const primaryHref = act.kind === 'boss' && boss ? bossHref(boss.id) : act.href;
+  const primary = h('a.btn.btn-primary.home-primary', { href: primaryHref, dataset: { kind: act.kind } }, baseLabel);
+  const subP = h('p.home-cta-sub.muted.fs-1');
+  const cta = h('div.home-cta', primary);
+  let refusal = act.kind === 'job' ? act.refusal : null;
+  /** Paint the CTA for a refusal (or `null` for none). Idempotent — pass 2 calls it again. */
+  function paintCta(refusal) {
+    cta.querySelector('.home-cta-alt')?.remove();
+    if (refusal) {
+      primary.textContent = `${refusal.alt.shape} · ~${refusal.alt.minutes} min · ends ${refusal.alt.ends}`;
+      primary.href = `#/run/job?shape=${refusal.alt.shape}`;
+      primary.after(h('a.btn.btn-ghost.home-cta-alt', { href: `#/run/job?shape=${refusal.shape}`, dataset: { ends: refusal.ends } },
+        `${refusal.shape} anyway · ends ${refusal.ends}`));
+    } else {
+      primary.textContent = baseLabel;
+      primary.href = primaryHref;
+    }
+    const lines = (refusal ? [refusal.line, ...sub] : sub).filter(Boolean);
+    subP.textContent = lines.join(' · ');
+    if (lines.length === 0) subP.remove();
+    else if (subP.parentNode !== cta) cta.append(subP);
+  }
   primary.addEventListener('click', (ev) => {
     if (act.kind !== 'page') return;
     ev.preventDefault();
@@ -280,6 +693,8 @@ function render(el, state, today) {
     // home r2: the "plan wants N new a day — holding at 12" line is gone — meta.q IS the held target, so it could
     // only ever print 12 vs 12 while the strip beneath said 18 (S9 #10). The strip's warn line is the one statement.
     if (m.carried.length) sub.push(`${m.carried.length} hard item${m.carried.length === 1 ? '' : 's'} carried to the next page`);
+  } else if (act.kind === 'job') {
+    sub.push(act.policy?.why ?? '');          // the refusal line is prepended by `paintCta`
   } else if (act.kind === 'resume' && ip) {
     sub.push(`started ${new Date(ip.startedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`, `${ip.queue.filter(q => q.done).length} answered`);
   } else if (act.kind === 'warmup') sub.push('3 short screens, every one skippable · a placement earns XP');
@@ -300,9 +715,12 @@ function render(el, state, today) {
     h('a.btn', { href: '#/sheet' }, 'Sheet'),
   );
 
+  paintCta(refusal);
+  const panel = model ? boardPanel(model) : null;
   const col = h('div.col',
     heroBlock(state, rd, today),
-    h('div.home-cta', primary, sub.length ? h('p.home-cta-sub.muted.fs-1', sub.join(' · ')) : null),
+    panel,                                                            // J11 / G7: the Board, above the primary button
+    cta,
     fillPlanStrip(planStrip(state, today, D), state, { today, hideMock: act.kind === 'mock' }),   // T14 (the call below is the fallback); fix5:home r1 — no second Mock link under a Mock CTA
     h('section.card.home-today', { 'aria-label': 'Today' }, goalMeter(state, today), streakArc(state.streak ?? { count: 0, best: 0 }), levelRing(state.xp ?? 0)),
     weakList(state, act.kind),
@@ -310,6 +728,30 @@ function render(el, state, today) {
   );
   // NOT `.screen` (that caps the whole grid at 680 px) — `.with-rail` lays out the 680 column + 320 rail (T01)
   el.replaceChildren(h('section.home.with-rail', { 'aria-label': 'Today' }, col, skillRail(state)));
+  // J11 pass 2: the posted numerals land in the nodes pass 1 already sized. No spinner, no reflow.
+  if (panel && boardReady()) {
+    const board = fillBoard(panel, state, { now, today, gate, compose: pageOpts, page: act.page ?? null });
+    if (board && act.kind === 'job') {
+      /* The 22:00 gate, re-decided against the board's OWN projected end time instead of the shape
+         table's. `plan.refuseFor` takes `wallS` straight (and `plan.jobAction` now plumbs it too), so
+         there is still exactly one implementation of "does this end after 22:00?". */
+      const wallS = Math.max(0, (board.endsAt - board.now) / 1000);
+      const real = refuseFor ? refuseFor(board.shape ?? act.shape, { now, wallS }) : refusal;
+      refusal = real;
+      paintCta(refusal);
+      if (refusal) return;                     // the CTA is the alternative's; it may not reprint the refused board
+      const line = primaryLineFor(board);
+      if (line) primary.textContent = line;
+    }
+  }
+}
+
+/** G5 — the Night Before pays the Clean Getaway stamp + 1 Backcheck, once, the first time Home sees it. */
+function payGetaway() {
+  if (!payCleanGetaway) return;
+  const probe = structuredClone(getState());
+  if (!payCleanGetaway(probe, {}).stamped) return;
+  update((s) => { payCleanGetaway(s, {}); });
 }
 
 /** home r2: the first paint — everything readiness.js can say, plus a CTA placeholder and the fallback plan pills. */
@@ -317,8 +759,12 @@ function renderLight(el, state, rd, today, D) {
   const primary = h('span.btn.btn-primary.home-primary', { role: 'status', 'aria-busy': 'true', dataset: { kind: 'loading' } }, 'Loading today’s page…');
   const secondary = h('nav.home-links', { 'aria-label': 'More' },
     h('a.btn', { href: '#/binder' }, 'Binder'), h('a.btn', { href: '#/mock' }, 'Mock'), h('a.btn', { href: '#/stats' }, 'Stats'), h('a.btn', { href: '#/sheet' }, 'Sheet'));
+  // J11: the board is painted on the FIRST paint too — it is pass 1's whole point that it needs
+  // nothing heavier than the save, so the panel's geometry is identical across all three paints.
+  const model = gameIsOn(state) ? boardModel(state, { today }) : null;
   const col = h('div.col',
     heroBlock(state, rd, today),
+    model ? boardPanel(model) : null,
     h('div.home-cta', primary),
     planStrip(state, today, D),
     h('section.card.home-today', { 'aria-label': 'Today' }, goalMeter(state, today), streakArc(state.streak ?? { count: 0, best: 0 }), levelRing(state.xp ?? 0)),

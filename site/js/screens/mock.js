@@ -36,6 +36,12 @@ import {
   POINTS_PER_ITEM, LATE_HOUR, SECTION_NAME,
   buildPlan, itemFor, kindOf, nextIndex, scoreOf, sectionsFor,
 } from '../../data/blueprint.js';
+// J11 — THE BIG SCORE (COMPOSED-GAME G7, G12 #40d). The Mock has **no call, no stake, no crew and no
+// chain** — a test is a test. The one thing it contributes to the game layer is the prediction slider
+// it already had, scored by `job/call.js credit()` and entered in the rating window as ONE informative
+// call at `w = 1.0`. `job/call.js` is pure arithmetic over `data/job.js`; it adds no DOM and no stake.
+import { credit as callCredit, callEntry, windowPush, ratingDetail } from '../job/call.js';
+import { CAPS as JOB_CAPS } from '../../data/job.js';
 
 /* ------------------------------------------------------------------ lazy modules */
 
@@ -324,6 +330,8 @@ export function submitRun(save, n, { M, now = Date.now(), auto = false, today = 
   dailyRow(save, today).mockDone = true;
 
   applyMisses(save, run, { now, today });
+  applyMockCall(save, run, { now });        // J11: the prediction slider's one informative call, w = 1.0
+                                            // (the day the call belongs to is `run.submittedAt`'s own)
   return run;
 }
 
@@ -429,6 +437,134 @@ export function missRows(save, run) {
     else rows.push({ id, name: skillById[id]?.name ?? id, w, m, score: w * (1 - m / 100), count: 1, items: [item.n] });
   }
   return rows.sort((a, b) => b.score - a.score);
+}
+
+/* ------------------------------------------------------------------ J11: the prediction as one call */
+
+/**
+ * G7 / G12 #40d — the Mock's prediction has **no make**, therefore no `q̂`, therefore no
+ * `w = 4q̂(1−q̂)`. The weight is DEFINED rather than undefined: `w = 1.0`, one informative call.
+ */
+export const MOCK_CALL_W = 1.0;
+
+/* ---- the eligibility gate (J13 r1, the call-propriety blocker) -----------------------------------
+ *
+ * A quadratic score is strictly proper only when the OUTCOME IS EXOGENOUS. The Mock's prediction is
+ * scored against the Mock's own realised score, and a student who answers nothing scores exactly 0 —
+ * so `p = o` was attainable by doing nothing at all. Predict 0, submit a blank paper, repeat: ten
+ * blank Mocks took the rating from 5.00 to 9.00 through the single largest per-slot contribution in
+ * the system (`w·c = 1.0 × 10.00`, above anything a real call can pay), with zero mathematics done
+ * and zero study state touched. G3.7's five anti-farming brakes do not reach this channel and
+ * G12 #40d only says why `w` is DEFINED as 1.0 — never what that weight may buy.
+ *
+ * The fix is at the root of the propriety argument rather than in the arithmetic: the prediction
+ * scores only when the outcome was NOT the student's to hand themselves. Three conditions, all about
+ * effort and none about the score itself — a genuinely weak student who correctly predicts 20 still
+ * gets the full credit, because that is exactly the metacognition the rating is for:
+ *
+ *   1. half the paper is attempted          (a blank or near-blank paper is not a forecast)
+ *   2. the sitting took 20 s an item        (`Submit it as it stands` seconds after Start is not one)
+ *   3. one scoring Mock a day, one a seed   (the hard gate `daily[today].mockDone` never was)
+ *
+ * `run.retry` already covered the replay route. Nothing here changes `mockCall`: the credit, the
+ * propriety and `w = 1.0` are untouched, and `tests/job-week.test.mjs` still proves all three.
+ */
+/** Half the paper must carry a non-blank answer. */
+export const MOCK_CALL_MIN_ANSWERED = 0.5;
+/** …and the sitting must have taken at least this long per item (20 items → 6:40 of a 40-minute paper). */
+export const MOCK_CALL_MIN_MS_PER_ITEM = 20000;
+
+/** Did the student put anything on this item? Works before AND after `submitRun` strips `answers`. */
+function itemAttempted(item) {
+  if (!isObj(item)) return false;
+  if (Array.isArray(item.parts) && item.parts.length > 0) return item.parts.some(p => isObj(p) && p.kind !== 'blank');
+  return answered(item);
+}
+
+/** Every done Mock/Baseline on the save that already scored a call (`run.call` is written by `applyMockCall`). */
+function calledRuns(save, run) {
+  const runs = Array.isArray(save?.runs) ? save.runs : [];
+  return runs.filter(r => r !== run && isMockRun(r) && isObj(r.call));
+}
+
+/**
+ * mockCallEligible(save, run, opts) → `{ ok, why, answered, of, ms, needAnswered, needMs }`.
+ * Pure: reads the save, writes nothing. `why` is one of
+ * `'ok' | 'not-a-run' | 'retry' | 'blank' | 'too-fast' | 'already-today' | 'seed-called'`.
+ */
+export function mockCallEligible(save, run, { now = Date.now(), today = null } = {}) {
+  const items = Array.isArray(run?.items) ? run.items : [];
+  const of = Math.max(items.length, Math.trunc(Number(run?.n) || 0));
+  const hit = items.filter(itemAttempted).length;
+  const ms = elapsedMs(run, now);
+  const needAnswered = Math.ceil(of * MOCK_CALL_MIN_ANSWERED);
+  const needMs = of * MOCK_CALL_MIN_MS_PER_ITEM;
+  const out = { ok: false, why: 'not-a-run', answered: hit, of, ms, needAnswered, needMs };
+  if (!isMockRun(run)) return out;
+  if (run.retry === true) return { ...out, why: 'retry' };
+  if (of <= 0 || hit < needAnswered) return { ...out, why: 'blank' };
+  if (ms < needMs) return { ...out, why: 'too-fast' };
+  const day = today ?? todayISO(new Date(Number(run.submittedAt) || now));
+  const prior = calledRuns(save, run);
+  for (const r of prior) {
+    if (todayISO(new Date(Number(r.submittedAt) || 0)) === day) return { ...out, why: 'already-today' };
+    if (r.seed != null && run.seed != null && r.seed === run.seed && runKind(r) === runKind(run)) return { ...out, why: 'seed-called' };
+  }
+  return { ...out, ok: true, why: 'ok' };
+}
+
+/**
+ * mockCall(run) → the rating-window entry the prediction slider earns, or `null`.
+ *
+ * The rung ladder's credit is `c(p, o) = 10 − 40(p − o)²` and `call.credit(p, ok)` is that formula
+ * with a BINARY outcome. A Mock's outcome is not binary — it is the realised score fraction `o` — so
+ * the entry stores the error-equivalent call `p' = 1 − |p − o|` with `ok = true`, for which
+ * `call.credit(p', true) === 10 − 40(p − o)²` EXACTLY. The window therefore recomputes the same credit
+ * on every read, `ratingFrom` needs no special case, and nothing about the scoring rule bends: the
+ * quadratic score is still strictly proper, so the prediction that maximises it is the true one.
+ * (The raw `pred` and `score` stay on the run — `calibration(run)` still prints them.)
+ *
+ * A `retry` (same seed, replayed) earns no call, exactly as it earns no XP and no PB.
+ * @returns {null|{p, o, err, w, credit, entry:{p, ok, w, skill, at}}}
+ */
+export function mockCall(run, { now = null } = {}) {
+  if (!isObj(run) || run.retry === true) return null;
+  const pred = Number(run.pred), score = Number(run.score);
+  if (!Number.isFinite(pred) || !Number.isFinite(score)) return null;
+  const p = clamp(pred / 100, 0, 1);
+  const o = clamp(score / 100, 0, 1);
+  const err = Math.abs(p - o);
+  const entry = callEntry({
+    p: 1 - err, ok: true, w: MOCK_CALL_W, skill: null,
+    at: Number.isFinite(now) ? now : (Number.isFinite(run.submittedAt) ? run.submittedAt : null),
+  });
+  return { p, o, err, w: MOCK_CALL_W, credit: callCredit(entry.p, entry.ok), entry };
+}
+
+/**
+ * Push the Mock's one call into `player.rating` and refresh the rating / rank. Writes `save.player`
+ * and NOTHING else (Global law 2 — the Mock's own Ledger-A writes are `submitRun`'s, unchanged).
+ * Idempotent per run: a run that already carries `run.call` is not counted twice.
+ *
+ * J13 r1: gated by `mockCallEligible` — a blank paper, a seconds-long sitting, a second Mock in one
+ * day and a seed that has already scored earn NO entry at all. An unfilled slot contributes 0 and
+ * pulls the rating toward exactly 5.00 (G3.1), which is the right answer for a forecast nobody made.
+ */
+export function applyMockCall(save, run, { now = null, today = null } = {}) {
+  if (!isObj(save?.player?.rating) || isObj(run?.call)) return null;
+  if (save?.settings?.game === false) return null;                   // the layer is off in one tap
+  const elig = mockCallEligible(save, run, { now: Number.isFinite(now) ? now : Date.now(), today });
+  if (!elig.ok) return null;
+  const mc = mockCall(run, { now });
+  if (!mc) return null;
+  const rating = save.player.rating;
+  rating.calls = windowPush(Array.isArray(rating.calls) ? rating.calls : [], mc.entry, { N: JOB_CAPS.calls });
+  const detail = ratingDetail(rating.calls, JOB_CAPS.calls);
+  rating.value = detail.value;
+  rating.n = detail.n;
+  save.player.rank = detail.rank;
+  run.call = { p: mc.entry.p, w: mc.w, credit: Math.round(mc.credit * 100) / 100, pred: run.pred, score: run.score };
+  return { ...mc, rating: detail.value, rank: detail.rank, eligible: elig };
 }
 
 /** The calibration line: `predicted 88 → scored 81 (overconfident by 7)`. */

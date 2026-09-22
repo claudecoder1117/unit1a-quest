@@ -232,12 +232,68 @@ function renderHeader() {
     s.querySelector('.streak-n').textContent = String(hdr.streak);
     s.setAttribute('aria-label', `Streak ${hdr.streak} day${hdr.streak === 1 ? '' : 's'}`);
   }
+  renderJobHeader();
   bus.emit('header', { ...hdr });
 }
 
 /** setHeader({ readiness, provisional, combo, … }) — screens push what only they know (Readiness from T10, combo from T09). */
 export function setHeader(patch) { Object.assign(hdr, patch); renderHeader(); }
 export const getHeader = () => ({ ...hdr });
+
+/* ---------------- the job header (COMPOSED-GAME G7 "Extended", G10 #22) ---------------- */
+/**
+ * During a job four status read-outs are hidden and three stake read-outs take their place:
+ * **five items during a job, six outside one**, pinned by `data/job.js HEADER` and asserted by
+ * `tests/job-screen.test.mjs`. The ids are literals here on purpose — the shell must not pull the
+ * 800-line game data table onto the cold-open path (S9 #1), so the test compares the two lists
+ * instead of importing one into the other.
+ */
+export const HDR_JOB_HIDE = Object.freeze(['hdr-level', 'hdr-streak', 'hdr-xp', 'hdr-combo']);
+export const HDR_JOB_ADD = Object.freeze(['hdr-loose', 'hdr-bag', 'hdr-chain']);
+export const HDR_JOB_KEEP = Object.freeze(['hdr-readiness', 'hdr-tminus']);
+const HDR_ALL = Object.freeze([...HDR_JOB_KEEP, ...HDR_JOB_HIDE, ...HDR_JOB_ADD]);
+const HDR_STAKE_LABEL = { 'hdr-loose': 'loose', 'hdr-bag': 'bag', 'hdr-chain': 'chain' };
+
+const job = { on: false, loose: 0, bagged: 0, chain: 0, drop: false };
+
+/** `setJobHeader({loose, bagged, chain})` swaps the header into job mode; `null` swaps it back. */
+export function setJobHeader(patch) {
+  if (patch == null) { job.on = false; job.drop = false; }
+  else Object.assign(job, { on: true }, patch);
+  renderHeader();
+}
+export const getJobHeader = () => ({ ...job });
+
+/** The header items that are actually on screen right now — 6 outside a job, 5 during one. */
+export function headerItems() {
+  if (typeof document === 'undefined') return [];
+  return HDR_ALL.filter((id) => { const el = $(id); return !!el && !el.hidden; });
+}
+
+function renderJobHeader() {
+  if (typeof document === 'undefined') return;
+  const right = document.querySelector('.hdr-right');
+  const bar = document.querySelector('.hdr');
+  if (!right) return;
+  if (bar) { if (job.on) bar.dataset.job = 'true'; else delete bar.dataset.job; }
+  for (const id of HDR_JOB_HIDE) { const el = $(id); if (el) el.hidden = job.on; }
+  const value = { 'hdr-loose': Math.round(job.loose), 'hdr-bag': Math.round(job.bagged), 'hdr-chain': job.chain };
+  for (const id of HDR_JOB_ADD) {
+    let el = $(id);
+    if (!job.on) { el?.remove(); continue; }
+    if (!el) {
+      el = h(`span#${id}.hdr-stake`, { role: 'img' },
+        h('span.hdr-stake-k', HDR_STAKE_LABEL[id]), h('span.hdr-stake-v', '0'));
+      right.insertBefore(el, $('theme-toggle'));
+    }
+    el.querySelector('.hdr-stake-v').textContent = String(value[id]);
+    el.setAttribute('aria-label', `${HDR_STAKE_LABEL[id]} ${value[id]}`);
+  }
+  // G6 ANIMATION.bagDrop — 600 ms, in place in the header column, once per job (J6b owns the
+  // debrief's choreography; this is the hook it drives).
+  const bag = $('hdr-bag');
+  if (bag) { if (job.drop) bag.dataset.drop = 'true'; else delete bag.dataset.drop; }
+}
 
 function syncHeaderFromState(s) {
   const L = levelFor(s.xp), lo = xpForLevel(L), hi = xpForLevel(L + 1);
