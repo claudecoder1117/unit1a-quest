@@ -1,194 +1,201 @@
-# HANDOFF — 2026-09-22, ship pass on build **2026-09-21a** (THE JOB layer, post-repair)
+# HANDOFF — 2026-09-23, ship pass on build **2026-09-23b** (THE CUT)
+
+This supersedes the earlier 2026-09-23 handoff, which described the build before the round-4 and
+round-5 lanes. `designs/CUT-BRIEF.md` is the authority for the game, `designs/CUT-SPEC.md` is what
+the build actually does, `COMPOSED.md` is the study app, and `BUILD-POLICY.md` overrides all three.
+The full verdict of this pass is **`notes/CUT-SCORECARD.md`**; this file is the state of the tree and
+what to do next.
 
 ## State
 
-- Live: https://claudecoder1117.github.io/unit1a-quest/ (Pages Action deploys `site/` on every push
-  to main). **Nothing in this tree is committed or pushed — the human does that.** Last commit is
-  `ca53259 "THE JOB game layer: 11 tickets built, 2 critic rounds applied (pre-repair baseline)"`;
-  the whole repair round (15 J-tickets answered, 20 BLOCKERs / 28 MAJORs / 27 MINORs from twelve
-  critics over three rounds) is **uncommitted working tree**. Other lanes have work here too:
-  do not `git stash`, `git checkout` or `git reset` anything.
-- `site/version.js` → `self.APP_VERSION = "2026-09-21a"` (was `2026-09-17e`). Push deploys that string.
-- `node --test tests/` → **3073 tests · 3069 pass · 0 fail · 4 skipped · 411 s.**
-  (Baseline for this round was 2725 / 2721 / 0 / 4: the repair added **348** tests and removed none.)
-  Re-run **after** the full matrix overwrote `qa/audit/report.json` — identical, still green (410 s),
-  because `tests/job-audit-allow.test.mjs` refuses a report from a wider matrix *by name* instead of
-  reconciling it. That is the one test whose result the audit can change; it was checked on purpose.
-- `node qa/gen-precache.mjs` → **127 files**, list already current; `--check` clean.
-- `node qa/job-walk.mjs` → **ALL PASS**: first answer from a cold visit at **15 016 ms** (budget
-  20 000), board on screen at **33 ms** with 0 spinner nodes, 25 printed probabilities re-derived from
-  the shipped modules with **0 mismatches**, 59 screenshots, 8 warnings (below).
-- `node qa/s9-walk.mjs` → runs to the end **after the repair described below**, 13/13 flawless Page,
-  519 XP, 12 tiles minted, Readiness 57 → 65, Mock kill/resume on the true clock, 0 console errors.
-- `node qa/s9-walk.mjs timer` → Mock clock amber at 0:54 (`rgb(154,82,8)`, 17 px / 40 px, no
-  animation) and pulse at 0:07 (`rgb(196,32,61)`, **still 17 px / 40 px**, `mock-pulse`).
-- `node qa/s9-walk.mjs offline` → SW active and controlling, one cache **`packet-2026-09-21a`** with
-  **127 files**; `#/today`, `#/binder`, `#/card/ang-10`, `#/mock`, `#/settings`, `#/stats`,
-  `#/run/page` all render offline, `offline errors []`.
-- `node qa/layout-audit.mjs` (FULL matrix) → **NOT CLEAN.** See the next section — this is the one
-  gate this build does not pass, and the findings belong to the study layer, not to THE JOB.
+- Live: https://claudecoder1117.github.io/unit1a-quest/ (the Pages Action deploys `site/` on every
+  push to main). **Nothing in this tree is committed or pushed — the human does that.** THE CUT —
+  eleven lanes, five verification rounds and this ship pass — is **uncommitted working tree**. Other
+  lanes have work here: do not `git stash`, `git checkout` or `git reset` anything.
+- `site/version.js` → **`self.APP_VERSION = "2026-09-23b"`**. **This is the one deviation from the
+  ship ticket, and it is deliberate.** The ticket asked for `"2026-09-22a"`; the file already read
+  `2026-09-23a` (round 4's bump) and three files under `site/js/` — `store.js`, `screens/job.js`,
+  `screens/run.js` — are newer than that bump, so neither the ticket's string nor the one on disk
+  named the build being shipped. Writing yesterday's date would have dated the artifact before its
+  own content and shared a cache key with the build that preceded round 5. Verified live, not just
+  read: with the network cut the worker came up active and controlling with exactly one cache,
+  **`packet-2026-09-23b`**, holding **122** files.
+- `node --test tests/` → **1 884 tests · 160 suites · 1 880 pass · 0 fail · 4 skipped · 229.4 s ·
+  exit 0**, and re-run **after** the full matrix overwrote `qa/audit/report.json` — **identical and
+  still green** (220.2 s). That reconciliation is the one test the audit can change
+  (`tests/job-screen.test.mjs:888`); it was checked on purpose. The four skips are
+  `tests/fix5-run.test.mjs`'s `FIX5_RUN_BROWSER=1` arms — exactly the keyboard geometry the matrix
+  fails on, so **the node suite cannot see that defect**. No test was deleted, skipped, weakened or
+  added by this pass.
+- `node qa/gen-precache.mjs` → **precache list is up to date (122 files)**; `--check` agrees.
+- `node qa/cut-integrator-r5.mjs` → one real session, **47 distinct frames (45 during play)**: the
+  game's worst frame prints **3** numbers, its worst question costs **1** tap (the call), and a
+  question it does not price costs **0**.
+- `node qa/cut-count.mjs` → the six shipped job states: **2** numerals face down, **3** on a
+  question, **3** at `job-widest` (`496 · ×5 · pays 50`), never 4. Both routes on the same queue:
+  `#/run/job` **[9, 11, 4]** vs `#/run/page` **[9, 11, 4]**.
+- `node qa/ship-sessions.mjs` → three real sessions at 375×667 plus the end panel and the cold open;
+  **39 screenshots** in `qa/screenshots/ship/`, **0 console errors**, **0 horizontal overflow**,
+  **0 beats with a fourth game number**. Cold open: Home's primary at **70 ms**, **0 spinners**,
+  first answerable question at **106 ms** of a 20 000 ms budget.
+- `node qa/s9-walk.mjs`, `… timer`, `… offline` → all three **exit 0**. 13/13 flawless Page, 519 XP,
+  12 tiles minted with sheen, Readiness 57 → 65; the Mock clock pulses **without changing size**
+  (17 px / 40 px in both states); offline renders seven routes with `offline errors []`.
+- `node qa/layout-audit.mjs` (FULL matrix) → see the next section.
 
-## The gate that fails: the keyboard-open states in the full layout matrix
+## The gate that fails: the keyboard-open card and boss states
 
 ```
-node qa/layout-audit.mjs        # 108 states x 17 viewports x 2 themes x 2 engines, 1 615 s
+node qa/layout-audit.mjs --no-confirm     # 103 states x 17 viewports x 2 themes x 2 engines, 1 275 s
+self-test PASS 9/9 in chromium AND webkit
+LAYOUT AUDIT — 462 findings (136 waived)
 verdict: 356 blockers, 106 majors → FAIL   (exit 1)
-total 462 findings · 94 grouped defects · 130 waived
 byType  overlap 268 · offscreen 88 · unreachable-answer 72 · contrast 34
 ```
 
-**104 of the 108 states are clean** in both engines, both themes, every viewport. All 462 findings
-land on **four** states, and deduped they are **24 distinct signatures**, each reported identically in
-light+dark × chromium+webkit — so this is neither an engine quirk nor a theme quirk. Every one is the
-same family: **a card or a boss with the on-screen keyboard open.**
+**99 of the 103 states are clean** in both engines, both themes, every viewport. All 462 findings land
+on **four** states — `boss-b4-miss-dock-kb` (152), `boss-b4-miss-setup-kb` (148), `card-pairs-kb`
+(128), `card-pairs-locked` (34) — and deduped they are **94 distinct defects**, each reported
+identically in light+dark × chromium+webkit. Every one is the same family: **a card or a boss with
+the on-screen keyboard open, with the answer box behind the dock.**
 
-**Do not push expecting a green matrix.** The defects are real, student-facing and **outside the
-ship agent's writ** (`site/js/widgets/*` and the study layer are off-limits to this lane):
+**`job/*`, `run/*` and `home/*` findings: 0** — computed off `qa/audit/report.json` by prefix, not off
+the printed summary. `tap-target`, `doc-overflow` and `clipped-text` are **0 across the whole matrix**,
+waived and unwaived. All 136 waivers sit on `job-answer-kb` and every one is an **attribution**,
+naming the control `card-pairs-kb` (the same card, the same keyboard, no game in the page) which is
+unwaived and carrying 128 of the findings. `tests/job-screen.test.mjs:888` gates that shape on every
+`node --test` run. Nothing was added to `qa/audit-allow.json` by this pass.
 
-1. **`boss-b4-miss-dock-kb` / `boss-b4-miss-setup-kb` — the answer box is behind the keyboard in a
-   Boss, after a heart is lost.** `unreachable-answer input#f-1`: *"the first answer control starts at
-   y 292 px, at or below the dock top (63 px) — it is behind the dock"*, on 6 viewports × 2 themes ×
-   2 engines. The miss banner is clipped on top of it — *"Heart lost. Word problems, linear: write the
-   sentence as one equation before you solv…"* / *"The setup box is empty — type the equation, or skip
-   it and answer th…"* — and `p.w-msg > span.w-msg-text`, `p.card-part-h` and `label.w-flabel > span.w-mk`
-   are all reported `overlap … covered by the fixed dock with the page scrolled to its end`.
-   Look at `qa/audit/png/boss-b4-miss-dock-kb-375x667-light-chromium.png`.
-2. **`card-pairs-kb` — the same thing on an ordinary card.** `#/card/ang-wu-1` at 375×667 with the
-   keyboard up **and no job in the page**: `unreachable-answer input#wpairs-1-in` (*"starts at y
-   342 px, at or below the dock top (214 px)"*), plus `offscreen` on `.card-hint-btn` and
-   `.card-scratch-toggle` (*"still below the fold with the page scrolled to its end"*) and `overlap`
-   on `.w-pairs-undo` / `.w-pairs-count`. `widgets/base.js keepVisible()` cannot scroll the field
-   clear because the picker is taller than the band the keyboard leaves.
-   Owner: `site/js/widgets/pairs.js` + `site/css/{components,widgets}.css`.
-   Look at `qa/audit/png/card-pairs-kb-375x667@motion-light-chromium.png`.
-3. `card-pairs-locked` — the pairs widget's wrong-state red on its own pink ground measures
-   **4.21 : 1** (`rgb(217,45,76)` on `srgb(0.988,0.934,0.944)`) against the 4.5 : 1 the detector needs
-   at 15 px (`contrast`, MAJOR).
-
-**Where the root cause looks to be, for whoever takes it** (not changed here — the study layer is
-off-limits to this lane, and the repair round filed it deliberately). `widgets/base.js keepVisible()`
-(`:274`) reacts correctly — it measures `visualViewport.offsetTop + visualViewport.height` minus the
-dock and calls `scrollIntoView({block:'center'})` — but **scrolling cannot help if the document has
-nowhere left to scroll**: the card's scroll container has no bottom padding for `var(--kb)` + the dock,
-so the last band of content can never rise into the visible strip. `css/job.css` already does exactly
-this for the job's own sticky beats (`bottom: calc(var(--job-dock-h, 0px) + var(--kb, 0px))`, `:625`,
-`:680`, `:714`); the card/boss scroller has no equivalent. Start there, then re-run
+**Do not push expecting a green matrix.** The defects are real, student-facing and **outside the ship
+agent's writ** — owners are `site/js/widgets/{pairs,num,equation}.js`, `site/css/{components,widgets}.css`
+and `screens/card.js`'s side rail. Root cause in `notes/CUT-SCORECARD.md` §5: `widgets/base.js
+keepVisible()` reacts correctly but **scrolling cannot help when the document has nowhere left to
+scroll** — the card's scroller has no bottom padding for `var(--kb)` + the dock, and `css/job.css`
+already does exactly that for the game's own sticky beats. Fix there, then
 `node qa/layout-audit.mjs --only boss-b4-miss-dock-kb,boss-b4-miss-setup-kb,card-pairs-kb,card-pairs-locked`
-(minutes, not an hour) before the full matrix.
+before the full matrix.
 
-Why this is the first matrix to see them: the last clean full run (2026-09-18, build 2026-09-17e,
-"0 findings, 0 waived") audited **95** states and had **no keyboard-open card state at all**. This
-one audits **108** — three added today (`card-pairs-kb`, `card-pairs-locked`, `job-payout-kb`) as
-unwaived *controls* for the attributed waivers, and `boss-b4-miss-{dock,setup}-kb` arriving with the
-game-layer commit, i.e. after the last clean full run. Same product, better net. The detector
-self-test passed 9/9 in both engines on this run, so the net itself is sound.
-
-### `qa/audit-allow.json` grew from 2 entries to 6 — read this before trusting a waiver
-
-Four ATTRIBUTED waivers were added 2026-09-22. Each waives a hit **only on the two job states that
-host the study layer's card** (`job-answer-kb`, `job-payout-kb`) and each names a **control state
-outside the host that reproduces the hit and is left UNWAIVED** — which is exactly why the matrix
-still fails above. `tests/job-audit-allow.test.mjs` gates every entry on each `node --test` run: the
-control must exist in `qa/audit-states.mjs`, be waived by nothing, and the counts must be the ones the
-command recorded in the entry's `attribution` block. Nothing is muted; hits are moved to the state
-that owns them. The two original waivers (header status read-outs, `sr-only` contrast) are unchanged.
+**The numbers are byte-identical to the 2026-09-22 matrix** (462 / 136 / 356 / 106 / 94, the same four
+states) over a build that has since gained a sixth job state, a loss beat, a bidless beat and a
+withdrawing third slot. Nothing regressed and nothing was fixed.
 
 ## What this ship pass changed
 
 | file | change |
 |---|---|
-| `site/version.js` | `APP_VERSION` → `"2026-09-21a"` |
-| `qa/s9-walk.mjs` | three repairs, below — the driver had been silently aborting since the layer landed |
-| `notes/G9-SCORECARD.md` | **new** — G9's ten and S9's ten re-scored with the test or measurement behind each |
+| `site/version.js` | `2026-09-23a` → `2026-09-23b` (see State, above) |
+| `qa/ship-sessions.mjs` | `call()` takes a timeout, and the cold open locks a call only if one is mounted — its 20 s wait for a bid that question 1 never has **was** the cold-open reading (`20 103 ms`; the honest number is 106 ms) |
+| `qa/cut-count.mjs` | the taps walk waits for the face-down card **or** the question, and answers a bidless question instead of stopping the session on it — it had been throwing a `TimeoutError` since round 4 |
+| `notes/CUT-SCORECARD.md` | rewritten for this build |
 | `notes/HANDOFF.md` | this file |
 
-Nothing under `site/js/`, `site/css/`, `site/data/` or `tests/` was touched by this pass.
-`site/js/version.js` aside, the product is exactly what the repair lanes left.
+Nothing else under `site/`, and nothing at all under `tests/` or `designs/`. **Both harness fixes are
+the same root cause**: round 4 made question 1 of every session bidless (`pay.js decides` is false at
+an empty pile) and two round-2/round-3 harnesses still assumed a face-down card in front of every
+question. Neither file is served or imported by a test; both edits carry their reason in place.
 
-### `qa/s9-walk.mjs` — why it needed repairing
+## Scorecard headline
 
-`settings.game` ships **true** (`site/js/store.js:301`), so Home's primary button is the JOB board on
-any save that posts one. The driver predates the layer: it waited on
-`.home-primary[data-kind="page"]`, timed out after 20 s, aborted at Home — **and exited 0**. Today's
-Page, the Summary, the Binder, the Mock and Settings had been unmeasured since the layer landed, with
-a green-looking exit code over the hole.
+`notes/CUT-SCORECARD.md`, in full.
 
-1. `tapTodaysPage()` takes the primary when it is the Page and Home's own `a[href="#/run/page"]`
-   ("Run a page", `screens/home.js:761`) when it is not — COMPOSED-GAME G10 #14's "one tap".
-2. The keyboard is now modelled the way `qa/job-screen.mjs` models it since the round-3 finding: the
-   **layout** viewport stays 375×667 and only `visualViewport` shrinks, with "in view" measured
-   against `visualViewport.offsetTop + visualViewport.height`. The old code called
-   `setViewportSize(375, 380)`, which shrinks the *layout* viewport — no keyboard does that; it moves
-   the sticky chrome up with the fold and can hide nothing, so every "keyboard open" claim passed on
-   a keyboard that does not exist.
-3. A walk that throws now sets `process.exitCode = 1`.
+- **CUT-BRIEF's hard limits: 7 of 7 PASS.** 3 numbers on screen, 1 game tap (2 with the answer),
+  13 routes, 0 jargon words, every printed number the engine's own, a **1 199**-word spec, no copy
+  citing the document.
+- **The eight math requirements: 8 of 8 proved**, each against the shipped `pay.js` over the
+  enumerated state space, not a sample. Headlines: 0 bad of 1 198 782 honest-calling cells; band
+  edges exactly 2/3 and 4/5; the push threshold falls strictly with the streak (2 110 of 2 110) and
+  never falls with the pile (1 593 of 3 628 rise, 0 fall); a program allowed to throw any question
+  gains exactly 0.000000000.
+- **The measured session split: FAIL — 2 % driven end to end today, 3–21 % pinned, against 45–55 %.**
+  Structural, not a bug, and an editorial decision for CUT-BRIEF's owner. See below.
+- **COMPOSED S9: 9 PASS · 1 FAIL.** The FAIL is #9's keyboard clause — the matrix above, a
+  study-layer defect. Every other criterion is backed by a test or by a measurement taken this pass.
 
-**Still not measured by it:** this build's Page item 1 was an `asn:verdict` card and item 2 a
-`notation:build` card, so neither the keyboard branch (needs a text input) nor the deliberate-wrong
-branch (S9 #4) fired. Both branches are correct now; they need a save whose first items carry inputs.
+## The two decisions that belong to the brief's owner, not to a build
 
-## Scorecards
+**1. The band, or the queue.** CUT-BRIEF asks for a measured 45–55 % of wall clock on game decisions.
+The app measures honestly and printed **2 %** on the session driven to the panel this pass;
+`tests/job-split.test.mjs` pins the loop's honest range at **3–21 %**. The meter is sound and cannot
+be flattered — every millisecond lands in exactly one partition, an absence can only lower the share,
+a declared interval is capped by the wall clock, all asserted. The ceiling — the best share any single
+question can print — is **55 %** at a 20 s question, 44 % at 30 s, 29 % at 60 s, and CUT-BRIEF's own
+session shape (10–14 min, 8–12 questions) tops out at **48 %** fast end, **23 %** slow end, with the
+student pinned at the deliberation ceiling on every question. CUT-BRIEF closes its own remedy:
+"fewer, harder questions" prints 9 · 9 · 9 · 9 % at 4, 8, 12 and 23 questions (a longer question moves
+it **down**), "same queue, same length, same items" closes a shorter session, and padding with waiting
+is forbidden outright. **Ratify the measured share as the target, or move "same queue, same length".**
+If the band moves, `job-split`'s 24 s deliberation ceiling should come down with it.
 
-`notes/G9-SCORECARD.md`, in full. Headline: **G9 9/10, S9 9/10.**
+**2. The bid on an empty pile.** The brief's first surviving idea — *you bid on yourself before you
+see the question* — is absent from question 1 of every session and from a large share of the rest: in
+the twelve-question session driven this pass, **a live bid existed on 5 of 12 questions**. It is not a
+bug. `tests/job-pay.test.mjs:385` proves that at an empty pile math #8 makes every call free, so the
+biggest pay would be optimal at every rate and math #2 (*each call uniquely optimal on a non-empty
+band*) would be false. **Idea 1 and math #8 cannot both hold there, and the build keeps the math.**
+The forward distribution is pinned at 8.5 % of a session at q = 0.99 and 49.4 % at q = 0.35
+(`job-pay:444`). Amend the idea, or amend math #8 — the build cannot choose, and seeding the pile was
+declined for a reason (`notes/cut-integrate-r5.md` §3.1: bankable points no question earned).
 
-- **G9 #6 FAILS**, exactly as `COMPOSED-GAME.md` publishes it: the RANK is farmable. `w = 4q̂(1−q̂)`
-  is built from `save.cards[*].history` (`site/js/job/call.js:1065`), which `screens/card.js` writes
-  on every graded original — inside a job or not — so free study is evidence the game does not price.
-  Measured at **Called 2 vs Called 4 on 8/8 seeds, +6.91 % post-climb loot, byte-identical study
-  ledger** (`node notes/repair-meta-evidence.mjs`). The close is a one-line `call.js` change (build
-  `q̂` only from staked job targets), filed in `notes/repair-meta.md`, **not taken in this build**.
-- **S9 #9 FAILS** on its keyboard-open clause, for the pairs-widget defect above. Everything else in
-  #9 passes: 0 horizontal overflow on every walked screen, 0 tap targets under 44 px in the job.
-- **G9 #1** passes *inside the condition its own text now carries*: printed vs measured agree ≤ 1.19
-  points same-shape and ≤ 4.39 within a fixed-phase column, but the cross-column band is **6.35 with
-  21 of 1 196 cells outside 5 points** — published, not closed.
-- **S9 #1**'s "no plan warning" clause was not exercised: today is D = 2 and Home correctly warns
-  "40 new a day is more than a day holds — the target is 12". The clause is specified for a D = 7 open.
+The build meanwhile does the one thing the brief actually requires of it: it prints the honest number.
+**Do not delete that print to make the panel read better.**
 
 ## Open, in the order a student meets it
 
-The full list with evidence is `notes/G9-SCORECARD.md` §"What a student would still notice". The six
-worth fixing first:
+The full list with evidence is `notes/CUT-SCORECARD.md` §7. The five worth fixing first:
 
-1. **Type an answer on a phone and the box can be behind the keyboard** — Boss B4 after a lost heart
-   and the pairs card, both BLOCKER, both study layer (details above).
-2. **Boss B4's miss banner is clipped mid-sentence** with the keyboard up, on top of that.
-3. **The hint price truncates on a phone**: `hints are free · this one costs 16 of 53 l…`.
-4. **"Vault cracked" over "0 XP this run"** for ~1.1 s — the debrief hero is held at `0` for
-   `bagDropMs()` = 600 ms, then counts up over 500 ms (`screens/run.js:1295,1454`), while the header
-   already reads `bag 424`. A transient, not a stuck zero (the walked job's shot caught the landed
-   `23`), but it is the biggest number on the screen.
-5. **The chain pips read as empty boxes** at phone size — `GLYPHS.chainFilled '▮' / chainEmpty '▯'`
-   (`data/job.js:943`).
-6. **The board's first paint is punctuation.** G7 says pass 1 carries labels, lock counts, cold days,
-   wing labels and per-wing supply from the save alone; measured, every one of them is a placeholder
-   (`····· · ······· · ·········`) for **740 ms**. No spinner, no shift inside the board — but Home
-   reflows around it (`.home-today` +50 px, CTA −24 px, CLS 0.00114).
+1. **The bid is not a decision on most questions** (decision 2 above).
+2. **Nothing on the decision screen says what the three calls are worth.** Three identical buttons,
+   three words, an unaffordable one dashed and grey with no reason on screen; the bands are in
+   Settings and nowhere else.
+3. **The loss beat reads as the app freezing.** The beat exists — rounds 3 and 5 put it there — but on
+   a phone it is `26 pile  ×3 streak` alone on an empty white screen for ~1.7 s, then the numbers
+   change. No colour, no motion, no sound; the only animation the screen owns fires on a climb.
+4. **The graded screen is still a wall of numbers** — 2 from the game, **18** from the study card.
+   COMPOSED's, untouched by design, and the largest remaining distance between the brief's spirit and
+   the phone.
+5. **The hit-rate meter is dots with no key**, and a hint silently withdraws the payout while the
+   card's own line still says hints cost "XP quality, never an attempt".
 
-## Carried over from the 2026-09-18 handoff, still open
+## Carried over, still open
 
 - `qa/r2-home-pins.mjs cold` missed its own budgets (3G paint 2.8 s vs 2.5; returning-visit CTA
-  1.08 s vs 1 s) — **not re-run this pass.**
-- Lighthouse mobile ≥ 95/95 never run. Sound never heard.
+  1.08 s vs 1 s) — **not re-run this pass**.
+- Lighthouse mobile ≥ 95/95 has never been run. **Sound has never been heard.**
+- One `FIX5_RUN_BROWSER=1` arm is red — a study-layer Page geometry with a harness that cannot open a
+  real keyboard (`notes/cut-integrate-r5.md` §3.3). The other three pass.
+- Three node tests read `qa/fixtures/midweek.json` RAW and never re-anchor it, so they compose against
+  the wall clock (`tests/home-r1.test.mjs:90`, `tests/plan.test.mjs:782`, `tests/cut-home.test.mjs:704`).
+  Green today; the fix is to load them through `freshen()` and re-check their thresholds.
+- `bankPile` scores any session, so `#/run/job` typed by hand still adds to `game.today`
+  (`notes/cut-home.md` R11). Home does not point there.
+- `store.js`'s two named races (`game.today` stale on Home while a bid stands; the midnight timer being
+  best-effort) — `notes/cut-save.md` round 5, both bounded.
+- `site/data/skills.js` — `Factoring a = 1` / `a > 1` still carry digits, kept off the card by
+  `FACE_NAMES` in `screens/job.js`; `tests/job-screen.test.mjs` goes red on the next digit-bearing
+  name with no entry.
 - `widgets.css`'s two viewport-keyed rules are neutralised by `@container answers`, not yet folded in
   (LAYOUT-ROOT §6). `.mock-dialog` / `.mock-map` must move to `<body>` before the Mock can be a query
   container.
-- An answer that crosses local midnight inside one open screen can still charge that day's decay in
-  the answer's save.
+- An answer that crosses local midnight inside one open screen can still charge that day's decay.
 - A legacy miss on a Variant of a generator-only skill has no card id, so `saveEvidence` cannot see it.
 - The first Mock's switch from provisional to locked Readiness can lower the number (S4 allows it);
   the report should say "Readiness now uses the full formula".
+- `UNGATED` is down to one row — `screens.css:blitz-card-cap` (`.blitz-card max-height 560px → 35rem`,
+  identical at a 16 px root, CSS reads no flag). Either ratify that row or express it in px again.
 - The judgement calls in `notes/LAYOUT-PERFECT.md` §5 stand as written.
 
 ## The guard, before you push
 
 ```sh
-node --test tests/                 # ~7 min, and it cannot see a layout defect
+node --test tests/                 # ~4 min, and it cannot see a layout defect
 node qa/gen-precache.mjs --check   # instant
-node qa/job-walk.mjs               # ~6 min, real browser, reads every printed probability back
-node qa/s9-walk.mjs                # ~3 min, now fails loudly instead of exiting 0
-node qa/layout-audit.mjs           # ~50 min, both engines — READ what it prints
+node qa/cut-integrator-r5.mjs      # ~3 min — the three numbers and the one tap, off a real session
+node qa/cut-count.mjs              # ~3 min — the same two limits off the six job states and both routes
+node qa/ship-sessions.mjs          # ~6 min — three sessions, the end panel, the cold open
+node qa/s9-walk.mjs                # ~3 min; also `… timer` and `… offline`
+node qa/layout-audit.mjs           # ~21 min, both engines — READ what it prints
 ```
+
 CI runs the auditor's **self-test** with a real browser (9 of 9 detectors caught their planted defect
 in both engines on this run) and blocks the deploy if the detectors have rotted; the full matrix is
 deliberately not in CI.

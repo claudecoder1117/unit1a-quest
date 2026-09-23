@@ -482,18 +482,12 @@ function queryFlag(query, key) {
   return v != null && v !== '0' && v !== 'false';
 }
 
-/**
- * J11 / COMPOSED-GAME G7 — the VAULT shape's final target delegates HERE, and **nothing about the
- * fight changes**: 3 hearts, no hints, CONTINUE? with its check question, KO keeps XP / mastery /
- * tiles and forfeits only the stamp, the `*` flag, the same-seed ghost. The vault is a frame around
- * this screen, not a variant of it — `#/boss/B2?job=1` only re-points the back link at the job and
- * marks the root so `screens/job.js` (J6) can read the record through the `onFinish` hook that
- * already existed. `VAULT_QUERY` is the flag; `isVaultRun(query)` is the test.
- */
-export const VAULT_QUERY = 'job';
-export const isVaultRun = (query) => queryFlag(query, VAULT_QUERY);
-/** Where a vault boss's back arrow goes: the job it is the last target of, never away from it. */
-export const VAULT_BACK = '#/run/job';
+/* THE VAULT IS GONE (r2, study-untouched). CUT-BRIEF's deletion list names "the vault as a distinct
+   shape" and then says: "Delete the code too … Dead code that 'might come back' is how this got
+   here." `VAULT_QUERY` / `isVaultRun` / `VAULT_BACK` survived the cut with no caller anywhere under
+   `site/`, no CSS rule and no test — but they were still LIVE: `#/boss/B2?job=1` rendered a study
+   Boss with `data-vault="true"` and its back arrow silently re-pointed at `#/run/job` under the
+   label "Back to the job", ungated by `settings.game` and in a word CUT-SPEC §6 does not list. */
 
 /** `screens['/boss/:id']` */
 export function mountBoss(params, query) {
@@ -502,7 +496,6 @@ export function mountBoss(params, query) {
       seed: query?.get?.('seed') || null,
       attempt: query?.get?.('attempt') ? Number(query.get('attempt')) : null,
       autostart: queryFlag(query, 'start'),
-      vault: isVaultRun(query),
     });
     return () => run.destroy();
   };
@@ -512,15 +505,11 @@ export function mountBoss(params, query) {
 
 /**
  * createBossRun(host, bossId, opts) → { el, destroy, state }
- * opts: { seed, attempt, autostart, vault, onFinish(record) }
- * `vault: true` is J11's frame for the VAULT shape's final target: the back arrow returns to the job
- * and the root carries `data-vault`. Hearts, CONTINUE?, the `*` flag, the KO rules, the ghost and the
- * record are UNTOUCHED by it — the flag reaches no other line of this file.
+ * opts: { seed, attempt, autostart, onFinish(record) }
  */
 export function createBossRun(host, bossId, opts = {}) {
   const boss = bossById[bossId] ?? null;
-  const vault = opts.vault === true;
-  const root = h('section.screen.boss-screen', { dataset: { boss: bossId, phase: 'loading', ...(vault ? { vault: 'true' } : null) } });
+  const root = h('section.screen.boss-screen', { dataset: { boss: bossId, phase: 'loading' } });
   host.append(root);
 
   if (!boss) {
@@ -551,7 +540,7 @@ export function createBossRun(host, bossId, opts = {}) {
   }
 
   /* ---- chrome ---- */
-  const back = h('a.boss-back', { href: vault ? VAULT_BACK : '#/today', 'aria-label': vault ? 'Back to the job' : 'Leave the boss' }, '←');
+  const back = h('a.boss-back', { href: '#/today', 'aria-label': 'Leave the boss' }, '←');
   const title = h('div.boss-title', h('span.boss-id.mono', boss.id), h('h1.boss-name', boss.name));
   const hearts = h('div.boss-hearts', { role: 'img', 'aria-label': `${HEARTS} hearts` });
   const head = h('header.boss-head', back, title, hearts);

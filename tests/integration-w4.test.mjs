@@ -89,10 +89,13 @@ test('W4: the plan\'s day target and page.js\'s own are one number', async (t) =
   await t.test('the call sites drop `q` on purpose and say so', () => {
     const home = src('site/js/screens/home.js');
     const runSrc = src('site/js/screens/run.js');
-    assert.match(home, /const planOpts = \(save, D\) => \{ const \{ q, \.\.\.rest \} = composeOpts/, 'home.js strips q');
+    // THE CUT (notes/cut-home.md): home.js's copy of the drop-q line is now `plan.pageOpts`, the one
+    // implementation the three routes that start Today's Page share. Same contract, one place.
+    assert.match(home, /const planOpts = \(save, D\) => pageOpts\(save, \{ D \}\);/, 'home.js strips q');
+    assert.deepEqual(Object.keys(plan.pageOpts(fresh(), {})).sort(), ['microFlashOnly', 'tier4'], 'and pageOpts really drops it');
     assert.ok(!/startPage\(s, composeOpts\(/.test(home), 'home.js must never forward the plan q straight through');
-    assert.match(runSrc, /const \{ q, \.\.\.planOpts \} = composeOpts\(s\); startPage\(s, \{ \.\.\.planOpts/, 'run.js strips q');
-    for (const f of ['site/js/screens/home.js', 'site/js/screens/run.js']) assert.match(src(f), /composeOpts/, `${f} composes with the plan`);
+    assert.match(runSrc, /startPage\(s, \{ \.\.\.pageOpts\(s\)/, 'run.js strips q');
+    for (const f of ['site/js/screens/home.js', 'site/js/screens/run.js']) assert.match(src(f), /pageOpts/, `${f} composes with the plan`);
   });
 
   await t.test('nextAction previews the page it is about to start', () => {

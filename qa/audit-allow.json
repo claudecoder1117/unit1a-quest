@@ -8,7 +8,6 @@
     "A waiver is a promise that the hit is intentional AND accessible some other way — not a mute button.",
     "",
     "SECOND KIND (round-1 verification, layout-safari): an ATTRIBUTED waiver. A state that HOSTS another",
-    "layer's screen reports that layer's defects as its own — the job stage mounts the study layer's card,",
     "so every card-chrome hit lands on a job- state and fails the game layer's acceptance command",
     "(`node qa/layout-audit.mjs --only job`, notes/J6.md). Such a hit may be waived ON THE HOSTING STATES",
     "ONLY, and only when a CONTROL STATE outside the host reproduces it and is left UNWAIVED, so the owning",
@@ -17,7 +16,6 @@
     "",
     "ROUND-2 VERIFY (test-integrity finding 6): an ATTRIBUTED waiver now carries a machine-checkable",
     "`attribution` block — { control, measuredAt, command, hits[{type, selector, onHost, controlSelector?,",
-    "onControl}] } — and tests/job-audit-allow.test.mjs gates it on every `node --test tests/` run: the",
     "control state must exist in qa/audit-states.mjs and be waived by nothing, the counts must be the ones",
     "the named command produced, and when qa/audit/report.json is present and covers both sides, EVERY",
     "waived hit in it must be enumerated here. Prose counts in a reason are how 47 findings went stale."
@@ -43,14 +41,13 @@
       "type": "offscreen",
       "selector": ".card-side, .card-side *, .hint-ladder, .hint-ladder *, .card-scratch-wrap, .card-scratch-wrap *",
       "states": [
-        "job-answer-kb",
-        "job-payout-kb"
+        "job-answer-kb"
       ],
-      "reason": "ATTRIBUTED (see _doc): the card's SIDE RAIL — the hint ladder and the scratch toggle — sits below the card body, and with a 336px keyboard up on a 667px phone it cannot be scrolled clear of the dock. It is site/css/components.css's, not the job host's: the identical hits stand UNWAIVED on card-pairs-kb (#/card/ang-wu-1 with the same keyboard, no job anywhere). Counts re-measured 2026-09-22 from the run in `attribution.command` and carried in `attribution.hits` — 9 on .card-hint-btn and 7 on .card-scratch-toggle, the same on host and control. Gated by tests/job-audit-allow.test.mjs. Study-layer backlog: notes/repair-tests.md.",
+      "reason": "ATTRIBUTED (see _doc): the card's SIDE RAIL — the hint ladder and the scratch toggle — is drawn below the card body, and with a 336px keyboard up on a 667px phone it cannot be scrolled clear of the dock. It is the STUDY LAYER's card chrome, not the game's host: the identical hits stand UNWAIVED on card-pairs-kb (#/card/ang-wu-1, the same card, the same keyboard, no game anywhere in the page), so the study layer's own net still fails on them. RESTORED BY THE CUT (notes/cut-screen.md). The four attributed job waivers this replaces were deleted with the job states they named (notes/DEMOLISH.md §4); the study-layer defects they attributed did not go anywhere, and `job-answer-kb` now mounts the same pairs card in the new screen. Re-measured against the control on 2026-09-22 with the command in `attribution`. There is no `tests/job-audit-allow.test.mjs` any more — the shape of these entries is gated by `tests/job-screen.test.mjs` → \"an attributed job waiver names a control state that is itself unwaived\".",
       "attribution": {
         "control": "card-pairs-kb",
         "measuredAt": "2026-09-22",
-        "command": "node qa/layout-audit.mjs --only job-answer-kb,job-payout-kb,card-pairs-kb,card-pairs-locked --engine chromium --theme light --vp phone",
+        "command": "node qa/layout-audit.mjs --only job-answer-kb,card-pairs-kb --engine chromium --theme light --vp phone",
         "hits": [
           {
             "type": "offscreen",
@@ -71,14 +68,13 @@
       "type": "overlap",
       "selector": ".card-side, .card-side *, .hint-ladder, .hint-ladder *, .card-scratch-wrap, .card-scratch-wrap *, .w-pairs-foot, .w-pairs-foot *",
       "states": [
-        "job-answer-kb",
-        "job-payout-kb"
+        "job-answer-kb"
       ],
-      "reason": "ATTRIBUTED (see _doc): the same side rail, plus the pairs widget's own footer (its count line and UNDO) which the widget draws below a picker tall enough to push it under the lifted dock. Reproduced UNWAIVED on card-pairs-kb with no job in the page, hit for hit — re-measured 2026-09-22 and carried in `attribution.hits` (9 on .w-pairs-undo, 9 on .w-pairs-count, 2 on the scratch toggle, 1 each on .card-side-h and the rail's hint line). Owner: site/css/{components,widgets}.css. Gated by tests/job-audit-allow.test.mjs. Study-layer backlog: notes/repair-tests.md.",
+      "reason": "ATTRIBUTED (see _doc): the same side rail, plus the pairs widget's own footer (its count line and UNDO), which the widget draws below a picker tall enough to push it under the lifted dock. Reproduced UNWAIVED on card-pairs-kb with no game in the page. TWO OF THE SIX MEASUREMENTS DO NOT MATCH HIT FOR HIT and the numbers below say so: span.card-side-h and span.muted.fs-1 land twice on the host and once on the control, because the game's 52px pinned strip moves the rail 52px down and the SAME element then clears the dock at one fewer viewport (320x568 as well as 320x568@zoom20). It is the same defect on the same element, at 232px of visual viewport where the dock alone takes 117px; the band is already one line per slot (css/job.css --job-strip-h). RESTORED BY THE CUT (notes/cut-screen.md). The four attributed job waivers this replaces were deleted with the job states they named (notes/DEMOLISH.md §4); the study-layer defects they attributed did not go anywhere, and `job-answer-kb` now mounts the same pairs card in the new screen. Re-measured against the control on 2026-09-22 with the command in `attribution`. There is no `tests/job-audit-allow.test.mjs` any more — the shape of these entries is gated by `tests/job-screen.test.mjs` → \"an attributed job waiver names a control state that is itself unwaived\".",
       "attribution": {
         "control": "card-pairs-kb",
         "measuredAt": "2026-09-22",
-        "command": "node qa/layout-audit.mjs --only job-answer-kb,job-payout-kb,card-pairs-kb,card-pairs-locked --engine chromium --theme light --vp phone",
+        "command": "node qa/layout-audit.mjs --only job-answer-kb,card-pairs-kb --engine chromium --theme light --vp phone",
         "hits": [
           {
             "type": "overlap",
@@ -101,13 +97,13 @@
           {
             "type": "overlap",
             "selector": "span.card-side-h",
-            "onHost": 1,
+            "onHost": 2,
             "onControl": 1
           },
           {
             "type": "overlap",
             "selector": "span.muted.fs-1",
-            "onHost": 1,
+            "onHost": 2,
             "onControl": 1
           }
         ]
@@ -117,43 +113,19 @@
       "type": "unreachable-answer",
       "selector": ".w-pairs input, .w-pairs .w-input, .w-pairs .w-field input",
       "states": [
-        "job-answer-kb",
-        "job-payout-kb"
+        "job-answer-kb"
       ],
-      "reason": "ATTRIBUTED (see _doc), and the heaviest of these — it is NOT a mute. The pairs widget's own text field starts below the lifted dock at 375x667 with the keyboard open, and widgets/base.js keepVisible() cannot scroll it clear because the widget's picker is taller than the band the keyboard leaves. It is the WIDGET's geometry, not the job's: card-pairs-kb reproduces `unreachable-answer input#wpairs-1-in` 8 times (re-measured 2026-09-22) with no job in the page and is left UNWAIVED, so the study layer's net fails on it exactly as it should. Owner: site/js/widgets/pairs.js + site/css/widgets.css. Gated by tests/job-audit-allow.test.mjs. Study-layer backlog: notes/repair-tests.md.",
+      "reason": "ATTRIBUTED (see _doc), and the heaviest of these — it is NOT a mute. The pairs widget's own text field starts below the lifted dock at 375x667 with the keyboard open, and widgets/base.js keepVisible() cannot scroll it clear because the widget's picker is taller than the band the keyboard leaves. It is the WIDGET's geometry, not the game's: card-pairs-kb reproduces `unreachable-answer input#wpairs-1-in` the same 8 times with no game in the page and is left UNWAIVED, so the study layer's net fails on it exactly as it should. Owner: site/js/widgets/pairs.js + site/css/widgets.css. RESTORED BY THE CUT (notes/cut-screen.md). The four attributed job waivers this replaces were deleted with the job states they named (notes/DEMOLISH.md §4); the study-layer defects they attributed did not go anywhere, and `job-answer-kb` now mounts the same pairs card in the new screen. Re-measured against the control on 2026-09-22 with the command in `attribution`. There is no `tests/job-audit-allow.test.mjs` any more — the shape of these entries is gated by `tests/job-screen.test.mjs` → \"an attributed job waiver names a control state that is itself unwaived\".",
       "attribution": {
         "control": "card-pairs-kb",
         "measuredAt": "2026-09-22",
-        "command": "node qa/layout-audit.mjs --only job-answer-kb,job-payout-kb,card-pairs-kb,card-pairs-locked --engine chromium --theme light --vp phone",
+        "command": "node qa/layout-audit.mjs --only job-answer-kb,card-pairs-kb --engine chromium --theme light --vp phone",
         "hits": [
           {
             "type": "unreachable-answer",
             "selector": "input#wpairs-1-in",
             "onHost": 8,
             "onControl": 8
-          }
-        ]
-      }
-    },
-    {
-      "type": "contrast",
-      "selector": ".w-pairs .w-mk, .w-pairs-chip, .w-pairs-chip *, .w-pairs-figmsg, .w-pairs-figmsg *",
-      "states": [
-        "job-answer-kb",
-        "job-payout-kb"
-      ],
-      "reason": "ATTRIBUTED (see _doc): the pairs widget's WRONG-state red on its own pink ground, measured 4.21:1 against the 4.5:1 the detector needs at 15px. On the host it lands once, on span.w-pairs-chip-t.mono; the same token pair is reported UNWAIVED on card-pairs-locked (#/card/ang-wu-1 answered to the end, no job) 7 times on .w-pairs-figmsg-t > .w-mk — same colours, same ratio, a different element, which is why `attribution.hits` carries an explicit controlSelector. Owner: site/css/widgets.css. Gated by tests/job-audit-allow.test.mjs. Study-layer backlog: notes/repair-tests.md.",
-      "attribution": {
-        "control": "card-pairs-locked",
-        "measuredAt": "2026-09-22",
-        "command": "node qa/layout-audit.mjs --only job-answer-kb,job-payout-kb,card-pairs-kb,card-pairs-locked --engine chromium --theme light --vp phone",
-        "hits": [
-          {
-            "type": "contrast",
-            "selector": "span.w-pairs-chip-t.mono",
-            "onHost": 1,
-            "controlSelector": "span.w-mk",
-            "onControl": 7
           }
         ]
       }

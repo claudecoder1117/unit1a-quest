@@ -42,29 +42,23 @@ import { mathfmt } from '../mathfmt.js';
 import { isClean } from '../xp.js';
 import { placeSkill, scoreFor, applyOutcome as applyMastery, decayAll } from '../mastery.js';
 import { rarityOf, bestRarity, tileRarity, familyRarity, foilRule, FAMILY_STEPS, FAMILY_PLATINUM_GOLD, FAMILY_PLATINUM_DAYS } from '../rarity.js';
-import { applyOutcome as applySchedule, outcomeOf, checkDailyGoal, dailyRecord, needsMet, dueList } from '../schedule.js';
+import { applyOutcome as applySchedule, outcomeOf, checkDailyGoal, dailyRecord, dueList } from '../schedule.js';
 import { readiness, readinessDelta, logForecast, skillStates, coverageCount, weakSpots } from '../readiness.js';
 import {
   resumePage, startPage, markItem, requeueReview, finishPage, missedOriginals,
   nextAction, pageLabel,
 } from '../page.js';
-import { composeOpts } from '../plan.js';   // W4 integration (notes/T14.md Requests → T16)
+// THE CUT: `plan.pageOpts` is `composeOpts` without `q` — the ONE implementation of the line this
+// screen used to keep its own copy of (plan.js names the three routes that start Today's Page).
+// `jobOwnsPage` is "a session is live on this page AND the screen that serves it can mount" — the ONE
+// implementation of "who owns Today's Page", and `handoffFor` below is its only reader in this file.
+// IT IS NOT THE SWITCH, AND THIS FILE READS THE SWITCH NOWHERE: `tests/job-ledger.test.mjs` ("only the
+// door itself reads the flag — no study module does") names `js/screens/run.js` in as many words, and
+// `tests/cut-run.test.mjs` §10 pins the same ban from this side. The switch is `plan.js`'s to read;
+// what crosses into this file is the door's ANSWER, never the flag, so no queue here can branch on it.
+import { pageOpts, jobOwnsPage } from '../plan.js';   // W4 integration (notes/T14.md Requests → T16)
 import { createCardView, familyOf, fmtClock } from './card.js';
 import { options as mcOptions } from '../grader/mc.js';
-/* === J6b === the debrief. All four are DOM-free game modules (G7 "every one under js/job/ is DOM-free
-   and Node-testable"); this screen reads them and prints, and writes nothing they own. */
-import * as jobEcon from '../job/econ.js';
-import * as jobCall from '../job/call.js';
-import * as jobGuard from '../job/guard.js';
-import * as jobIndex from '../job/index.js';
-import {
-  COPY as JOB_COPY, ANIMATION as JOB_ANIMATION, SHAPES as JOB_SHAPES,
-  GUARD as JOB_GUARD, AUTO_BAG as JOB_AUTO_BAG, PHASE_MEANS_DEFAULT as JOB_PHASE_MEANS,
-  WING_IDS as JOB_WING_IDS,
-  /* verify r2 (split-honesty): the debrief's decision ceiling is printed on the counter's own
-     basis, which needs the two optional extras and the brief-window option count by name. */
-  DECISIONS as JOB_DECISIONS,
-} from '../../data/job.js';
 
 /* ================================================================== constants */
 
@@ -101,10 +95,12 @@ const KIND_META = Object.freeze({
   baseline: { title: 'Baseline', back: '/today', mode: 'mock', delegate: 'mock' },
   night: { title: 'Night Before', back: '/today', mode: 'card', delegate: 'night' },
   morning: { title: 'Test Morning', back: '/today', mode: 'card', delegate: 'night' },
-  // J6 (COMPOSED-GAME G7 "Extended", G10 #14 "zero new routes"): THE JOB is `#/run/job?seed=`.
+  // THE GAME (designs/CUT-BRIEF.md "no new screen, no new route") mounts at `#/run/job`.
   // `game: true` keeps it out of RUN_KINDS below — it is not one of S1's run kinds, it is the game
   // layer's one mount point, exactly as `post` is T14's Post-test state (see DELEGATES).
-  job: { title: 'The Job', back: '/today', mode: 'card', delegate: 'job', game: true },
+  // The title is EMPTY on purpose: CUT-SPEC §6 is the whole list of strings the game layer may
+  // print and no name for it is on that list, so this route prints none. `kind` is an identifier.
+  job: { title: '', back: '/today', mode: 'card', delegate: 'job', game: true },
 });
 
 /**
@@ -119,8 +115,11 @@ const DELEGATES = Object.freeze({
   night: { mod: './night.js', fns: ['mountRunKind', 'mountNight'], fallback: 'stub' },
   morning: { mod: './night.js', fns: ['mountRunKind', 'mountMorning'], fallback: 'stub' },
   jump: { mod: './onboard.js', fns: ['mountJump'], fallback: 'self' },
-  // J6 — THE JOB's screen (js/screens/job.js), the same delegate pattern baseline and night use.
-  job: { mod: './job.js', fns: ['mountJob'], fallback: 'stub' },
+  // THE GAME's screen (js/screens/job.js), the same delegate pattern baseline and night use.
+  // `fallback: 'today'` and not a stub: a stub is a paragraph of copy, and the game layer has no
+  // copy but CUT-SPEC §6's list. If its module cannot load there is nothing to say, so the route
+  // hands the student back to Today in silence.
+  job: { mod: './job.js', fns: ['mountJob'], fallback: 'today' },
   // `post` is not one of S1's run kinds — it is the Post-test state T14 reaches through this route.
   // It is delegated (never listed in RUN_KINDS) so a deep link still lands on the screen that owns it.
   post: { mod: './night.js', fns: ['mountRunKind', 'mountPostTest'], fallback: 'stub' },
@@ -309,14 +308,28 @@ export function buildRun(kind, save, { id = null, seed = null, now = Date.now(),
   if (kind === 'drill') {
     const skill = SKILL_IDS.includes(id) ? id : null;
     if (!skill) return { ...base, empty: 'Pick a weak spot on Today to drill — that link carries the skill.' };
-    // J5b (one-line addition, BUILD-POLICY §2 — see notes/J5b.md "Requests"): Drill 5 picks a template
-    // the same way page.js's weak slot does, item-level `needs` met. Nothing is locked: an unmet skill
-    // drills its originals, exactly as a skill with no generator does.
-    const tpls = T.templatesForSkill(skill).filter((t) => needsMet(T.getTemplate(t)?.needs, save));
+    /* NO `needs` GATE ON THIS ARM, and that is the fix rather than an oversight (notes/cut-run.md,
+       round 1). J5b added `.filter((t) => needsMet(T.getTemplate(t)?.needs, save))` here so that Drill
+       picked a template the way page.js's weak slot does. page.js can afford that filter — it has a
+       whole page to fill from several pools, and a template it skips costs it one slot. Drill has ONE
+       skill's templates and a COUNT it has already published: in its own title, and on the "Drill 5"
+       link Home, the Boss miss strip and Stats all render. Five templates carry `needs` and four of
+       them need QUAD-SOLVE, which is late algebra, so the ordinary student — weak in BISECT-Q, never
+       having touched QUAD-SOLVE — tapped a button promising five and was dealt ONE card (measured on a
+       fresh save with a weak record: BISECT-Q 1, SEG-ALG 1, CS-QUAD 2; SYS and FIG-ALG kept five but
+       lost a template from the mix). The comment that shipped with the filter — "Nothing is locked: an
+       unmet skill drills its originals" — is false for a skill whose originals are one card.
+       The game reads study state and prices it; it does not gate a study route. */
+    const tpls = T.templatesForSkill(skill);
     const items = tpls.length
       ? variantsFrom(tpls, DRILL_ITEMS, seedStr, { role: 'weak' })
       : originalsFor({ skill, save }).slice(0, DRILL_ITEMS).map((c) => cardItem(c, 'weak'));
-    return { ...base, title: `Drill 5 · ${skillById[skill]?.name ?? skill}`, subtitle: 'Unlimited — these pay full XP (no Variant discount).', items, meta: { skill } };
+    /* The number in the title is READ OFF THE QUEUE, never hard-coded. Every skill in the bank has a
+       generator today, so this prints `Drill 5` for all nineteen — but the originals fallback above can
+       under-fill for a skill that loses one, and a title promising five over a queue of one is the very
+       defect this arm just had, in its second form. `DRILL_ITEMS` stays the ask; `items.length` is the
+       claim. (`tests/cut-run.test.mjs` §9 holds both.) */
+    return { ...base, title: `Drill ${items.length} · ${skillById[skill]?.name ?? skill}`, subtitle: 'Unlimited — these pay full XP (no Variant discount).', items, meta: { skill } };
   }
 
   if (kind === 'jump') {
@@ -671,6 +684,27 @@ export function skillDeltas(before = [], after = [], ids = null) {
     .sort((a, b2) => (b2.to - b2.from) - (a.to - a.from));
 }
 
+/**
+ * A PAGE'S DURATION IS ITS ITEMS', NOT ITS SITTING'S — and it is decided HERE, in the one function
+ * both routes call, so the two cannot disagree about it (round 5, ledger-invariance).
+ *
+ * A Page is the only run kind with two writers (`mountCardRun.finish()` and `commitJobRun`) and the
+ * only one that survives a break: quit after five questions, eat dinner, come back. Any duration
+ * measured from a wall clock then depends on which door was used and how long the food took —
+ * `#/stats` printed `42m` for the flat route and `5h 52m` for the game over the SAME study. Summing
+ * what each item took is the one reading that is neither: it is a fact about the answering, it is
+ * identical on both routes by construction, and the flat Summary has always printed it on a resumed
+ * page (`elapsedMs` below). Every other kind is a single sitting and keeps its wall clock, so not
+ * one number `#/stats` prints for them moves.
+ *
+ * `#/stats`'s `runMs` already prefers a record's own `ms` (`screens/mock.js` writes one), so this
+ * field is the record's existing vocabulary and not a new surface.
+ */
+function runRecordMs(kind, sum, startedAt, submittedAt) {
+  if (kind === 'page') return sum.ms;
+  return Number.isFinite(startedAt) && Number.isFinite(submittedAt) ? submittedAt - startedAt : null;
+}
+
 /** The S6 run record, with the fields `js/trophies.js` and `#/stats` read (notes/T11.md "run record fields"). */
 export function makeRunRecord({
   kind, id = null, seed = null, seedTag = null, startedAt, submittedAt = Date.now(),
@@ -679,7 +713,7 @@ export function makeRunRecord({
   const sum = summarizeRun(results);
   return {
     kind: id ? `${kind}:${id}` : kind, status: 'done', seed, seedTag,
-    startedAt, submittedAt, limitMs: null, tabAway: 0,
+    startedAt, submittedAt, ms: runRecordMs(kind, sum, startedAt, submittedAt), limitMs: null, tabAway: 0,
     xp: sum.xp, acc: sum.accuracy, flawless: sum.clean,
     items: items ?? results.map((r) => ({
       id: r?.id ?? null, skill: r?.skill ?? null, tier: num(r?.tier, null),
@@ -700,12 +734,95 @@ export function pushRun(save, rec) {
 
 /* ================================================================== the screen */
 
+/**
+ * ONE PAGE HAS ONE RUNNER, AND A LIVE SESSION OWNS ITS OWN.
+ *
+ * `#/run/page` and `#/run/job` are not two pages — they are the same `save.inProgress`, the flat
+ * runner below and the game's strip over it. So while a session is live, this route serving that
+ * queue was not a second view of it, it was a second *door into it*, and both of CUT-BRIEF's two
+ * surviving ideas fell through it (exploit-hunt round 2):
+ *
+ *   · *"You bid on yourself before you see the question."* The face-down card shows the skill and
+ *     nothing else — but `#/run/page` mounted the SAME `inProgress` and printed the question. Read
+ *     it there, go back, call `sure`. The bid was no longer a bid.
+ *   · *"Your streak is a pile you can lose."* Answer the question HERE instead and `markItem`
+ *     advanced the index with no call, no cost and the streak intact — every question dodgeable for
+ *     nothing. Measured over the shipped payoff table that is worth 1.23×–3.17× honest play, and a
+ *     skimmer who clears half the material out-scores a student who clears four in five.
+ *   · And finishing the page here ran `finishPage`, which clears `inProgress` — taking the record,
+ *     and the whole unbanked pile, with it, silently, under the words "Page complete".
+ *
+ * None of it involves a wrong answer, so no cheating detector can see it. The fix is not a detector:
+ * it is that the door is not there. One condition, no new mechanic, no new route — the mirror of the
+ * refusal `screens/job.js` already makes in the other direction (`state.pageInProgress` → the flat
+ * page is half-answered, so the game may not start over it).
+ *
+ * AND THE ROUTE IT NAMES MUST ACCEPT IT. That is the other half, and it was missing (round 3). A
+ * hand-off to a door that is shut is not a guard, it is a loop: `screens/job.js` refuses to mount on
+ * two conditions, and each one needs closing from this side or the two routes trade the student
+ * forever with no way off the ride.
+ *
+ *   · `state.pageInProgress` — the flat page has been answered into, so a session may not start over
+ *     it. Closed by the ENGINE: that predicate returns null over a live record, so it is never true
+ *     at the instant this one is. Nothing to do here, and `tests/cut-run.test.mjs` says so.
+ *   · the game SWITCH. It was not closed, and the cycle was total: `#/today` → `#/run/page` (Home's
+ *     own resume button, which `plan.nextActionFor` leaves pointing here when the switch is off)
+ *     → `/run/job` → `#/today` → … Today's Page was unreachable and nothing on any of the three
+ *     screens cleared the record, so the state could not heal itself.
+ *
+ * SO THE PREDICATE CHANGED, AND NOT THIS FILE'S READING OF THE SWITCH — which stays zero. The question
+ * here was always "does another route own this queue", and `hasLiveJob` was simply the wrong answer to
+ * it: a record nobody can play is not an owner. `plan.jobOwnsPage` is the right one, and it lives in
+ * `plan.js` because that is where the switch is allowed to be read (`tests/job-ledger.test.mjs`).
+ *
+ * The comment that used to stand here — "reading the switch would re-open the second defect above in
+ * the one corner it cannot reach" — was wrong on its own terms, and that is why the predicate could be
+ * corrected at all. Every one of the three defects needs the game SCREEN: peeking needs a face-down
+ * card to go back to, dodging needs a session to carry the intact streak back into, and `finishPage`'s
+ * silent theft of the pile needs a pile the student could otherwise still bank. With the switch off
+ * there is no such screen — `screens/job.js` refuses to mount at all — so there is nothing here to
+ * walk into and nothing to take. What is left is a DORMANT record: the flat runner serves the page,
+ * the record is not touched, and flipping the switch back on resumes that session where it stopped.
+ *
+ * `settings.game = false` with a live record is still a state the app does not write — `settings.js`
+ * settles and drops the record inside the same `update()` that flips the flag. This is not a claim
+ * about how the app gets there. It is that the app cannot be bricked by a save that says it.
+ *
+ * @returns {string|null} the route that owns this queue, or `null` when this one does.
+ */
+export function handoffFor(kind, save) {
+  return String(kind) === 'page' && jobOwnsPage(save) ? '/run/job' : null;
+}
+
+/**
+ * Hand the route over, ONE MICROTASK LATER and in place of the entry we are standing on.
+ *
+ * `replace` and not a push because the way into this defect is the BACK button (`#/run/page` is one
+ * tap from Home on every game day, so it is in the tab's history): pushing `#/run/job` would leave
+ * the page entry in place, and the next BACK would land on it and push again — a back-button trap.
+ * Replaced, BACK goes where BACK was going.
+ *
+ * Deferred because `navigate(…, { replace: true })` routes SYNCHRONOUSLY and `app.js mount()` assigns
+ * `el.__unmount` only after this render returns: routing from inside this frame would mount the game
+ * screen and then have its cleanup overwritten by ours. Nothing is rendered in the meantime — the
+ * student sees the screen they came from until the swap, which is one microtask.
+ */
+function handOff(to) {
+  let live = true;
+  queueMicrotask(() => { if (live) navigate(to, { replace: true }); });
+  return () => { live = false; };
+}
+
 /** `screens['/run/:kind/:id?']` — (params, query) => (el) => cleanup */
 export function mountRun(params, query) {
   const kind = String(params?.kind ?? '').toLowerCase();
   const id = params?.id ? String(params.id) : null;
   const seed = query?.get?.('seed') ?? null;
   return (el) => {
+    // FIRST, before a queue is composed, a delegate is imported or one byte is rendered: `mountCardRun`'s
+    // page arm calls `startPage` on its first line, so a guard that ran any later would have written.
+    const owner = handoffFor(kind, getState());
+    if (owner) return handOff(owner);
     if (DELEGATES[kind]) return delegateRun(el, kind, { id, seed, query });
     if (!isRunKind(kind)) return renderUnknown(el, kind);
     if (kind === 'blitz') return mountBlitz(el, { id, seed });
@@ -721,15 +838,32 @@ function renderUnknown(el, kind) {
   ));
 }
 
+/**
+ * The line the route prints while a delegated screen's module is loading.
+ *
+ * THE GAME HAS NONE. CUT-SPEC §6 is the whole list of strings the game layer may print, and neither
+ * "Opening…" nor a name for the game is on it — CUT-BRIEF forbids a word a 14-year-old would have to
+ * be taught, and "The Job" was one. `#/run/job` therefore shows nothing at all until
+ * `screens/job.js` paints its three slots, which is also the honest thing: a dashed placeholder box
+ * for one frame is a fourth thing on a screen that is allowed three numbers and two taps.
+ */
+export function openingLine(kind) {
+  const meta = KIND_META[String(kind)];
+  if (!meta) return 'Opening After the test…';        // `post`, the one delegated non-kind
+  return meta.game === true ? null : `Opening ${meta.title}…`;
+}
+
 /** Hand a delegated kind to the screen that owns it; fall back to run.js's own runner or an honest stub. */
 function delegateRun(el, kind, { id, seed, query }) {
   const meta = KIND_META[kind] ?? { title: 'After the test', back: '/today' };
   const d = DELEGATES[kind];
   let live = true, cleanup = null;
-  el.append(h('section.screen.run-screen.run-stub', { dataset: { kind } }, h('p.muted', `Opening ${meta.title}…`)));
+  const opening = openingLine(kind);
+  if (opening) el.append(h('section.screen.run-screen.run-stub', { dataset: { kind } }, h('p.muted', opening)));
   const fallback = () => {
     if (!live) return;
     el.replaceChildren();
+    if (d.fallback === 'today') { navigate('/today'); return; }   // the game has no copy to fall back on
     cleanup = d.fallback === 'self'
       ? (kind === 'blitz' ? mountBlitz(el, { id, seed }) : mountCardRun(el, { kind, id, seed }))
       : renderStub(el, kind);
@@ -822,9 +956,11 @@ function mountCardRun(host, { kind, id, seed }) {
 
   /* ---- the queue ---- */
   if (kind === 'page') {
-    // W4: compose with the PLAN's tier-4 cap (notes/T14.md Requests). `q` is deliberately dropped —
-    // page.js derives the identical target itself, and an explicit q switches off its session budget.
-    const save = update((s) => { const { q, ...planOpts } = composeOpts(s); startPage(s, { ...planOpts, now: startedAt }); });
+    // W4: compose with the PLAN's tier-4 cap (notes/T14.md Requests). `pageOpts` is `composeOpts`
+    // with `q` dropped — page.js derives the identical target itself, and an explicit q switches off
+    // its session budget. THE CUT: one implementation, so the routes that start Today's Page (this
+    // one, Home, and the game) cannot compose three different pages.
+    const save = update((s) => { startPage(s, { ...pageOpts(s), now: startedAt }); });
     ip = resumePage(save);
     if (!ip) { emptyState(host, { kind, title: "Today's Page", back: '/today', empty: 'There is nothing to run right now — the Binder is the place to pick your own work.' }); return () => {}; }
     run = {
@@ -841,7 +977,6 @@ function mountCardRun(host, { kind, id, seed }) {
   }
 
   /* ---- before-snapshot for the Summary ---- */
-  let resumed = false;
   {
     const save = getState();
     tileIds = tileIdsOf(queue);
@@ -849,7 +984,6 @@ function mountCardRun(host, { kind, id, seed }) {
     if (stored) {
       // r1: a Page quit ("progress is kept") and reopened ends on the Summary of the WHOLE page, not of
       // the items since the reload — the before-snapshot was written on the first mount (S9 #10 honest).
-      resumed = true;
       before = stored; tilesBefore = stored.tiles;
     } else {
       tilesBefore = tileSnapshot(save, tileIds);
@@ -866,6 +1000,16 @@ function mountCardRun(host, { kind, id, seed }) {
     // Summary delta), and showing it read 57 right after Home had shown 60 for the same save.
     { const live = readiness(getState()); setHeader({ readiness: live.r, provisional: !!live.provisional }); }
   }
+
+  /**
+   * THE RECORD'S `startedAt` IS THE PAGE'S OWN, NOT THIS MOUNT'S (round 5, ledger-invariance).
+   *
+   * `startedAt` above is re-evaluated every time this screen mounts, so a Page quit and reopened got
+   * a second, later stamp — while the game's `captureJobBefore` has always stored `inProgress`'s.
+   * Both now ask `pageRunStartedAt`, which is the whole of the rule; the duration `#/stats` prints
+   * no longer rides on it either (`runRecordMs`).
+   */
+  const pageStartedAt = kind === 'page' ? pageRunStartedAt(ip, startedAt) : startedAt;
 
   renderHead();
   renderItem();
@@ -969,15 +1113,6 @@ function mountCardRun(host, { kind, id, seed }) {
     const submittedAt = Date.now();
     const sum = summarizeRun(results);
     const outcome = { jump: null, dailyXp: 0 };
-    /* ── THE SIZE PROVENANCE IS THE PAGE'S, NOT THE TERMINAL'S (verify r2, ledger-invariance) ─────
-       Read HERE, before `finishPage(s)` nulls `inProgress`. A job that WALKS at the getaway hands
-       the rest of its drafted queue back to `#/run/page` (`state.endJob`: `else delete
-       s.inProgress.game`), and this screen is then the writer of that page's row — so without this
-       line the row for a 10-of-21 page carried no `partial` key and bought **Flawless Page**, which
-       the identical job played to the end is refused. One game decision, one study trophy: see
-       `pageSizeExtra`. `null` for every page the board never drafted (no `composed` on the
-       snapshot), so a plain Today's Page writes the row it has always written, key for key. */
-    const size = kind === 'page' ? pageSizeExtra(before, queue, results) : null;
 
     const save = update((s) => {
       if (kind === 'page') finishPage(s);
@@ -999,10 +1134,10 @@ function mountCardRun(host, { kind, id, seed }) {
       }
       pushRun(s, makeRunRecord({
         kind, id: runRecordId(kind, run), seed: run.seed, seedTag: run.seedTag,
-        startedAt, submittedAt, results,
+        startedAt: pageStartedAt, submittedAt, results,
         extra: kind === 'jump'
           ? { placed: !!outcome.jump?.passed, score: results.filter((r) => r.cleared && r.firstTry).length, scoreMax: queue.length }
-          : (size ?? {}),
+          : {},   // the drafted/composed split went with the board (notes/DEMOLISH.md)
       }));
       checkDailyGoal(s, todayISO(new Date(submittedAt)));
       logForecast(s, { today: todayISO(new Date(submittedAt)) });
@@ -1014,7 +1149,9 @@ function mountCardRun(host, { kind, id, seed }) {
     renderSummary(host, {
       kind, run, results, sum, before, after,
       tilesBefore, tilesAfter: tileSnapshot(save, tileIds), outcome, save,
-      elapsedMs: resumed ? sum.ms : submittedAt - startedAt,   // r1: a resumed Page's clock is its items', not the days between
+      // r1 / round 5: a Page's clock is its items', never the wall — so the Summary prints the same
+      // seconds `#/stats` will print for the row it just filed, on either route (`runRecordMs`).
+      elapsedMs: num(runRecordMs(kind, sum, pageStartedAt, submittedAt), 0),
     });
   }
 
@@ -1037,6 +1174,20 @@ export function pageResults(queue) {
   return (Array.isArray(queue) ? queue : []).filter((it) => it && it.done && isObj(it.result)).map((it) => ({
     ...it.result, n: it.n, role: it.role, skill: it.result.skill ?? it.skill ?? (it.skills || [])[0] ?? null, tier: it.result.tier ?? it.tier,
   }));
+}
+
+/**
+ * ONE PAGE, ONE START — the only place a Page's `runs[].startedAt` is decided (round 5).
+ *
+ * A Page has two writers and survives a break, so "when did this start?" had two answers: the flat
+ * runner re-read its own `Date.now()` on every mount, the game read `inProgress.startedAt`, and the
+ * same page answered the same way filed a different row depending on the door. It is the PAGE's
+ * instant, not the mount's — it is in the save, so a quit, a reload and a five-hour dinner cannot
+ * move it, and it is what `page.js pageIndexFor` ("Pages started today", which picks the next
+ * page's seed) has always meant. `mountedAt` is the fallback for a page with no stamp of its own.
+ */
+export function pageRunStartedAt(ip, mountedAt = 0) {
+  return num(ip?.startedAt, 0) || num(mountedAt, 0) || Date.now();
 }
 
 /** r1: the before-snapshot the first mount of this Page wrote into `inProgress.meta.before`, or null. */
@@ -1266,11 +1417,7 @@ const RARITY_GLYPH = { platinum: '★', gold: '●', silver: '◐', bronze: '○
 
 function renderSummary(host, ctx) {
   const { kind, run, results, sum, before, after, tilesBefore, tilesAfter, outcome, save, elapsedMs } = ctx;
-  /* J6b — the debrief IS this screen (G7 "Today's Page ↔ jobs"). `ctx.job` is `state.endJob`'s return
-     value; without it every line below runs exactly as it did before, which is what makes the tile
-     mint / skill bars / Readiness delta byte-identical with the layer off. */
-  const job = isObj(ctx.job) ? ctx.job : null;
-  const hold = job ? bagDropMs() : 0;          // ms the summary's own cues are held for the bag drop
+  const hold = 0;
   const minted = mintedTiles(tilesBefore, tilesAfter);
   const touched = [...new Set(results.flatMap((r) => (r.skill ? [r.skill] : [])))];
   const bars = skillDeltas(before.skills, after.skills, touched).slice(0, 6);
@@ -1416,47 +1563,24 @@ function renderSummary(host, ctx) {
     h('p.muted.fs-1', daysUntilTest(save.settings?.testDate) == null ? 'No test date set.' : `Next: ${String(next.label ?? '').replace(/^RUN NEXT(?: · )?/, '') || 'a Page'}`),   // page r2: the Home button label, not its prefix
   );
 
-  /* J6b — the debrief's own two blocks. Both are EMPTY when `ctx.job` is null, and an empty section is
-     never appended (the loop below), so the flat path's node list is unchanged. */
-  const jobTake = job ? jobTakeBlock(job, ctx) : h('div.sum-job-take');
-  const jobLedger = job ? jobLedgerBlock(job, ctx) : h('div.sum-job-ledger');
-  /* r1 — G5 #1's hook, the debrief's LAST line, under the buttons' own block so it is the last thing
-     read before Home. Empty on the flat path, so the flat Summary's node list is still unchanged. */
-  const jobTomorrow = job ? jobTomorrowBlock(ctx) : h('div.sum-job-tomorrow');
+  const actions = h('div.run-actions',
+    isPage
+      ? h('a.btn.btn-primary', { href: '#/run/page' }, 'Another page')
+      : h('a.btn.btn-primary', { href: `#/run/${kind}${run.id ? '/' + run.id : ''}` }, againLabel(kind)),
+    h('a.btn', { href: '#/binder' }, 'Binder'),
+    h('a.btn', { href: '#/today' }, 'Today'),
+  );
 
-  const actions = job
-    // G6: "the app never says 'one more?' — the debrief's primary button is Home, and Another board is
-    // the secondary." The rest of Today's Page, if a job left any, is offered as the calm page.
-    ? h('div.run-actions',
-      h('a.btn.btn-primary', { href: '#/today' }, 'Home'),
-      h('a.btn', { href: '#/run/job' }, 'Another board'),
-      num(job.left, 0) > 0 ? h('a.btn', { href: '#/run/page' }, 'Today’s Page') : null,
-      h('a.btn', { href: '#/stats' }, 'Ledger'),
-      h('a.btn', { href: '#/binder' }, 'Binder'),
-    )
-    : h('div.run-actions',
-      isPage
-        ? h('a.btn.btn-primary', { href: '#/run/page' }, 'Another page')
-        : h('a.btn.btn-primary', { href: `#/run/${kind}${run.id ? '/' + run.id : ''}` }, againLabel(kind)),
-      h('a.btn', { href: '#/binder' }, 'Binder'),
-      h('a.btn', { href: '#/today' }, 'Today'),
-    );
-
-  for (const node of [head, stats, verdict, jobTake, mintWrap, hist, skillWrap, rd, jobLedger, plan, jobTomorrow, actions]) {
+  for (const node of [head, stats, verdict, mintWrap, hist, skillWrap, rd, plan, actions]) {
     if (node.childNodes.length) root.append(node);          // an empty section still eats a 20 px grid gap
   }
   host.replaceChildren(root);
   window.scrollTo(0, 0);
-  /* J6b — THE BAG DROP (G6, G10 #13, G12 #32). It starts on the frame the debrief lands, it is the only
-     thing animating for its 600 ms, and the screen stays interactive underneath: nothing is disabled,
-     nothing is `position: fixed`, and every control above is already in the accessibility tree. */
-  if (job) startBagDrop(root, job, hold);
   afterHold(hold, () => tween(heroNum, 0, isBlitz ? (b?.score ?? 0) : sum.xp + (outcome.dailyXp ?? 0), 500));
-  bus.emit('run:done', { kind, id: run.id ?? null, sum, readiness: after.readiness.r, ...(job ? { job } : null) });
+  bus.emit('run:done', { kind, id: run.id ?? null, sum, readiness: after.readiness.r });
 }
 
-function summaryTitle(kind, { sum, outcome, run, job }) {
-  if (isObj(job)) return JOB_TITLES[String(job.outcome)] ?? 'Job over';
+function summaryTitle(kind, { sum, outcome, run }) {
   if (kind === 'page') return sum.missed === 0 && sum.count ? 'Page complete — flawless' : 'Page complete';
   if (kind === 'blitz') return outcome.blitz?.reason === 'strikes' ? 'Three strikes' : outcome.blitz?.reason === 'time' ? 'Time.' : 'Round over';   // r1: the hero is the score
   if (kind === 'jump') return outcome.jump?.passed ? 'Placed' : 'Not placed — yet';
@@ -1548,500 +1672,54 @@ function tween(el, from, to, ms) {
 }
 
 /* ==================================================================================================
-   === J6b === THE DEBRIEF — the Page Summary, with the job's numbers on it.
+   THE GAME'S TWO HOOKS INTO THIS SCREEN (designs/CUT-BRIEF.md, designs/CUT-SPEC.md)
    ==================================================================================================
 
-   G7 "Today's Page ↔ jobs": *"The Page Summary becomes the debrief (same screen, same tile mint, same
-   skill bars, same Readiness delta, plus the bag drop, the rating delta, the guard redraw, the regret
-   lines, the split and the decision count)."*  So this is not a second summary screen — it is
-   `renderSummary` with `ctx.job` set, which is the only way "byte-identical to the flat-path Page
-   Summary with the layer off" can be structural rather than a promise: the mint, the bars and the
-   Readiness block are built by the SAME three expressions either way, and this block only ever adds
-   sibling sections and holds the summary's own cues back for 600 ms.
+   DEMOLITION (notes/DEMOLISH.md): the debrief is gone. The bag drop, the take block, the ledger
+   block, the rating delta, the guard redraw, the two regret lines, the realised order, the inferred
+   decisions, the decision count, the split tile and tomorrow's board were 1,200 lines rendering
+   fourteen numbers that CUT-BRIEF deletes. What is left is the ONE thing the game genuinely owes the
+   study layer: a session that finishes Today's Page must record that page exactly as `#/run/page`
+   does, or the same answers earn a trophy on one route and nothing on the other.
 
-   Three laws this block keeps:
-
-     1. **The bag drop is the only thing animating while it runs** (G6, G10 #13, G12 #32). Every other
-        animation in the document is PAUSED for its 600 ms and resumed after — the tile flip included,
-        so S9 #7's signature moment lands immediately after the drop rather than under it. Under
-        `prefers-reduced-motion` the hold is 0 ms and nothing animates at all.
-     2. **The debrief stays interactive underneath.** Nothing is disabled, nothing is `position: fixed`
-        and no overlay is created; the drop is a transform on the numerals in the take block.
-     3. **Evidence after the decision** (Global law 6). This is the ONE surface that may name the
-        argmax rung, because every call it names is already answered. `js/screens/job.js` still must
-        not import `argmaxCall` — the debrief lives here.
-   ------------------------------------------------------------------------------------------------ */
-
-/** The debrief's headline, one per terminal word of `job/state.js`'s `OUTCOMES`. Numbers-first, dry. */
-const JOB_TITLES = Object.freeze({
-  completed: 'Job complete',
-  cracked: 'Vault cracked',
-  walked: 'Walked with the bag',
-  quit: 'Left mid-job',
-  called: 'Stakes off',
-  commit: 'Walked at the declared minute',
-  quiet22: 'Banked at 22:00',
-});
+   THE CONTRACT: `screens/job.js` calls `captureJobBefore` when a session starts and `commitJobRun`
+   when it ends. `tests/job-ledger.test.mjs` drives both directly — that is the test that proves the
+   two routes leave byte-identical study state — and `tests/cut-run.test.mjs` holds this file's own
+   half: the record's arithmetic, its idempotence, and that not one game field reaches Ledger A.   */
 
 /**
- * THE REGRET LINE'S LADDER — one ladder, named and priced in the same currency (r3).
- *
- * notes/J2.md §5.7 asked J6b to pick a ladder and write it down; J6b picked `{best:'carry',
- * cost:'rating'}` on the claim that G5 #2's own worked line — `envelope 6: you called 85, EV-max was
- * 70; that cost 0.3 rating` — *"only reproduces"* under that pair. **That claim is false**, and the
- * pair it justified is the one combination that can print a losing instruction:
- *
- *   `honestCall(0.75) === argmaxCall(0.75) === 70` — the two ladders AGREE at the worked line's
- *   `q̂`, so the rating-consistent pair reproduces it exactly (`credit(.70,.75) − credit(.85,.75)
- *   = 0.3`, in the rating-CREDIT units the sentence names since finding 40 relabelled its unit word
- *   — the ladder and the number are untouched). The carry pair reproduces the rung and then
- *   misprices it: its own cost is 0.05 loot, not 0.3 credit.
- *
- * Inside G3.1's published disagreement bands the mixed pair breaks. At `q̂ = 0.885` (band 2, *money
- * 95, rank 85*) it named 95 — the CARRY argmax — and charged the difference in RATING credit, where
- * 95 is the worse rung: `E[c](.95) = 5.760 < E[c](.85) = 5.880`. A student who followed the printed
- * advice LOST 0.12 credit, on the one line the design writes to teach. G3.1 calls that band *"the
- * only place in the game where the player must choose what they are playing for"* — so the debrief
- * must not silently resolve it, least of all in the currency the other ladder is denominated in.
- *
- * So the line runs on ONE ladder: `call.regretOf({..., ladder: 'rating'})` — `best = honestCall(q̂)`,
- * the maximiser of the expected credit the sentence prices, which is also the rating delta printed
- * three lines above it. The carry argmax keeps its own published home: Settings, where both ladders
- * and both disagreement bands are printed side by side (G3.1) — evidence the student reads BEFORE
- * the call, which is where a money-vs-rank choice belongs (Global law 6).
- *
- * ── VERIFY r3 (call-propriety) — AND THE WORD MOVED WITH IT ───────────────────────────────────────
- * Choosing the ladder fixed the arithmetic inside the line and left the CONTRADICTION BETWEEN TWO
- * SCREENS: `settings.js:533` prints `evMaxBands()` under *"The EV-max rung, by true clear rate"*,
- * which is `argmaxCall`, while `COPY.regret2` printed `honestCall(q̂)` under the same two words. At
- * q̂ = 8/9 — reachable, `of = 9` — Settings says 95 and the debrief said *"EV-max was 85. cost 0.1
- * credit"*, so a student who had done exactly what the table told them was charged for it by name.
- * Naming the rung is therefore not enough: the LINE has to say which ladder it is speaking for
- * whenever the two differ, and they differ on exactly `CALL_DISAGREEMENT_BANDS`. `jobRegret` prints
- * `COPY.regret2` (with the word) where the ladders agree — every q̂ outside the bands, G5 #2's
- * published worked line included — and `COPY.regret2Split` (both rungs, Settings' own words, no
- * "EV-max") inside them. `tests/run-lane-v3.test.mjs` §1 walks q̂ across both surfaces and asserts
- * the word can never name two rungs again.
+ * Has this session's page already been recorded? Two guards, because either can be the only one
+ * available: the SAVE is authoritative across a reload (`runs[]` is what the trophy predicates and
+ * `#/stats` read), and the in-memory snapshot short-circuits a re-entry inside one render.
  */
-export const DEBRIEF_CALL_LADDER = Object.freeze({ best: 'rating', cost: 'rating' });
-
-/** A job's identity for the once-per-job guard: everything that makes it a different job. */
-export const jobSignature = (job) => [
-  job?.shape ?? '?', job?.outcome ?? '?', num(job?.targets, 0), num(job?.of, 0),
-  num(job?.finalBagged ?? job?.bagged, 0), Math.round(num(job?.tGame, 0)), Math.round(num(job?.tAnswer, 0)),
-].join(':');
-
-/** The bag drop's budget, read from `data/job.js` — 0 ms under `prefers-reduced-motion` (G6). */
-export function bagDropMs() {
-  if (typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches) return JOB_ANIMATION.reducedMotionMs;
-  return JOB_ANIMATION.bagDrop.ms;
-}
-
-const mmss = (ms) => fmtClock(num(ms, 0));
-const pct1 = (x) => `${Math.round(num(x, 0) * 100)} %`;
-
-/* The debrief's own layout, inline, because `css/screens.css` and `css/job.css` belong to other
-   tickets (BUILD-POLICY §2) and a block appended to either would be a second owner of this screen's
-   look. Every value is a theme token, every bar is laid out at its FINAL size and only its fill is
-   transformed, so the guard redraw and the Fault Index deltas shift nothing. A request to move this
-   into `css/job.css` as its own marked block is in notes/J6b.md section 7. */
-const BAG_LINE_CSS = Object.freeze({ display: 'flex', flexWrap: 'wrap', alignItems: 'baseline', gap: '10px', margin: '0 0 6px' });
-const BAG_DIGITS_CSS = Object.freeze({ display: 'inline-flex', overflow: 'hidden', lineHeight: '1.15' });
-const GUARD_BARS_CSS = Object.freeze({ listStyle: 'none', margin: '0', padding: '0', display: 'grid', gap: '6px' });
-const GUARD_BAR_CSS = Object.freeze({ display: 'grid', gridTemplateColumns: 'minmax(min(100%, 8ch), max-content) 1fr max-content', gap: '8px', alignItems: 'center' });
-const GUARD_TRACK_CSS = Object.freeze({ display: 'block', blockSize: '8px', borderRadius: '4px', background: 'var(--surface2)', overflow: 'hidden' });
-const GUARD_FILL_CSS = Object.freeze({ display: 'block', blockSize: '100%', inlineSize: '100%', transformOrigin: 'left center' });
-
-/** Run `fn` after `ms`, or synchronously when the hold is 0 (reduced motion, or no job). */
-function afterHold(ms, fn) {
-  if (!(num(ms, 0) > 0)) { fn(); return null; }
-  return setTimeout(fn, ms);
-}
-
-/* ------------------------------------------------------------------ the realised order */
-
-/**
- * The realised order, in the shape `econ.regretLine` / `econ.playOrder` read.
- *
- * `inProgress.game.calls[]` keeps `{call, ok, w, skill, rung, d, at}` — the realised rung, the call and
- * the realised Δloose, but NOT the pricing that produced it and NOT the BAG/PUSH vector (notes/J5c.md;
- * a request to record both is filed in notes/J6b.md §7). Both are recoverable:
- *
- *   · the pricing collapses into ONE number per target. `carryFor` is
- *     `round(L·ρ·m_chain·W·scope·wing·cold·tell·x2·mult)`, so a synthetic target with every published
- *     multiplier at 1 and `mult = d / (ρ · m_chain · W)` reproduces the realised Δ exactly at the
- *     realised chain AND scales correctly at every other chain — which is all the solver needs, since
- *     the only freedom in the replay is where you banked.
- *   · a miss is capped by the pile (`−min(LOOSE, …)`). When the cap did not bite, `mult` is exact the
- *     same way; when it did, the uncapped loss is not in the save and `opts.items[i].tier` (with the
- *     guard penalty and the ×2) is used to rebuild it, falling back to the capped value.
- *
- * @param {object} debrief            `state.endJob`'s return value (or `state.debriefOf`)
- * @param {{decisions?: ('bag'|'push')[], items?: object[], guardWing?: string|null,
- *          qHatOf?: (call: object, i: number) => number|null, crewOf?: (skill: string) => number}} [opts]
- * @returns {{targets: object[], decisions: ('bag'|'push')[], completion: boolean, commit: boolean}}
- */
-export function realisedOrderOf(debrief, opts = {}) {
-  const calls = Array.isArray(debrief?.calls) ? debrief.calls : [];
-  const beats = Math.max(0, calls.length - 1);
-  const decisions = [];
-  for (let i = 0; i < beats; i++) decisions.push(opts.decisions?.[i] === 'bag' ? 'bag' : 'push');
-  const items = Array.isArray(opts.items) ? opts.items : [];
-  const guardWing = typeof opts.guardWing === 'string' ? opts.guardWing : null;
-
-  const targets = [];
-  let chain = 0; let loose = 0;
-  for (let i = 0; i < calls.length; i++) {
-    const c = calls[i];
-    const m = jobEcon.chainMult(chain);
-    const rho = jobEcon.rhoFor(c.rung, 0);
-    const { W, P } = jobEcon.carryOf(c.call);
-    const d = num(c.d, 0);
-    let mult = 0;
-    if (rho > 0) {
-      mult = jobEcon.realisedMult(d, { rho, chain, call: c.call, loose });   // `d/(ρ·m·W)`, cover inverted (econ lane, verify r1)
-    } else {
-      const lost = Math.abs(d);
-      mult = (m * P) > 0 ? lost / (m * P) : 0;
-      if (lost >= loose - 1e-9 && items[i]) {
-        // the cap may have bitten: rebuild the uncapped loss from the item's own grade
-        const it = items[i];
-        const pen = guardWing && jobGuard.wingOf(it.skill ?? c.skill) === guardWing ? 2 : 1;
-        const raw = jobEcon.lootFor({ tier: it.tier, loot: it.loot }) * pen * (it.x2 ? 2 : 1);
-        mult = Math.max(mult, raw);
-      }
-    }
-    const t = {
-      loot: 1, scope: 1, cold: 1, tell: null, x2: false, tokens: 0, guarded: false,
-      crew: 0, idle: false, rung: c.rung, call: c.call, mult,
-      skill: c.skill ?? null,
-      qHat: typeof opts.qHatOf === 'function' ? opts.qHatOf(c, i) : (Number.isFinite(c.qHat) ? c.qHat : null),
-    };
-    targets.push(t);
-    const s = jobEcon.settle(t, chain, loose);
-    loose = s.loose; chain = s.chain;
-    if (i < beats && decisions[i] === 'bag') { loose = 0; chain = jobEcon.chainAfterBag(); }
-  }
-  return {
-    targets, decisions,
-    completion: debrief?.complete === true && num(debrief?.bonusRate, 0) > 0 && debrief?.outcome !== 'commit',
-    commit: debrief?.outcome === 'commit',
-  };
+function jobRunRecorded(save, key, before) {
+  if (isObj(before) && before.runRecorded === true) return true;
+  if (!(key > 0)) return false;
+  const runs = Array.isArray(save?.runs) ? save.runs : [];
+  return runs.some((r) => isObj(r) && r.kind === 'page' && num(r.startedAt, 0) === key);
 }
 
 /**
- * Recover the BAG/PUSH vector a job was actually played with, when nobody recorded it.
+ * The before-snapshot the session needs, written where a Page's already lives
+ * (`inProgress.meta.before`, which `pageBefore()` reads), so a mid-session reload still knows when
+ * the PAGE started. Idempotent: an existing snapshot is returned untouched.
  *
- * The reconstruction above is a function of the vector (the chain a target settled at depends on where
- * you banked), so this re-derives the order under every one of the `2^(n−1)` vectors — at most 2 048
- * for a 12-target job — and keeps the ones whose replayed BAGGED matches the job's own. Ties break
- * towards the FEWEST bags, then towards all-push, so the recovered line is never a busier story than
- * the save can support.
+ * `startedAt` here is `inProgress.startedAt` and the flat route now files that same instant
+ * (`pageStartedAt`): one page, one start, whichever door it was answered through.
  *
- * @returns {{decisions: ('bag'|'push')[], unique: boolean, candidates: number, target: number}}
- */
-export function inferDecisions(debrief, opts = {}) {
-  const n = Array.isArray(debrief?.calls) ? debrief.calls.length : 0;
-  const beats = Math.max(0, n - 1);
-  const target = num(debrief?.baseBagged, num(debrief?.bagged, 0));
-  const allPush = Array.from({ length: beats }, () => 'push');
-  if (beats === 0 || beats > 16) return { decisions: allPush, unique: beats === 0, candidates: 0, target };
-  const hits = [];
-  for (let mask = 0; mask < 2 ** beats; mask++) {
-    const d = [];
-    for (let i = 0; i < beats; i++) d.push((mask >> i) & 1 ? 'bag' : 'push');
-    const order = realisedOrderOf(debrief, { ...opts, decisions: d });
-    // `playOrder` applies the end-of-job bonuses; `baseBagged` is pre-bonus, so compare bare.
-    const v = jobEcon.playOrder({ ...order, completion: false, commit: false }, d);
-    if (Math.abs(v - target) <= 1) hits.push(d);
-  }
-  if (!hits.length) return { decisions: allPush, unique: false, candidates: 0, target };
-  hits.sort((a, b) => a.filter((x) => x === 'bag').length - b.filter((x) => x === 'bag').length);
-  return { decisions: hits[0], unique: hits.length === 1, candidates: hits.length, target };
-}
-
-/* ------------------------------------------------- the q̂ the seal cut, recovered at the debrief */
-
-/** `cards[id].skills` out of whatever card index the caller holds (`byId`, in practice). */
-const skillsOfCard = (cards, id) => {
-  const c = cards && typeof cards === 'object' ? cards[id] : null;
-  return Array.isArray(c?.skills) ? c.skills : [];
-};
-
-/**
- * The stamp of the sitting THIS target wrote on its own make, or 0 when it wrote none.
- *
- * A job beat grades exactly one target, so the only card-history row on the target's make that can
- * fall in `(from, to]` — the previous target's settle, this target's settle — is this target's own.
- * `screens/card.js` writes it (`rec.history.push({at: now, …})`, card.js:922/1001) BEFORE
- * `state.applyTarget` prices the beat, so it is at or before `to`; a VARIANT target writes
- * `save.variants` and no card history at all, and then there is no row in the window and this
- * returns 0, which is the correct answer for it (nothing of its own to cut away).
- */
-function ownSittingAt(save, skill, cards, from, to) {
-  const recs = isObj(save?.cards) ? save.cards : null;
-  if (!recs || typeof skill !== 'string' || !skill) return 0;
-  let cut = 0;
-  for (const id of Object.keys(recs)) {
-    if (!skillsOfCard(cards, id).includes(skill)) continue;
-    const hist = recs[id]?.history;
-    if (!Array.isArray(hist)) continue;
-    for (const hRow of hist) {
-      const at = Array.isArray(hRow) ? num(hRow[0], 0) : num(hRow?.at, 0);   // packed or plain (store.js:604)
-      if (at > from && at <= to && at > cut) cut = at;
-    }
-  }
-  return cut;
-}
-
-/**
- * **THE DEBRIEF'S q̂ IS THE ONE THE SEAL CUT, NOT THE LIVE RATE (verify r1, call-propriety).**
- *
- * `call.qHatDetail` defaults its history cut to `save.inProgress.game.locked.at` — the instant the
- * call was sealed — precisely so that the weight a call carries cannot be a function of that call's
- * own outcome. The debrief runs AFTER `endJob` has cleared `inProgress`, so `sealedCallOf` found no
- * seal, the read came back UNCUT, and the regret line was computed on a q̂ that already contained
- * the sitting it was judging. Measured over every reachable 10-sitting state: on 6 of 42 reachable
- * (state × outcome) pairs the debrief named a DIFFERENT rung as EV-max than the one that was
- * honest at the seal — and the direction is hindsight, a miss pushing q̂ down so the line says *you
- * over-called*. That is the same selection-on-outcome defect the S1 repair closed in the scorer,
- * and this was the one surface left that tells the student what "honest" meant.
- *
- * THE RECOVERY, in order of how much it has to assume:
- *   1. `c.qHat` — the seal itself, if the save ever carries it. `realisedOrderOf` already prefers
- *      it; `state.cleanCall` does not keep it today (a request to store it beside `w` is in
- *      notes/repair-run.md → Requests, and this function needs no change when it lands).
- *   2. the history cut this target's own sitting implies (`ownSittingAt`) — exact, because a beat
- *      grades one target and the sitting is written before the beat is priced.
- *   3. no stamp on the call at all → `null`. **Never a live read.** A line that cannot be proved
- *      to be the honest call at the seal is not printed.
- *
- * @param {object} save           the save AFTER `endJob`
- * @param {object[]} calls        `debrief.calls`, in play order
- * @param {number} i              which call
- * @param {{cards?: any, startedAt?: number}} [opts]  `startedAt` is the job's own start stamp
- *                                (`before.startedAt`), the lower bound for the FIRST target
- * @returns {number|null}
- */
-export function sealedQHatOf(save, calls, i, opts = {}) {
-  const list = Array.isArray(calls) ? calls : [];
-  const c = list[i];
-  if (!isObj(c) || typeof c.skill !== 'string' || !c.skill) return null;
-  if (Number.isFinite(c.qHat)) return c.qHat;
-  const at = num(c.at, 0);
-  if (!(at > 0)) return null;
-  const cards = opts.cards ?? cardById;
-  const from = i > 0 ? num(list[i - 1]?.at, 0) : num(opts.startedAt, 0);
-  const own = ownSittingAt(save, c.skill, cards, from, at);
-  /* ── THE SEAL IS PUT BACK, NOT ARGUED AROUND ──────────────────────────────────────────────────
-     `qHatDetail` reads exactly two things off a save — `save.cards` and
-     `save.inProgress.game.locked` — and its cut DEFAULTS to that seal. So rather than hand it an
-     explicit `before` (which `tests/job-call.test.mjs` S1 rightly forbids anywhere under `site/js`:
-     an explicit cut is how a staking caller opts OUT of the seal, and an endogenous weight makes
-     lying pay), the debrief hands it a save with the seal this target actually had. `cards` is
-     carried by reference, so this costs one object.
-     The stamp is the sitting this target wrote — strictly `<` drops exactly it — or `at + 1` when
-     it wrote none (a VARIANT target), which is everything the target could see. */
-  const sealedSave = { ...save, inProgress: { game: { locked: { call: c.call ?? null, n: i + 1, at: own > 0 ? own : at + 1 } } } };
-  return jobCall.qHatFor(sealedSave, c.skill, { cards });
-}
-
-/**
- * Both regret lines for one job, computed from the realised order — G5 #2.
- *
- *   bagpush : `econ.regretLine(order).line`   verbatim, through `COPY.regret`
- *   call    : on the envelope with the largest rating cost, with the rung and that cost both taken
- *             from `call.regretOf` on ONE ladder (see `DEBRIEF_CALL_LADDER`) — through
- *             `COPY.regret2` where the two ladders agree, and `COPY.regret2Split` where they do not
- *
- * ── VERIFY r3 (call-propriety) — WHICH OF THE TWO SENTENCES, AND WHY THERE ARE TWO ────────────────
- * `COPY.regret2` says *"EV-max was 85"*. `screens/settings.js:533` prints `call.evMaxBands()` under
- * the heading *"The EV-max rung, by true clear rate"* — and that is the CARRY argmax, while this
- * line names the maximiser of the credit it prices (`honestCall`). Outside G3.1's two disagreement
- * bands those are the SAME rung at every q̂, so one word names one thing and the published sentence
- * is true. Inside them they are two rungs, and the debrief was printing one of them under the
- * other's name: at a reachable q̂ = 8/9 Settings' table says 95 and the debrief said *"EV-max was
- * 85. cost 0.1 credit"* — the table's reader was told their own call was the mistake, in the two
- * bands G3.1 calls *"the only place in the game where the player must choose what they are playing
- * for"*. So in the bands the line names BOTH rungs, in Settings' own words, and drops the word:
- * *"envelope 6: you called 70. the money said 95, the rating said 85. cost 1.3 credit against 85."*
- * `split` is true on exactly those envelopes. Both rungs come from `call.regretOf` — the carry one
- * through `ladder: 'carry'`, never `argmaxCall` by hand, which is the r3 law this screen keeps.
- *
- * Either line is `''` when there is nothing to teach — played optimally, the debrief prints none.
- * @returns {{order, bagpush: object, call: {line: string, envelope: number|null, called: number|null,
- *            evMax: number|null, money: number|null, split: boolean, cost: number, q: number|null}}}
- */
-export function jobRegret(debrief, opts = {}) {
-  /* THE q̂ IS THE SEALED ONE (verify r1 — see `sealedQHatOf`). An explicit `qHatOf` still wins, so a
-     test may drive the line at a chosen q̂; a caller that hands over the SAVE gets the seal, never
-     the live rate. A caller that hands over neither gets `c.qHat` or nothing — never a live read. */
-  const calls = Array.isArray(debrief?.calls) ? debrief.calls : [];
-  const reader = typeof opts.qHatOf === 'function'
-    ? opts.qHatOf
-    : (isObj(opts.save) ? (c, i) => sealedQHatOf(opts.save, calls, i, opts) : null);
-  const o = reader ? { ...opts, qHatOf: reader } : opts;
-  const order = isObj(opts.order) ? opts.order : realisedOrderOf(debrief, o);
-  const bagpush = jobEcon.regretLine(order);
-
-  let worst = null;
-  order.targets.forEach((t, i) => {
-    const q = Number.isFinite(t.qHat) ? t.qHat : null;
-    if (q == null) return;
-    const called = jobCall.callLevel(t.call)?.id ?? null;
-    if (called == null) return;
-    /* ONE ladder, named and priced together — `call.regretOf` is the module's own implementation of
-       exactly this pair and was dead code while this screen hand-rolled a mismatched one (r3). */
-    const { best, cost } = jobCall.regretOf({ call: called, qHat: q, ladder: DEBRIEF_CALL_LADDER.best });
-    if (cost <= 0) return;
-    if (!worst || cost > worst.cost) worst = { envelope: i + 1, called, evMax: best, cost, q };
-  });
-
-  /* The money's rung at the SAME q̂, so the sentence can tell the student which word it is using.
-     `regretOf({ladder:'carry'}).best` IS `argmaxCall(q̂)` — taken through the module's own pair, so
-     this screen still hand-rolls neither half of either ladder (r3). */
-  const shown = worst != null && Math.round(worst.cost * 10) / 10 > 0;
-  const money = shown ? jobCall.regretOf({ call: worst.called, qHat: worst.q, ladder: 'carry' }).best : null;
-  const split = shown && money !== worst.evMax;
-  const cost = worst ? (Math.round(worst.cost * 10) / 10).toFixed(1) : '0.0';
-  const line = !shown ? ''
-    : split
-      ? JOB_COPY.regret2Split({ envelope: worst.envelope, called: worst.called, money, rank: worst.evMax, cost })
-      : JOB_COPY.regret2({ envelope: worst.envelope, called: worst.called, evMax: worst.evMax, cost });
-  return {
-    order,
-    bagpush,
-    call: { line, split, money, ...(worst ?? { envelope: null, called: null, evMax: null, cost: 0, q: null }) },
-  };
-}
-
-/* ------------------------------------------------------------------ the before-snapshot */
-
-/**
- * **How many items `composePage` dealt for the page this job drafted out of** — 0 when unknowable.
- *
- * `job/board.js composeBundles` partitions `page.composePage(save, opts)` (page.js:870) and
- * `state.startJob` keeps THAT page's meta on `inProgress.meta` while putting only the DRAFTED
- * subset in `inProgress.queue`. `meta.counts` is `composePage`'s own per-role tally of the ordered
- * queue (page.js `roleCounts`), so its sum is the composed page's length, already computed, with
- * nothing to recompose and no second answer possible.
- */
-export function composedCountOf(ip) {
-  const counts = isObj(ip?.meta?.counts) ? ip.meta.counts : null;
-  if (!counts) return 0;
-  let n = 0;
-  for (const v of Object.values(counts)) n += Math.max(0, num(v, 0));
-  return n;
-}
-
-/**
- * **How many of that page's items this run was DEALT** — the other half of `composedCountOf`, in the
- * same unit: distinct items, counted once each.
- *
- * ── verify r2 (ledger-invariance) — `partial` COMPARED ANSWERS TO ITEMS ──────────────────────────
- * `commitJobRun` took this number from `results.length`, which is one entry per ANSWERED queue
- * entry. `page.requeueReview` splices a SECOND COPY of every missed review into the queue, so a miss
- * added an answer without adding one card of coverage — while `composed` is `composePage`'s count of
- * DISTINCT items. The comparison was therefore between two different units, and it moved the wrong
- * way: **the more the student missed, the more of the page the row claimed they had finished.**
- * Measured over 4 shapes × 3 answer policies × 40 corpus saves (480 completed jobs), 29 rows were
- * stamped `partial: false` — *"this WAS a whole Page"* — while covering 10 distinct items of 18, or
- * 12 of 21. No trophy was mis-awarded only because the same misses made `items.every(isClean)`
- * false; the field itself was already dishonest and the next predicate to read it would inherit it.
- *
- * A re-answer is not coverage, so it is not counted here. A requeued copy is the ONLY queue entry
- * that carries `requeued > 0` (`page.js requeueReview`: `{ ...it, done: false, result: null,
- * requeued: (it.requeued ?? 0) + 1 }`), and `composePage` composes none — so "the entries the page
- * dealt into this run" is exactly "the entries with no requeue stamp", which is the same unit
- * `meta.counts` sums.
- *
- * @param {object|object[]} ip  `inProgress`, or a queue array
- */
-export function draftedCountOf(ip) {
-  const q = Array.isArray(ip) ? ip : (Array.isArray(ip?.queue) ? ip.queue : []);
-  let n = 0;
-  for (const it of q) if (isObj(it) && !(num(it.requeued, 0) > 0)) n += 1;
-  return n;
-}
-
-/** `draftedCountOf` over the queue, falling back to the distinct ids of an answer list. */
-function draftedCount(queue, results) {
-  if (Array.isArray(queue) && queue.length) return draftedCountOf(queue);
-  const list = Array.isArray(results) ? results : [];
-  const ids = new Set();
-  let anon = 0;
-  for (const r of list) { if (r?.id == null) anon += 1; else ids.add(r.id); }
-  return ids.size + anon;
-}
-
-/**
- * **THE PAGE'S SIZE PROVENANCE — stamped on the PAGE, not on the terminal that happens to close it.**
- *
- * ── verify r2 (ledger-invariance), BLOCKER: a game decision changed `save.trophies` ──────────────
- * `state.endJob` is `if (complete) finishPage(s); else delete s.inProgress.game;`, so a WALK at the
- * getaway leaves the SAME drafted queue live as a plain Today's Page, one target short.
- * `run.js:1419` puts a **Today's Page** button on the debrief exactly when `job.left > 0` — exactly
- * when a walk happened — and the flat `finish()` then closed that page. `commitJobRun` refuses a job
- * that is not `complete`, so the row was written by the flat writer, which stamped no `partial` key
- * at all, and `data/trophies.js:203` gates **Flawless Page** on `r.partial !== true`:
- *
- *     ARM 1  push/crack to the end   row partial=true   trophies: chain-8 …            no flawless-page
- *     ARM 2  WALK, then #/run/page   row partial=—      trophies: chain-8 … flawless-page
- *
- * — same corpus save, same ten drafted targets, same CLEAN answers, same 11-item composed page, same
- * XP and the same `cards`. One **game decision** was worth one study trophy, and it was worth it for
- * abandoning the job one target early: COMPOSED-GAME.md:15 says Ledger A *"is never staked, never
- * lost, never multiplied by a game decision"* and :984 *"Streak, trophies, XP, levels | unchanged"*.
- *
- * The fix is not another gate on the job terminal — it is to put the fact on the thing it is about.
- * A page the board drafted CARRIES its own composed count (`captureJobBefore` → `composedCountOf`,
- * in `inProgress.meta.before`, which survives a walk and a reload), so both writers can read the
- * same two numbers off the same page and write the same row. `null` means the page carries no
- * composed count — i.e. the game never drafted it — and the flat row is then left exactly as it was.
- *
- * @param {object|null} before  the page's before-snapshot (`pageBefore` / `captureJobBefore`)
- * @param {object[]|object} queue  the page's queue as it stands at the terminal
- * @returns {{drafted: number, composed: number, partial: boolean}|null}
- */
-export function pageSizeExtra(before, queue, results = null) {
-  const composed = num(before?.composed, 0);
-  if (!(composed > 0)) return null;
-  const drafted = draftedCount(Array.isArray(queue) ? queue : queue?.queue, results);
-  return { drafted, composed, partial: drafted < composed };
-}
-
-/**
- * The before-snapshot a job's debrief needs, written where a Page's already lives
- * (`inProgress.meta.before`, which `pageBefore()` reads), so a mid-job reload still ends on the
- * debrief of the WHOLE job. Idempotent: an existing snapshot is returned untouched.
- *
- * It is the flat Page's five keys plus two the game adds (`tags`, `index`), which the flat path
- * ignores — `pageBefore()` validates `skills` / `readiness` / `tiles` and nothing else.
+ * It is the flat Page's own five keys and nothing else — the game adds no field to it.
  * @param {object} save
- * @param {object[]} [queue]  the job's queue; defaults to `save.inProgress.queue`
+ * @param {object[]} [queue]  the session's queue; defaults to `save.inProgress.queue`
  */
 export function captureJobBefore(save, queue = null) {
   const ip = save?.inProgress ?? null;
   const stored = pageBefore(ip);
-  /* r1 — the job's START STAMP, for the debrief's idle measurement (see `jobWallMs`). `startJob`
-     writes `inProgress.startedAt` in the same statement that arms the phase machine's first
-     `phaseAt`, so `[startedAt, now]` is EXACTLY the span `tGame + tAnswer` claims to cover — which
-     is what lets the debrief measure one clock against a different one. It is patched onto an older
-     stored snapshot too, because the snapshot (not `inProgress`) is what survives `finishPage`. */
   if (stored) {
+    /* the PAGE'S START STAMP, and the page's own seed — both unrecoverable after `finishPage`
+       clears `inProgress`, which is why they are patched onto an older snapshot here. */
     if (!(num(stored.startedAt, 0) > 0) && num(ip?.startedAt, 0) > 0) stored.startedAt = num(ip.startedAt, 0);
-    /* r2 — the PAGE'S OWN SEED, patched onto an older snapshot for the same reason: `commitJobRun`
-       writes the page's run record at the debrief, and by then `finishPage` has cleared
-       `inProgress`, so `seed` / `seedTag` are unrecoverable unless they were snapshotted here. */
     if (stored.seed == null && ip?.seed != null) stored.seed = ip.seed;
     if (stored.seedTag == null && ip?.seedTag != null) stored.seedTag = ip.seedTag;
-    /* verify r1 — THE SIZE OF THE PAGE THAT WAS COMPOSED, for the run record's `partial` flag (see
-       `composedCountOf` and `commitJobRun`). Patched onto an older snapshot too, and readable at
-       every point of a live job, because `inProgress.meta` IS the composed page's meta. */
-    if (!(num(stored.composed, 0) > 0)) {
-      const n = composedCountOf(ip);
-      if (n > 0) stored.composed = n;
-    }
     return stored;
   }
   const items = Array.isArray(queue) ? queue : (Array.isArray(ip?.queue) ? ip.queue : []);
@@ -2052,207 +1730,68 @@ export function captureJobBefore(save, queue = null) {
     xp: save.xp,
     coverage: coverageCount(save),
     tiles: tileSnapshot(save, tileIdsOf(items)),
-    tags: jobIndex.sealedOf(save),
-    index: jobIndex.indexProgress(save),
-    /* The rating as it stood BEFORE the first call. `job/state.js` now snapshots the same number
-       into `inProgress.game.rating0` and `endJob` reports THAT as `ratingBefore` (notes/J6b.md R2,
-       done at integration), so the two agree and `job-debrief.test.mjs` asserts they do. This key
-       stays because it is the snapshot for a job the screen mounted without a live record — and
-       because the Page's own before-snapshot is this same object. */
-    rating: num(save?.player?.rating?.value, 5),
-    startedAt: num(ip?.startedAt, 0),
-    /* r2 — the page's identity, for the run record. The flat Page puts `run.seed` / `run.seedTag`
-       on its record; a job's are `inProgress`'s, and `inProgress` does not survive the job. */
+    startedAt: pageRunStartedAt(ip),
     seed: ip?.seed ?? null,
     seedTag: ip?.seedTag ?? null,
-    /* verify r1 — how many items `composePage` DEALT for this save, beside how many the job drafted
-       out of them. See `composedCountOf`. */
-    composed: composedCountOf(ip),
   };
-  if (ip && isObj(ip)) ip.meta = { ...(isObj(ip.meta) ? ip.meta : null), before: snap };
+  if (isObj(ip)) {
+    if (!isObj(ip.meta)) ip.meta = {};
+    ip.meta.before = snap;
+  }
   return snap;
 }
 
 /**
- * r1 — THE INDEPENDENT CLOCK the debrief's idle number is measured against (G9 #1).
+ * **THE SESSION CLOSES A PAGE, SO THE SESSION RECORDS A PAGE.**
  *
- * `before.startedAt` is `startJob`'s own stamp and `now` is the instant the debrief context is first
- * built, so the value is the whole job timed by a clock that never passes through `setPhase`.
- * `sessionSplit` subtracts what the phase machine banked (`tGame + tAnswer`) and what is left is
- * every millisecond the app spent in no phase at all — G9 #1's *"state where the app is neither
- * accepting input nor showing a result"*. It is a difference of two clocks, so it goes non-zero the
- * moment a transition skips its `tick`; the old expression subtracted `debriefOf`'s `wall` from
- * `tGame + tAnswer`, and `state.debriefOf` DERIVES `wall` as `tGame + tAnswer`, so it was x − x and
- * could never be anything but 0 (r1 blocker).
- *
- * FROZEN AT THE FIRST BUILD, on the snapshot object the job screen holds across renders: once the
- * debrief is on screen the app IS showing a result, so a re-render (a resize, a theme flip, a return
- * through the back button) must not grow the number.
- *
- * @param {object|null} before  the before-snapshot
- * @param {number} [now]
- * @returns {number|null} `null` when there is no stamp to measure against — an old save, or a caller
- *   that built its own before-snapshot. The debrief then prints the absence, not a 0 it never took.
- */
-function jobWallMs(before, now = Date.now()) {
-  if (!isObj(before)) return null;
-  if (Number.isFinite(before.wallMs)) return before.wallMs;
-  const at = num(before.startedAt, 0);
-  if (!(at > 0)) return null;
-  before.wallMs = Math.max(0, num(now, 0) - at);
-  return before.wallMs;
-}
-
-/**
- * Has this job's page already been recorded? Two guards, because either one can be the only one
- * available: the SAVE is authoritative across a reload (`runs[]` is what the trophy predicates and
- * `#/stats` read), and the in-memory `before` snapshot short-circuits a re-entry inside one render.
- *
- * **r3 finding 63 (ledger-invariance).** The key is the identity the row is WRITTEN with, never the
- * snapshot's `startedAt` alone. `screens/job.js` renders the debrief with `before: jobBefore ??
- * undefined` — the branch `holdForDebrief`'s `console.warn` path leaves live — and on it
- * `jobSummaryContext` builds a FRESH fallback snapshot per call: no `startedAt`, and a new object
- * every render, so the old form's `if (!(startedAt > 0)) return false` returned before the `runs[]`
- * scan ran and the flag was stamped on an object that was thrown away. Three renders of one debrief
- * wrote three page records, and `page.pageIndexFor` counts page runs to seed the NEXT page, so the
- * duplicate changed what the student was dealt next. `stamp` is the job's own terminal clock
- * (`state.endJob` writes `game.ledger.debriefAt`), which is stable across re-renders and is what a
- * caller with no snapshot at all can still recompute — so it is the second half of the key.
- *
- * @param {object} save
- * @param {number} key         `startedAt || stamp` — what the row's own `startedAt` carries
- * @param {object|null} before the in-memory snapshot, when there is one
- * @param {number} [stamp]     the MACHINE's terminal stamp only; never a render clock, or two
- *                             different pages committed at one fixture clock would collide
- */
-function jobRunRecorded(save, key, before, stamp = 0) {
-  if (isObj(before) && before.runRecorded === true) return true;
-  if (!(key > 0) && !(stamp > 0)) return false;
-  const runs = Array.isArray(save?.runs) ? save.runs : [];
-  return runs.some((r) => isObj(r) && r.kind === 'page'
-    && ((key > 0 && num(r.startedAt, 0) === key) || (stamp > 0 && num(r.submittedAt, 0) === stamp)));
-}
-
-/**
- * **r2 blocker (ledger-invariance) — THE JOB CLOSES A PAGE, SO THE JOB RECORDS A PAGE.**
- *
- * `state.endJob` ends a completed job with `finishPage(s)` and nothing else. The flat page's
- * `finish()` (above, ~l.990) makes THREE writes at that same moment — `pushRun(makeRunRecord(…))`,
- * `checkDailyGoal`, `logForecast` — and `screens/job.js` made none of them. So the identical answers
- * that earn **Flawless Page** on `#/run/page` earned nothing in a job: `data/trophies.js:194` is
- * `someRun(r => kindOf(r) === 'page' && r.status === 'done' && items.every(isClean))`, and with no
- * `runs[]` entry that predicate is unreachable. `runs`, `forecastLog` and `trophies` are all named
- * in `js/job/state.js`'s own `LEDGER_A_KEYS`, and COMPOSED-GAME.md G7 publishes *"Streak, trophies,
- * XP, levels | unchanged"* and *"every study route … behaves identically with the layer on or off"*.
- * Playing the game cost a trophy that playing the study tool awards — and `plan.nextActionFor`
- * steers the student to the board, so the route that could earn it is the one they are steered away
- * from. This is that write, made from the lane that owns the Page Summary.
+ * `state.endJob` ends a session with `finishPage(s)` and nothing else. The flat page's `finish()`
+ * makes THREE writes at that same moment — `pushRun(makeRunRecord(…))`, `checkDailyGoal`,
+ * `logForecast` — so without this the identical answers that earn **Flawless Page** on `#/run/page`
+ * would earn nothing in the game, and `runs`, `forecastLog` and `trophies` are all named in
+ * `js/job/state.js`'s own `LEDGER_A_KEYS`.
  *
  * WHY HERE and not in `js/job/*`: those modules run against `guardSave`, which makes a Ledger A
- * write THROW — correctly, that is the whole proof of `job-ledger.test.mjs`. The record is the
- * SCREEN's to write, exactly as it is on the flat page, and `jobSummaryContext` is the one function
- * `screens/job.js` calls at the terminal on every path (finish, the last push, a bag on the last
- * beat, a walk at the getaway) — so the write lands once, wherever the job ended.
+ * write THROW — correctly; that is the whole proof of `tests/job-ledger.test.mjs`. The record is the
+ * SCREEN's to write, exactly as it is on the flat page.
  *
  * WHAT IS RECORDED is what the flat page would have recorded for the same queue and nothing more:
- * `kind: 'page'` (a job IS Today's Page — `finishPage` already counts it in `counters.pages` the
- * same way), the page's own seed, the per-item results `markItem` stored, and the same two follow-up
- * calls in the same order. The seven game fields G7 reserves (`bagged`, `posted`, `ratingDelta`,
- * `guard`, `cracked`, `tGame`, `tAnswer`) are deliberately NOT written: they are a save-budget line
- * the save lane owns (`tests/job-save.test.mjs` "THE RESERVED LINE IS STILL RESERVED"), and the
- * trophy invariance this fixes does not need one byte of them.
+ * `kind: 'page'` (a game session IS Today's Page — `finishPage` already counts it in
+ * `counters.pages` the same way), the page's own seed, the per-item results `markItem` stored, and
+ * the same two follow-up calls in the same order. Not one game field is written into Ledger A.
  *
- * ONLY A COMPLETED JOB. `debrief.complete` is `targetsLeft(s) === 0` — exactly the condition under
- * which `endJob` calls `finishPage`. A bagged or quit job leaves the rest of the page live on
- * `#/run/page`, and the flat screen writes no record for a page it did not finish either; the record
- * is then written by whichever screen closes the page, once, over the whole queue.
- *
- * @param {object} save     the save AFTER `endJob` (the live store state, or any save)
- * @param {object} debrief  `endJob`'s return value
- * @param {{queue?: object[], results?: object[], before?: object, now?: number}} [opts]
+ * @param {object} save   the save AFTER `state.endJob`
+ * @param {{queue?: object[], results?: object[], before?: object, startedAt?: number, now?: number}} [opts]
  * @returns {object|null} the pushed record, or `null` when nothing was recorded
  */
-export function commitJobRun(save, debrief, opts = {}) {
-  if (!isObj(save) || !isObj(debrief)) return null;
-  if (debrief.complete !== true) return null;                   // the page is still open — see above
+export function commitJobRun(save, opts = {}) {
+  if (!isObj(save)) return null;
   const before = isObj(opts.before) ? opts.before : null;
   const queue = Array.isArray(opts.queue) ? opts.queue : [];
   const results = Array.isArray(opts.results) ? opts.results : pageResults(queue);
   if (!results.length) return null;                             // nothing was answered: nothing to record
-  const startedAt = num(before?.startedAt, 0) || num(opts.startedAt, 0);
-  /* THE JOB'S OWN TERMINAL CLOCK, not this render's — and it is computed BEFORE the once-per-page
-     guard, because it is half of that guard's key (r3 finding 63; see `jobRunRecorded`). `endJob`
-     stamps `game.ledger.debriefAt = now` (the instant it closed the page) and `game.log`'s last
-     entry carries the `day` the screen handed it — so the record, the daily goal and the forecast
-     point are all filed under the day the job was PLAYED, even when the debrief is re-read after
-     midnight or rebuilt from a stored snapshot. `debrief.at` takes precedence for when
-     `state.debriefOf` starts carrying it (notes/run-fix.md Request 1). `stamp` is kept apart from
-     `submittedAt`: only the machine's own stamp may serve as an identity, never `opts.now` or
-     `Date.now()`, or two genuinely different pages committed at one fixture clock would collide. */
-  const stamp = num(debrief.at, 0) || num(save?.game?.ledger?.debriefAt, 0);
-  const submittedAt = stamp || num(opts.now, 0) || Date.now();
-  /* ── NO LEDGER A WRITE MAY BE DATED FROM LEDGER B (verify r1, ledger-invariance) ──────────────
-     `today` used to be `save.game.log[-1].day` — `endJob`'s `opts.day`, which `screens/job.js`
-     captures ONCE at mount (`const today = todayISO()`, job.js:345) and never re-reads. A job
-     mounted at 23:50 and finished at 00:1x therefore filed BOTH follow-up writes under YESTERDAY:
-     `logForecast` OVERWRITES the entry for the day it is handed (readiness.js:262-268), so the
-     job destroyed the r already logged for the previous day and logged none for the real one, and
-     `readinessDelta` then computed the next session's printed delta against that corrupted
-     baseline. A PWA left open on the board overnight did the same to the whole next evening. The
-     block was not even internally consistent: `submittedAt` said the 17th while the forecast point
-     beside it said the 16th.
-     `submittedAt` is `game.ledger.debriefAt`, the instant `endJob` closed the page — the machine's
-     own clock, the same one the flat `finish()` reads (`todayISO(new Date(submittedAt))`, l.993).
-     So the two routes now derive the day by the identical expression, which is what COMPOSED-GAME
-     proof 11 claims when it says the two produce byte-identical `forecastLog`. The job's mount-day
-     keeps its home in `game.log` — that is Ledger B, and nothing here reads it. */
+  const submittedAt = num(opts.now, 0) || Date.now();
+  const startedAt = num(before?.startedAt, 0) || num(opts.startedAt, 0) || submittedAt;
+  /* the day is derived from the machine's own terminal clock, by the same expression the flat
+     `finish()` uses — which is what makes the two routes' `forecastLog` byte-identical. */
   const today = todayISO(new Date(submittedAt));
-  /* A re-render is not a second page — on EVERY branch, snapshot or no snapshot. */
-  const runKey = startedAt || stamp || submittedAt;
-  if (jobRunRecorded(save, runKey, before, stamp)) return null;
-
-  /* Marked BEFORE the write, not after: `update()` notifies every store subscriber, and a
-     subscriber that re-renders the debrief would re-enter this function mid-push. The `runs[]` scan
-     catches that re-entry on its own; this flag is the cheaper first answer when there IS a
-     snapshot to carry it. */
+  if (jobRunRecorded(save, startedAt, before)) return null;
+  /* Marked BEFORE the write: `update()` notifies every subscriber, and a subscriber that re-renders
+     would otherwise re-enter this function mid-push. */
   if (isObj(before)) before.runRecorded = true;
-  /* ── THE ROW SAYS HOW MUCH OF THE PAGE IT IS (verify r1, ledger-invariance) ────────────────────
-     A job drafts 3 of the board's 5 contracts, so its queue is a strict subset of the page
-     `composePage` dealt: measured over 60 corpus saves, 7-10 targets against 16-24 page items,
-     mean 45 %. The row this function writes is `kind: 'page'` with `status: 'done'`, and
-     `data/trophies.js:194` awards **Flawless Page** — *"Finish a whole Page with every item clean"*
-     — to any such row whose items are all clean, with no size floor. So seven clean answers on the
-     game route bought the trophy that twenty clean answers buy on the study route, and the trophy's
-     own sentence was false of what had been finished. The record could not say otherwise, because
-     it was measured only against itself.
-     `composed` is `composePage`'s own count for this very page (`composedCountOf`, snapshotted at
-     job start) and `drafted` is what the job dealt out of it, so `partial` is a comparison between
-     two numbers the save carries rather than a policy. A job that deals the WHOLE page is not
-     partial and still earns everything the flat route earns, which is the repair's real claim.
-     With no snapshot there is no composed count to compare against and the row cannot prove it
-     covered a whole page, so it says `partial: true` rather than claim the stronger thing.
-     `data/trophies.js` gates `flawless-page` on `r.partial !== true` (notes/repair-run.md →
-     Requests: a one-line addition to a file this lane does not own, per BUILD-POLICY §2).
-     VERIFY r2: both halves now come out of `pageSizeExtra`, which the flat `finish()` reads off the
-     SAME page — so the terminal that closes a drafted page no longer changes what the row says —
-     and `drafted` is counted in `composed`'s own unit rather than in answers. See that function. */
-  const size = pageSizeExtra(before, queue, results)
-    ?? { drafted: draftedCount(queue, results), composed: 0, partial: true };
   let out = null;
   const write = (s) => {
     out = pushRun(s, makeRunRecord({
       kind: 'page', id: null,
       seed: before?.seed ?? null, seedTag: before?.seedTag ?? null,
-      /* the row is keyed on exactly what the guard above scanned for */
-      startedAt: runKey, submittedAt, results,
-      extra: size,
+      startedAt, submittedAt, results,
+      extra: {},
     }));
     checkDailyGoal(s, today);
     logForecast(s, { today });
   };
-  /* Through `update()` when this IS the live store — so `applyCaps` trims `runs[]` to its 40, the
-     store is marked dirty and every subscriber is notified, exactly as the flat `finish()` does.
-     Handed any other save (a headless fixture), it is written in place and nothing is flushed. */
+  /* Through `update()` when this IS the live store — so `applyCaps` trims `runs[]` to its 40 and
+     every subscriber is notified, exactly as the flat `finish()` does. Handed any other save (a
+     headless fixture), it is written in place and nothing is flushed. */
   let live = null;
   try { live = getState(); } catch { live = null; }
   if (live && live === save) { update(write); try { flush(); } catch { /* memory store */ } }
@@ -2260,550 +1799,16 @@ export function commitJobRun(save, debrief, opts = {}) {
   return out;
 }
 
-/**
- * Build the Page Summary context for a finished job. Everything is optional and everything degrades:
- * with no before-snapshot the deltas read ±0 and no tile is claimed as minted, which is the honest
- * reading when nobody took one.
- *
- * `queue` must be the job's queue as it stood BEFORE `endJob` (a completed job's `finishPage` clears
- * `inProgress`), which is why it is a parameter and not a read.
- *
- * @param {object} save     the save AFTER `endJob`
- * @param {object} debrief  `endJob`'s return value
- * @param {{queue?: object[], before?: object, results?: object[], elapsedMs?: number,
- *          decisions?: ('bag'|'push')[], guard?: object|null, seedTag?: string|null}} [opts]
- */
-export function jobSummaryContext(save, debrief, opts = {}) {
-  const queue = Array.isArray(opts.queue) ? opts.queue : (Array.isArray(save?.inProgress?.queue) ? save.inProgress.queue : []);
-  const results = Array.isArray(opts.results) ? opts.results : pageResults(queue);
-  const before = isObj(opts.before) ? opts.before : (pageBefore(save?.inProgress) ?? {
-    skills: skillStates(save), readiness: { r: readiness(save).r, provisional: !!readiness(save).provisional },
-    xp: save.xp, coverage: coverageCount(save), tiles: {},
-  });
-  /* r2 — THE THREE WRITES A FINISHED PAGE MAKES, made here because a job's finish makes none of
-     them (see `commitJobRun`). It runs BEFORE the after-snapshot for the same reason the flat
-     `finish()` reads `after` off the save `update()` returned: `checkDailyGoal` can meet the goal
-     and stamp the streak, and the Summary must print the save as it now stands, not as it stood one
-     statement ago. Idempotent, so a re-render of the debrief adds nothing. */
-  commitJobRun(save, debrief, { queue, results, before, now: num(opts.now, 0) });
-  const after = { skills: skillStates(save), readiness: readiness(save), xp: save.xp, coverage: coverageCount(save) };
-  const tileIds = tileIdsOf(queue);
-  return {
-    kind: 'job',
-    run: { title: kindMeta('job')?.title ?? 'The Job', subtitle: null, back: '/today', items: queue, id: null, seedTag: opts.seedTag ?? null, meta: {}, limitMs: 0 },
-    results, sum: summarizeRun(results), before, after,
-    tilesBefore: isObj(before.tiles) ? before.tiles : {},
-    tilesAfter: tileSnapshot(save, tileIds),
-    outcome: { jump: null, dailyXp: 0 },
-    save,
-    elapsedMs: num(opts.elapsedMs, num(debrief?.wall, 0)),
-    /* r1 — the independent wall clock, or null. Kept BESIDE `elapsedMs` rather than folded into it:
-       `elapsedMs` feeds the flat Summary's `Time` fact and the BLITZ hero, and neither of those may
-       change meaning because the game layer learned a second clock. */
-    /* `debrief.at` is the terminal `now` `endJob` was given. `state.debriefOf` does not carry it
-       today (notes/run-fix.md Requests → `js/job/state.js`), so this falls back to the instant the
-       context is built and the measurement then also contains the endJob → render transition —
-       which IS a window where the app is neither accepting input nor showing a result, so it
-       belongs in the number; it just makes the number coarser than it needs to be. The day the
-       stamp lands, this line gets exact with no other edit. */
-    wallMs: Number.isFinite(opts.wallMs) ? opts.wallMs : jobWallMs(before, num(debrief?.at, Date.now())),
-    job: debrief,
-    jobOpts: { decisions: opts.decisions ?? null, items: queue, guard: opts.guard ?? null },
-  };
+/** How many items `composePage` dealt for this page — the page's own count, off its meta. */
+export function composedCountOf(ip) {
+  const n = num(ip?.meta?.composed, 0);
+  if (n > 0) return Math.trunc(n);
+  const q = Array.isArray(ip?.queue) ? ip.queue.length : 0;
+  return q > 0 ? q : 0;
 }
 
-/**
- * Render the debrief. `ctx` is `jobSummaryContext`'s output (or any Page Summary context with `job`
- * set) — the same function the flat Page Summary uses, which is the whole point.
- */
-export function renderJobSummary(host, ctx) {
-  return renderSummary(host, ctx);
+/** Run a callback after the summary's hold (0 ms on every route now that the bag drop is cut). */
+function afterHold(ms, fn) {
+  if (!(num(ms, 0) > 0)) { fn(); return; }
+  setTimeout(fn, num(ms, 0));
 }
-
-/* ------------------------------------------------------------------ the two debrief blocks */
-
-/**
- * **J8 — the split line in the debrief.** `state.debriefOf` measures the two accumulators over every
- * phase the job has *finished*; the one phase it cannot measure about itself is the debrief the
- * student is reading while this line renders, because that duration is still in their future. G1's
- * fixed-phase table counts it (`debrief: 65` of the JOB column's 160 s), the board's projection
- * spends it, and the wall clock on the primary button includes it — so a line that dropped it would
- * print a number 5.4 points under the one the board printed 12 minutes earlier, on the same session.
- *
- * So the debrief phase is credited from the student's OWN rolling mean (`game.ledger.phaseMeans
- * .debrief`, the shipped 65 s until they have jobs behind them) — the same device, from the same
- * save key, that the board's projection uses — and BOTH numbers print: the credited session split as
- * the value, the measured-so-far split beside it. Nothing here is stored; the line is a pure read.
- *
- * `idle` is G9 #1's "0 ms of any state where the app is neither accepting input nor showing a
- * result": every phase of `PHASE_ORDER` is classified as GAME or ANSWER seconds by `setPhase`, so
- * the sum of the two accumulators should be the WHOLE job, and anything the job's own wall clock
- * has that the accumulators do not is time the app spent in no state at all.
- *
- * **r1 — that subtraction now uses a clock that is not the accumulators.** `opts.wall` is
- * `jobWallMs(before)`: `inProgress.startedAt` (armed in the same statement as the first `phaseAt`)
- * to the instant the debrief context was built. The previous expression subtracted `measuredWall`
- * from `job.wall` — and `state.debriefOf` *derives* `wall` as `tGame + tAnswer`, so it was `x − x`
- * and printed `0 ms idle` for every session the app can produce, measurement-shaped and measuring
- * nothing. Without `opts.wall` there is no second clock, so `idleMeasured` is false and the debrief
- * prints the absence rather than a 0 it never took.
- *
- * @param {object} job   a `state.debriefOf` object
- * @param {object} [save]  for `game.ledger.phaseMeans.debrief`
- * @param {{wall?: number|null}} [opts]  the independent wall clock (`ctx.wallMs`)
- * @returns {{split:number, measured:number, credit:number, game:number, wall:number, idle:number,
- *            idleMeasured:boolean}}
- */
-export function sessionSplit(job, save = null, opts = {}) {
-  const tGame = Math.max(0, num(job?.tGame, 0));
-  const tAnswer = Math.max(0, num(job?.tAnswer, 0));
-  const means = save?.game?.ledger?.phaseMeans;
-  const credit = Math.max(0, num(means?.debrief, JOB_PHASE_MEANS.debrief)) * 1000;
-  const game = tGame + credit;
-  const wall = game + tAnswer;
-  const measuredWall = tGame + tAnswer;
-  /* `Number.isFinite`, NOT `Number(x)`: `Number(null)` is 0, and a null clock coerced to 0 would put
-     the tautology straight back — an unmeasured job would print `0 ms idle` again. */
-  const spanned = opts?.wall;
-  const idleMeasured = Number.isFinite(spanned) && spanned >= 0;
-  return {
-    split: wall > 0 ? game / wall : 0,
-    measured: measuredWall > 0 ? tGame / measuredWall : 0,
-    credit, game, wall,
-    idle: idleMeasured ? Math.max(0, Math.round(spanned - measuredWall)) : 0,
-    idleMeasured,
-  };
-}
-
-/**
- * **THE RANK WORD — ONE EXPRESSION, FOR THE WHOLE DEBRIEF (verify r1, player-feel).**
- *
- * `call.rankNameFor(rating)` is the bare band lookup, and after REPAIR-DECISION S3 the band no
- * longer names the rank a save holds: `applyTarget` floors `p.rank` on the rank already held
- * (`job/state.js:1184`), because rank gates the 95 call and `guardMult` — tools, and *"this layer
- * never removes a tool you own"*. The ratchet landed on `screens/stats.js:263` and
- * `screens/settings.js:649` and missed the take block, so ONE debrief printed TWO ranks for one
- * rating: the walk line and the `Rating` fact said `Called 1` at the top while `.sum-job-rating`
- * said `Called 2` at the bottom. It is the modal case rather than a corner — `store.fresh()` ships
- * `player.rank = 2` and `rating.value = 5.00`, so the first job that moves the rating one hundredth
- * below 5.00 lands a NEW student on exactly that screen, demoted at the top and held at the bottom.
- *
- * Both surfaces now call this, so a third can only be wrong by not calling it. The rating DELTA
- * beside it is untouched: the rating falls as the material is mastered — that is the deflation G2
- * wants — and only the rank word is floored. `rankFor(rating)` is the default for a save carrying
- * no `player.rank` at all, which is the same answer the ladder would have given it.
- */
-function heldRankName(save, rating) {
-  return jobCall.rankOf(num(save?.player?.rank, jobCall.rankFor(num(rating, 5)))).name;
-}
-
-/** The take: the bag drop, the fee line, `COPY.walk`, the rating delta, the split, the decision count. */
-function jobTakeBlock(job, ctx) {
-  const wrap = h('div.sum-job-take', { role: 'group', 'aria-label': 'The take' });
-  const bagged = jobEcon.round(num(job.finalBagged ?? job.bagged, 0));
-  const base = jobEcon.round(num(job.baseBagged, bagged));
-  const bonus = num(job.bonusRate, 0);
-  const ratingAfter = num(job.ratingAfter, num(ctx.save?.player?.rating?.value, 5));
-  // the pre-first-call snapshot, not `endJob`'s own read — see `captureJobBefore`
-  const ratingBefore = num(ctx.before?.rating, num(job.ratingBefore, ratingAfter));
-  const rDelta = ratingAfter - ratingBefore;
-  const rank = heldRankName(ctx.save, ratingAfter);
-  const shape = job.shape ?? 'JOB';
-  const published = jobEcon.decisionCount(JOB_SHAPES[shape] ? shape : 'JOB');
-  const perItem = num(job.perItem, 0);
-  /* ── TWO NUMERALS, ONE BASIS (verify r2, split-honesty) ───────────────────────────────────────
-     This line used to print the MEASURED count beside `${published.mandatory} mandatory /
-     ${published.full} full use`, and the two ceilings are not on the same basis as each other, let
-     alone as the count:
-       · `state.debriefOf` (`js/job/state.js:1997`) charges **one** decision per brief window —
-         `+ g.briefs.length` — whatever the student did inside it.
-       · `econ.decisionCount` (`js/job/econ.js:1334`) charges **five**: `briefs` in the mandatory
-         column plus `(DECISIONS.briefOptionsMax − 1) * briefs` in the full column.
-     The `mandatory` columns therefore agree exactly — `job-split.test.mjs` §5 asserts
-     `debrief.decisions === published.mandatory` per shape on the default path — and the `full`
-     column does not and cannot: driven through the shipped machine with EVERY brief option taken,
-     a clean full-use JOB-10 prints 25 (2.5 per item) against a published 35 (3.5), and the counter
-     reaches 35 only by adding targets to the denominator (2 swaps + 2 misses → 35 over FOURTEEN
-     graded items). Exhaustive over the reachable space — 4 shapes × swap on/off × 5 miss patterns
-     × 8 saves — the maximum `perItem` this counter can print is RUN 3.00, JOB 2.67, JOB12 2.57,
-     VAULT 2.89: the published 3.5 is unreachable on the JOB-10 the document prices, and the line
-     that is supposed to BE the mix-invariant honesty check was the one printing a measured 2.5
-     beside a ceiling its own counter cannot produce, with no word saying the two were different
-     quantities.
-     So the ceiling is printed on the counter's own basis, and G1's option-counted column is named
-     as the different quantity it is instead of being passed off as the same one. Neither numeral is
-     invented here: both come out of `data/job.js` through `econ.decisionCount`.
-
-     THE COUNTER'S OWN FULL-USE COLUMN IS `mandatory + COMMIT`, and it is exactly reached. Measured
-     through the shipped machine on a job of the shape's own target count that takes EVERY brief
-     option (scratchpad `decisions.mjs`):
-
-       RUN   default 15 · full use 16      JOB   default 24 · full use 25
-       VAULT default 17 · full use 18      JOB12 default 28 · full use 29
-
-     i.e. `published.mandatory` and `published.mandatory + DECISIONS.commitFull`, per shape, on the
-     nose. On THIS counter using every option inside a window is worth nothing, because a window is
-     one decision whether it is used or skipped — that is the whole of the basis gap, and the line
-     now says so rather than implying an eleven-decision headroom that does not exist.
-     G1's other full-column extra, `DECISIONS.backchecksFull`, is deliberately NOT added: a Backcheck
-     can only be spent after a miss, and a miss queues a Rematch — a target the shape does not have.
-     So the two spends always arrive with two extra CALL/BAG-PUSH pairs and land outside the shape's
-     own column on either basis (this is also why G1's 35 over ten graded items is unreachable in one
-     sitting: with the spends it is 39 over fourteen). A job that spends them prints MORE than the
-     full-use column, which is honest — it answered more targets than the shape deals. */
-  const fullHere = published.mandatory + JOB_DECISIONS.commitFull;
-  const split = sessionSplit(job, ctx.save, { wall: ctx.wallMs });   // J8 — the split line (see below)
-
-  /* The numerals the drop cascades into. Each glyph is its own span so the fall staggers by column —
-     G6: "the LOOSE numerals fall column by column into BAGGED", 40 ms apart. */
-  const digits = h('span.sum-bag-digits.mono.fs-5', { 'aria-hidden': 'true', style: BAG_DIGITS_CSS },
-    ...String(bagged).split('').map((ch, k) => h('span.sum-bag-digit', { dataset: { k: String(k) }, style: { display: 'inline-block' } }, ch)));
-
-  /* "the fee line struck through if it did not apply" (G6). The getaway bag is free (G2), so on every
-     outcome that reaches the getaway the fee is 0 and the line is struck. */
-  const feeFree = job.outcome === 'completed' || job.outcome === 'cracked' || job.outcome === 'walked'
-    || job.outcome === 'commit' || job.outcome === 'quiet22';
-  const feeNode = feeFree
-    ? h('s.sum-bag-fee.mono.muted.fs-1', { dataset: { applied: 'false' } }, 'fee 0')
-    : h('span.sum-bag-fee.mono.muted.fs-1', { dataset: { applied: 'true' } }, `auto-banked at ${Math.round(JOB_AUTO_BAG.walk * 100)} %`);
-
-  wrap.append(
-    h('h2.fs-3', 'The take'),
-    h('p.sum-bag-line', { style: BAG_LINE_CSS },
-      h('span.sum-bag-k.muted.fs-1', 'BAGGED'),
-      digits,
-      h('span.sum-bag-n.mono.sr-only', String(bagged)),
-      feeNode,
-      bonus > 0 ? h('span.sum-bag-bonus.mono.fs-1', `${base} +${Math.round(bonus * 100)} %`) : null,
-    ),
-    h('p.sum-job-walk.mono', JOB_COPY.walk({
-      bagged, rating: ratingAfter.toFixed(2), rank,
-      thinking: mmss(job.tAnswer), deciding: mmss(job.tGame), decisions: job.decisions,
-    })),
-    h('dl.sum-facts.sum-job-facts',
-      fact('Rating', ratingAfter.toFixed(2), `${rank} · ${rDelta >= 0 ? '+' : '−'}${Math.abs(rDelta).toFixed(2)}`),
-      fact('Split', pct1(split.measured),
-        `${mmss(job.tGame)} deciding / ${mmss(job.tAnswer)} thinking · ${pct1(split.split)} with this screen · ${
-          split.idleMeasured ? `${split.idle} ms idle` : 'idle not measured'}`),
-      fact('Decisions', String(job.decisions),
-        `${perItem.toFixed(1)} per item · ${published.mandatory} mandatory / ${fullHere} full use, counting a brief window once`
-        + ` · G1’s ${published.full} counts its ${JOB_DECISIONS.briefOptionsMax} options and ${JOB_DECISIONS.backchecksFull} Backchecks`),
-      fact('Posted', String(jobEcon.round(num(job.posted, 0))), `${num(job.targets, 0)} of ${num(job.of, 0)} targets`),
-    ),
-    /* ── THE DEFLATION SENTENCE SITS BESIDE THE FIGURE IT IS ABOUT (verify r1, player-feel) ──────
-       *"posted falls as you master the material. That is the point."* used to be the last line of
-       the LEDGER block, 95 px above `Tomorrow's board: … worth 952 if you took them all` — a
-       take-everything backlog pool 2.3× the `Posted 419` it is actually about. Round 3 renamed the
-       backlog figure so the two no longer share a word; the verify round measured that renaming a
-       number does not fix a sentence standing next to it, because reading order is the claim. So
-       the sentence moves to the one place on the debrief where `posted` means what the sentence
-       means: directly under this block's own `Posted` fact, the drafted job's, on tonight's basis.
-       `tomorrowLine` is untouched — its exact shape is pinned by run r1 §3 and run r3 §2. */
-    h('p.sum-job-deflation.muted.fs-1', JOB_COPY.deflation()),
-  );
-  return wrap;
-}
-
-/**
- * r1 — the one line that tells the reader which board the bars above belong to.
- *
- * `guardDist` is computed from the heat window `endJob` has ALREADY folded this job's press into, so
- * the bars are the redraw, not the draw. `thisJobDist` is the distribution the guard was actually
- * drawn from, if the caller kept it (`inProgress.game.guard.dist`); with it, the drawn wing prints
- * the probability it really came up at, which is the whole of the r1 finding.
- *
- * @param {string|null} wing  the wing the guard drew this job
- * @param {Record<string, number>|null} [thisJobDist]  the distribution it was drawn FROM
- */
-export function guardNote(wing, thisJobDist = null) {
-  const head = 'next board’s odds, after tonight’s press';
-  if (!wing) return `${head} · no guard drew this job`;
-  const p = isObj(thisJobDist) ? Number(thisJobDist[wing]) : NaN;
-  const at = Number.isFinite(p) ? ` at ${Math.round(p * 100)} %` : '';
-  return `${head} · drawn this job: ${wing}${at}`;
-}
-
-/** The ledger half: both regret lines, the guard redraw, the Fault Index deltas, the rating window. */
-function jobLedgerBlock(job, ctx) {
-  const wrap = h('div.sum-job-ledger', { role: 'group', 'aria-label': 'The ledger' });
-  const save = ctx.save;
-  const o = isObj(ctx.jobOpts) ? ctx.jobOpts : {};
-  const guardWing = o.guard?.wing ?? job.entry?.guard ?? null;
-  const decisions = Array.isArray(o.decisions) ? o.decisions : inferDecisions(job, { items: o.items ?? [], guardWing }).decisions;
-  /* NO `qHatOf` HERE ANY MORE (verify r1). The screen used to hand `jobRegret` a LIVE `qHatFor`
-     read, taken after `endJob` had cleared `inProgress` — so the cut that keeps the rating ladder
-     proper was gone and the line judged a call on a q̂ that contained its own outcome. The save and
-     the job's start stamp are handed over instead, and `sealedQHatOf` recovers the cut. */
-  const regret = jobRegret(job, {
-    decisions, items: o.items ?? [], guardWing,
-    save, cards: cardById, startedAt: num(ctx.before?.startedAt, 0),
-  });
-
-  const lines = h('ul.sum-regret', { style: { listStyle: 'none', margin: '0', padding: '0', display: 'grid', gap: '4px' } });
-  if (regret.bagpush.line) lines.append(h('li.sum-regret-line.mono.fs-1', { dataset: { kind: 'bagpush' } }, regret.bagpush.line));
-  if (regret.call.line) lines.append(h('li.sum-regret-line.mono.fs-1', { dataset: { kind: 'call' } }, regret.call.line));
-  if (lines.childNodes.length) wrap.append(h('h2.fs-3', 'The line you did not take'), lines);
-
-  /* The guard redraw (G6 #3): the distribution as it stands AFTER this job's press was folded into the
-     heat window — real new information, not a replay of the bars you already pressed against. Every bar
-     is laid out at its final size and only its fill is transformed, so the redraw shifts nothing.
-
-     r1 — THE BARS ARE NEXT BOARD'S ODDS, AND NOW THE PAGE SAYS SO. `guardDist` reads the heat window
-     `endJob` has already folded this job's press into, so a heading of "The guard" over a note reading
-     "drawn this job: ALGEBRA" read as *these are the odds, this is the one that came up* — and the
-     drawn wing's bar is painted `--warn`, which is exactly the reading a highlight invites. A player
-     guarded at a uniform 25 % saw "ALGEBRA 31 % · drawn this job: ALGEBRA". The intent was true and
-     lived only in this comment; it is now in the heading and in the note. This job's own distribution
-     is printed beside the wing whenever the caller passes it (`opts.guard.dist`) — `endJob` does not
-     carry it out of the machine, so a caller that has it must hand it over (see notes/run-fix.md
-     Requests → `screens/job.js`). */
-  const dist = jobGuard.guardDist(save, jobGuard.epsFor(save), JOB_GUARD.cap);
-  const bars = jobGuard.guardBars(dist);
-  if (bars.length) {
-    wrap.append(h('h2.fs-3', 'The guard · next board'), h('ul.sum-guard-bars', { style: GUARD_BARS_CSS },
-      ...bars.map((bar) => h('li.sum-guard-bar', { dataset: { wing: bar.wing, drawn: String(bar.wing === guardWing) }, style: GUARD_BAR_CSS },
-        h('span.sum-guard-wing.fs-1', bar.wing),
-        h('span.sum-guard-track', { style: GUARD_TRACK_CSS },
-          h('span.sum-guard-fill', {
-            style: { ...GUARD_FILL_CSS, background: bar.wing === guardWing ? 'var(--warn)' : 'var(--muted)', transform: `scaleX(${clamp(num(bar.p, 0), 0, 1)})` },
-          })),
-        h('span.sum-guard-pct.mono.fs-1', `${bar.pct} %`)))));
-    wrap.append(h('p.sum-guard-note.muted.fs-1', guardNote(guardWing, o.guard?.dist ?? null)));
-  }
-
-  /* The Fault Index deltas — static text at its final width, so there is nothing to shift. */
-  const idxAfter = jobIndex.indexProgress(save);
-  const idxBefore = isObj(ctx.before?.index) ? ctx.before.index : null;
-  const dOf = (k) => (idxBefore ? num(idxAfter[k], 0) - num(idxBefore[k], 0) : 0);
-  wrap.append(h('h2.fs-3', 'Fault Index'), h('dl.sum-facts.sum-index-facts',
-    fact('Sealed', `${idxAfter.sealed} / ${idxAfter.total}`, deltaText(dOf('sealed'))),
-    fact('Live', String(idxAfter.live), deltaText(dOf('live'))),
-    fact('Resolutions', String(idxAfter.resolutions), deltaText(dOf('resolutions'))),
-  ));
-  const wasSealed = new Set(Array.isArray(ctx.before?.tags) ? ctx.before.tags : []);
-  const newlySealed = jobIndex.sealedOf(save).filter((t) => !wasSealed.has(t));
-  for (const tag of newlySealed.slice(0, 3)) wrap.append(h('p.sum-index-sealed.mono.fs-1', JOB_COPY.sealed({ tag })));
-
-  /* S3.1(d): the line leads with the HELD rank, because after the ratchet that is the number the
-     save carries and the window can no longer reproduce it; the rating and the informative count
-     follow as the evidence behind it. verify r1 — it names the rank through the SAME expression
-     the take block uses (`heldRankName`), so the two lines on one screen cannot disagree, and a
-     save carrying no `player.rank` gets one answer rather than two. */
-  const n = num(save?.player?.rating?.n, 0);
-  const rankName = heldRankName(save, num(job.ratingAfter, 5));
-  wrap.append(h('p.sum-job-rating.mono.muted.fs-1', JOB_COPY.ratingLine({
-    rank: rankName, rating: num(job.ratingAfter, 5).toFixed(2), n, N: jobCall.WINDOW_N,
-  })));
-  if (num(job.left, 0) > 0) wrap.append(h('p.sum-job-left', JOB_COPY.leftOnPage({ left: num(job.left, 0) })));
-  return wrap;
-}
-
-/* ------------------------------------------------------------- G5 #1 — TOMORROW'S BOARD */
-
-/** The same wall-clock moment, one day on. `setDate` is what keeps it honest across a DST boundary. */
-function oneDayOn(now) {
-  const d = new Date(num(now, Date.now()));
-  d.setDate(d.getDate() + 1);
-  return d.getTime();
-}
-
-/**
- * **G5 #1 — "Tomorrow's board is computable tonight, so it is printed tonight."**
- *
- * The design ranks its retention hooks in descending strength and this is #1; it is also the ground
- * G5 stands on when it allows the layer's single use of variable reinforcement (*"the hook is
- * knowing, which is the opposite of a loot box"*). r1 found it unbuilt — no `dueList` call existed
- * anywhere under `js/screens/`, and G8's J6b acceptance never listed the line, so no ticket owned it.
- *
- * Everything here is READ from the three modules tomorrow's board will itself read, so the line is a
- * schedule rather than a teaser and a reviewer can recompute every numeral from the save (G9 #4):
- *
- *   - **locks** — `schedule.dueList(save, {now: tomorrow})`, split into the genuinely overdue (cold)
- *     and the ones the test sweep pulls forward, because those are different claims.
- *   - **posted** — `econ.postedFor` at the *floor*: no tokens on any wing, nothing guarded, no ×2,
- *     priced as the due reviews they are (`scope 1.25`). Tomorrow's press and tomorrow's draw have
- *     not happened, so every decision the student makes tomorrow can only move this number up.
- *     It sums EVERY lock `dueList` returns — no draft, no shape cap — so it is not the same measure
- *     as the take block's `Posted` fact (one drafted job) and `tomorrowLine` does not print it under
- *     that word. The field keeps the name; the sentence says `worth N if you took them all` (r3).
- *   - **the safe wing** — the run of most-recent jobs in `game.log` that a wing did NOT draw. Jobs
- *     that posted nothing carry `guard: null` and are dropped: they are not evidence either way.
- *   - **the tags** — `index.tellFor`'s own most-triggered unsealed tag for each named make, which is
- *     exactly what tomorrow's envelope will print as its tell.
- *
- * THE CLOCK is this moment tomorrow, not midnight: a student who finishes a job at 20:00 is told
- * what is on the board when they next sit down, and `dueList` derives its own `today` and `D` from
- * the same stamp, so the sweep window is tomorrow's too.
- *
- * Every clause degrades on its own and the function never throws: no dues prints no lock clause, an
- * empty log prints no safe-wing clause, a make with no live tag brings no tag.
- *
- * @param {object} save
- * @param {{now?: number, at?: number}} [opts]  `at` overrides the computed tomorrow (tests)
- */
-export function tomorrowBoard(save, opts = {}) {
-  const now = num(opts.now, Date.now());
-  const at = num(opts.at, oneDayOn(now));
-  let dues = [];
-  try { dues = dueList(save, { now: at }); } catch { dues = []; }
-
-  /* `tellDetail` walks `save.errors` once per make; memoised so a 60-lock board walks it ≤ 19 times. */
-  const tells = new Map();
-  const tellOf = (skill) => {
-    if (!skill) return null;
-    if (!tells.has(skill)) {
-      let d = null;
-      try { d = jobIndex.tellDetail(save, skill, { cards: cardById }); } catch { d = null; }
-      tells.set(skill, d);
-    }
-    return tells.get(skill);
-  };
-
-  const byMake = new Map();
-  let posted = 0, cold = 0, swept = 0;
-  for (const it of dues) {
-    const card = cardById[it.id] ?? (it.forCard ? cardById[it.forCard] : null);
-    const skill = (card?.skills || [])[0] ?? null;
-    posted += jobEcon.postedFor({
-      tier: num(card?.tier, 1),
-      bucket: num(it.bucket, 0),
-      overdueDays: num(it.overdue, 0),
-      scopeFlags: { isReview: true },
-      tell: tellOf(skill)?.record ?? null,
-    });
-    if (it.sweep) swept++; else cold++;
-    if (skill) byMake.set(skill, num(byMake.get(skill), 0) + 1);
-  }
-
-  const makes = [...byMake.entries()]
-    .sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
-    .slice(0, 2)
-    .map(([skill, locks]) => ({ skill, locks, name: jobIndex.makeName(skill) }));
-
-  const drawn = (Array.isArray(save?.game?.log) ? save.game.log : [])
-    .map((e) => (typeof e?.guard === 'string' ? e.guard : null)).filter(Boolean);
-  let safe = null;
-  for (const w of JOB_WING_IDS) {
-    let n = 0;
-    for (let i = drawn.length - 1; i >= 0 && drawn[i] !== w; i--) n++;
-    if (n > 0 && (!safe || n > safe.jobs)) safe = { wing: w, jobs: n };
-  }
-
-  const tags = [];
-  for (const m of makes) {
-    const t = tellOf(m.skill)?.tag ?? null;
-    if (t && !tags.includes(t)) tags.push(t);
-  }
-
-  /* "one tap to `#/run/drill` on the NAMED weak skill" — the weakest of the two makes tomorrow
-     brings, by `readiness.weakSpots()`'s own order; the heaviest make when neither is flagged weak. */
-  const weak = new Set(weakSpots(save).map((s) => s.id));
-  const pick = makes.find((m) => weak.has(m.skill)) ?? makes[0] ?? null;
-
-  return {
-    at, locks: dues.length, cold, swept, posted: jobEcon.round(posted), makes, safe, tags,
-    drill: pick ? { skill: pick.skill, name: pick.name, weak: weak.has(pick.skill), href: `#/run/drill/${pick.skill}` } : null,
-  };
-}
-
-/**
- * `tomorrowBoard`'s one printed line — G5's own shape, with every clause droppable.
- *
- * **The worth clause is not called `posted` (r3).** G5 #1's illustrative line reads `posted 186` on a
- * 7-lock board, where the whole backlog IS a job. On a real backlog it is not: `tomorrowBoard` sums
- * `econ.postedFor` over EVERY lock `dueList` returns (43 locks, no draft, no shape cap), while the
- * take block four lines up prints `Posted 516 · 3 of 5 contracts, 10 targets` — one drafted job. Two
- * different quantities under one word, with `COPY.deflation` (*"posted falls as you master the
- * material"*) printed between them, read as a flat contradiction: 516 tonight, 956 tomorrow. So the
- * backlog figure says what it is — **`worth N if you took them all`** — and the only number on the
- * debrief labelled `posted` is the job's own, which is the one the deflation line is about.
- */
-export function tomorrowLine(t) {
-  const on = t.makes.length ? ` on ${t.makes.map((m) => m.skill).join(' + ')}` : '';
-  const s = (n) => (n === 1 ? '' : 's');
-  const clauses = [];
-  if (t.cold > 0) clauses.push(`${t.cold} cold lock${s(t.cold)}${on}${t.swept > 0 ? ` + ${t.swept} swept` : ''}`);
-  else if (t.swept > 0) clauses.push(`${t.swept} swept lock${s(t.swept)}${on}`);
-  else clauses.push('nothing due — new locks only');
-  if (t.locks > 0) clauses.push(t.locks === 1 ? `worth ${t.posted} if you take it` : `worth ${t.posted} if you took them all`);
-  if (t.safe) clauses.push(`${t.safe.wing} has been safe ${t.safe.jobs} job${s(t.safe.jobs)} running`);
-  if (t.tags.length) clauses.push(`bringing ${t.tags.join(', ')}`);
-  return `Tomorrow’s board: ${clauses.join(' · ')}`;
-}
-
-/** The debrief's LAST line (G5 #1), plus its one tap. */
-function jobTomorrowBlock(ctx) {
-  /* Laid out here rather than in `screens.css`, the way the other debrief blocks are (`sum-regret`,
-     the guard bars): this screen does not own the stylesheet. notes/run-fix.md Requests → T16. */
-  const wrap = h('div.sum-job-tomorrow', { role: 'group', 'aria-label': 'Tomorrow’s board', style: { display: 'grid', gap: '8px', justifyItems: 'start' } });
-  let t = null;
-  try { t = tomorrowBoard(ctx.save); } catch (e) { console.warn('run: tomorrow’s board', e); return wrap; }
-  wrap.append(h('p.sum-tomorrow-line.mono.fs-1', { style: { margin: '0' } }, tomorrowLine(t)));
-  if (t.drill) {
-    wrap.append(h('a.btn.sum-tomorrow-drill', { href: t.drill.href }, `Drill 5 · ${t.drill.skill}`));
-  }
-  return wrap;
-}
-
-/* ------------------------------------------------------------------ the bag drop */
-
-/**
- * THE BAG DROP (G6's one signature moment for the layer, G10 #13, G12 #32).
- *
- * 600 ms, `transform` + `opacity` only, in place, never full-screen, once per job — and **the only
- * thing animating while it runs**: every other animation in the document is paused for the duration
- * and resumed after, except the header's own `#hdr-bag` drop (`[data-drop]`), which is this same cue
- * in the other column. The screen underneath stays live the whole time.
- *
- * @returns {{cancel: () => void, animations: Animation[], held: number}}
- */
-export function startBagDrop(root, job, ms = bagDropMs()) {
-  const box = root?.querySelector?.('.sum-bag-digits') ?? null;
-  if (!box || box.dataset.dropped === 'true') return { cancel: () => {}, animations: [], held: 0 };
-  /* ANIMATION.bagDrop.oncePerJob. The guard lives on the HOST, not on the section, so re-rendering the
-     same debrief (a resize, a theme flip, a re-entry from the back button) does not replay it — a
-     second element would otherwise be a second first time. */
-  const host = root.parentElement ?? root;
-  const sig = jobSignature(job);
-  if (host.dataset.bagDrop === sig) return { cancel: () => {}, animations: [], held: 0 };
-  host.dataset.bagDrop = sig;
-  box.dataset.dropped = 'true';
-  const glyphs = [...box.querySelectorAll('.sum-bag-digit')];
-  if (!(num(ms, 0) > 0) || !glyphs.length || typeof glyphs[0].animate !== 'function') return { cancel: () => {}, animations: [], held: 0 };
-
-  const stagger = JOB_ANIMATION.bagDrop.staggerMs;
-  const dur = Math.max(120, ms - stagger * Math.max(0, glyphs.length - 1));
-  const from = JOB_ANIMATION.bagDrop.translate;                   // '-1.2em'
-  const animations = glyphs.map((el, k) => el.animate(
-    [{ transform: `translateY(${from})`, opacity: 0 }, { transform: 'translateY(0)', opacity: 1 }],
-    { duration: dur, delay: k * stagger, easing: 'cubic-bezier(.2,.7,.3,1)', fill: 'both' },
-  ));
-  const cancelHold = holdEverythingElse(root, animations, ms);
-  return { cancel: () => { cancelHold(); for (const a of animations) { try { a.finish(); } catch { /* done */ } } }, animations, held: cancelHold.held ?? 0 };
-}
-
-/**
- * Pause every animation in the document except the bag drop's own and the header's `[data-drop]` cue,
- * for `ms`, then resume them. This is what makes "the only element animating" enforceable rather than
- * a convention: it does not matter what a later ticket adds to this screen.
- */
-function holdEverythingElse(root, exempt, ms) {
-  const scope = root?.ownerDocument?.body ?? root;
-  const noop = () => {};
-  if (!scope || typeof scope.getAnimations !== 'function' || !(num(ms, 0) > 0)) { noop.held = 0; return noop; }
-  const keep = new Set(exempt);
-  const held = [];
-  for (const a of scope.getAnimations({ subtree: true })) {
-    if (keep.has(a)) continue;
-    const el = a.effect?.target ?? null;
-    if (el?.closest?.('[data-drop]')) continue;              // the header column's half of the same cue
-    try { a.pause(); held.push(a); } catch { /* not pausable */ }
-  }
-  const resume = () => { for (const a of held) { try { a.play(); } catch { /* gone */ } } };
-  const t = setTimeout(resume, ms);
-  const cancel = () => { clearTimeout(t); resume(); };
-  cancel.held = held.length;
-  return cancel;
-}
-
-export default mountRun;

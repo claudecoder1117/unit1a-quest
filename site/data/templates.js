@@ -440,12 +440,3 @@ for (const desc of [...t07cFactor, ...t07cQuad, ...t07cSys, ...t07cNotation, ...
   templates[desc.id] = t07c({ ...desc, forCards: T07C_FOR_CARDS[desc.id] ?? [], blurb: T07C_BLURB[desc.id] ?? '' });
 }
 /* === /T07c === */
-/* === J5b === */
-// RECALL supply (COMPOSED-GAME G4 response 2): ONE entry, the reason-chip drill family built from the
-// 54 one-line reasons already in data/asn.js. Registered here so `templatesForSkill('ASN-PLP')` and
-// `templatesForSkill('ASN-ANG')` stop returning [] and the RECALL wing renews. The entry is the
-// generator's own frozen descriptor — see notes/J5b.md.
-import { template as asnReasonTemplate } from '../js/gen/asn-reason.js';
-
-templates[asnReasonTemplate.id] = asnReasonTemplate;
-/* === /J5b === */

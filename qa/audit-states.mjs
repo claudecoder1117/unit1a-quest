@@ -343,12 +343,11 @@ async function missOn(page, { max = 5, boss = false } = {}) {
   return has(page, '.card-continue:not([hidden])') ? 'done' : 'stuck';
 }
 
-/* ---- driving a JOB (ticket fix:tests r1 — layout-safari findings 1, 3 and 5) ----------------
-   Five job states used to be the whole game layer's layout coverage, and two of them never arrived:
-   `job-payout` timed out on its own root on every run (the cloze branch in `attemptWrong` above),
-   and `job-debrief` measured the QUIT debrief, which has no regret lines, no mint, no histogram and
-   no skill bars. The getaway, the brief window and the vault target had no state at all. These
-   helpers make all of them reachable in seconds instead of by answering eleven targets. */
+/* ---- driving THE GAME (designs/CUT-BRIEF.md, designs/CUT-SPEC.md) --------------------------
+   REWRITTEN BY THE CUT. The helpers that used to live here drove the board, the sealed envelope,
+   the payout beat, the brief window, the getaway and the debrief; all six mechanics are deleted
+   (notes/DEMOLISH.md), so all six helpers drove nothing. The loop they replace is the whole game:
+   a face-down card, one call, THE FLIP, the study card, Continue. */
 
 /** The height an open phone keyboard takes off the VISUAL viewport (iOS 15 / Android ≈ 290–340 px).
  *  336 leaves 331 px of a 667 px phone — the band this file used to model as a LAYOUT viewport of
@@ -364,37 +363,72 @@ export const KB_PX = 336;
  *  nothing can ever be found underneath). Both mistakes hid the same class of defect. */
 export const VP_KB = [[375, 667], [390, 844], [360, 640], [320, 568]];
 
-/** Post the board off a fixture and take the job: the first sealed envelope is up. */
-async function jobToEnvelope(H, page, { save = 'midweek.json' } = {}) {
+/**
+ * Open a session on the fixture.
+ *
+ * IT DOES NOT LAND ON THE FACE-DOWN CARD, and that is the app, not this helper. A session opens at
+ * an EMPTY PILE, where `job/pay.js decides` says there is nothing to decide — one call is offered,
+ * nothing can be lost on it and bank has nothing to take — so `screens/job.js` locks the only call
+ * and mounts the question straight away (r4: the dead tap). The card is drawn when the pile is not
+ * empty; `jobToCard` below is what reaches it.
+ */
+async function jobStart(H, page, { save = 'midweek.json' } = {}) {
   await go(H, page, '#/run/job', { save: await fixture(H, save), root: '.job-screen' });
-  await page.waitForSelector('.job-screen .job-primary', { timeout: 20000 }).catch(() => {});
-  await tap(page, '.job-screen .job-primary', { wait: 700 });
-  await page.waitForSelector('.job-screen .job-envelope', { timeout: 20000 }).catch(() => {});
+  await page.waitForSelector('.job-screen .job-face-down .job-call, .job-screen .card-screen', { timeout: 20000 }).catch(() => {});
+  await H.waitReady(page);
 }
 
-/** Lock a call on the live envelope. The stem is not in the DOM until this happens (G1). */
-async function jobLockCall(page) {
-  await page.waitForSelector('.job-screen .job-call', { timeout: 20000 }).catch(() => {});
-  return tap(page, '.job-screen .job-call[data-call="70"], .job-screen .job-call', { wait: 700 });
-}
+/** The game's own two scalars, read off the save rather than off the screen under test. */
+const jobGame = (page) => page.evaluate(() => {
+  try { const g = JSON.parse(localStorage.getItem('u1a.save') || 'null')?.inProgress?.game; return { pile: g?.pile | 0, streak: g?.streak | 0, sealed: g?.call != null }; }
+  catch { return { pile: 0, streak: 0, sealed: false }; }
+});
 
 /**
- * Answer the live target — correctly if the card's own stored answer can drive its widget, by
- * missing out if not — and wait for the payout beat. `cardInfo` cannot help here: it reads the id
- * out of `#/card/<id>`, and inside a job the hash is `#/run/job`, so the target has to be read off
- * the save's own `inProgress.queue[idx]` (state.js `queueOf` / `idxOf` read exactly that).
+ * PLAY UNTIL THE STUDENT IS LOOKING AT A FACE-DOWN CARD HE CAN BID ON.
+ *
+ * A card is on screen only while the pile is not empty, so this answers questions with the real
+ * loop until the ENGINE's own pile says so — never for a fixed number of laps, and never by
+ * certifying the state from the thing under test: the pile and the streak are read off the save,
+ * and the card is then confirmed in the DOM with at least one LIVE call on it (a repeat's card, or
+ * a bank receipt, carries three greyed ones and would otherwise pass for a biddable card).
+ *
+ * @returns {Promise<boolean>} whether such a card is up now
  */
-async function jobAnswerOne(page, { clear = false } = {}) {
-  await jobLockCall(page);
-  await cardLive(page);
-  const cleared = clear ? await jobClearLive(page) : false;
-  if (!cleared) await missOn(page);
-  await page.waitForSelector('.job-screen .job-beat:not([hidden])', { timeout: 20000 }).catch(() => {});
-  return has(page, '.job-screen .job-beat:not([hidden])');
+async function jobToCard(page, { pile = 1, streak = 1, max = 10 } = {}) {
+  for (let i = 0; i < max; i++) {
+    const phase = await jobPhase(page);
+    if (phase == null || phase === 'over') return false;
+    const g = await jobGame(page);
+    if (g.pile >= pile && g.streak >= streak && phase === 'call'
+      && (await has(page, '.job-screen .job-face-down'))
+      && (await has(page, '.job-screen .job-call:not([disabled])'))) return true;
+    if (phase === 'call' || phase === 'flip') {
+      /* a card with a live call is a tap; a card with none (a repeat, a receipt) ends on its own */
+      if (await has(page, '.job-screen .job-call:not([disabled])')) { if (!(await jobCall(page))) return false; continue; }
+      await page.waitForSelector('.job-screen .card-screen', { timeout: 20000 }).catch(() => {});
+    }
+    if (!(await jobAnswerOne(page, { clear: true }))) return false;
+  }
+  return false;
 }
 
-/** The job screen's own `data-phase`, or null when the job screen is not mounted. */
+/** The screen's own `data-phase` — call | flip | answer | over — or null when it is not mounted. */
 const jobPhase = (page) => page.evaluate(() => document.querySelector('.job-screen')?.dataset?.phase ?? null);
+
+/**
+ * Lock a call and wait out THE FLIP. The question is not in the DOM until the beat ends
+ * (`screens/job.js FLIP_MS`), and this waits for the CARD rather than for a number of milliseconds,
+ * so lengthening or shortening the beat can never silently turn a state into a timeout.
+ */
+async function jobCall(page, { which = 0 } = {}) {
+  await page.waitForSelector('.job-screen .job-call:not([disabled])', { timeout: 20000 }).catch(() => {});
+  const btns = await page.$$('.job-screen .job-call:not([disabled])');
+  if (!btns.length) return false;
+  await btns[Math.min(which, btns.length - 1)].evaluate((e) => e.click());
+  await page.waitForSelector('.job-screen .card-screen', { timeout: 20000 }).catch(() => {});
+  return has(page, '.job-screen .card-screen');
+}
 
 /**
  * THE SELECTOR AN OS KEYBOARD ACTUALLY OPENS FOR — a live, editable text field inside the card.
@@ -407,84 +441,39 @@ const keyboardFields = (page) => page.evaluate((sel) => [...document.querySelect
   .filter((e) => !e.disabled && !e.readOnly && e.getClientRects().length).length, KB_FIELD);
 
 /**
- * ADVANCE THE LIVE JOB UNTIL THE TARGET IN FRONT OF THE STUDENT IS ONE A KEYBOARD OPENS ON
- * (round-1 verification, layout-safari).
+ * Answer the live question — correctly when the card's own stored answer can drive its widget, by
+ * missing out when it cannot — and take Continue, which lands on the next face-down card or on the
+ * end panel. `card.js`'s Continue is the study layer's; the game adds no tap of its own here.
+ * @returns {Promise<boolean>} true when the screen moved on
+ */
+async function jobAnswerOne(page, { clear = false } = {}) {
+  await cardLive(page);
+  const cleared = clear ? await jobClearLive(page) : false;
+  if (!cleared) await missOn(page);
+  await tap(page, '.card-continue:not([hidden])', { wait: 700 });
+  const phase = await jobPhase(page);
+  return phase === 'call' || phase === 'over';
+}
+
+/**
+ * ADVANCE THE SESSION UNTIL THE QUESTION IN FRONT OF THE STUDENT IS ONE A KEYBOARD OPENS ON.
  *
- * `job-answer-kb` and `job-payout-kb` used to stop on target 1 of `qa/fixtures/midweek.json`, which
- * is a CLOZE: zero text inputs, so on a real phone no keyboard opens there at all. The states then
- * pinned a 336 px inset on a page where nothing was focused, therefore nothing was scrolled, and
- * every `offscreen` / `overlap` / `unreachable-answer` hit the auditor reported was an artefact of
- * the harness — verbatim the artefact `pinKeyboard`'s own comment says it exists to avoid. 372
- * findings, all from these two states, on every run.
- *
- * `css/job.css` already records that the same fixture "mounts live text inputs on three of its ten
- * targets", so the fix is to walk to one of them: miss the targets that have no field (a miss is
- * never frozen, so the field stays editable once we reach one) and stop on the first that does.
- * Bounded, and driven by the screen's own `data-phase` so a brief window or the getaway cannot
- * derail it.
- *
- * @returns {Promise<number>} the number of editable fields on the target it stopped at (0 = none found)
+ * Target 1 of `qa/fixtures/midweek.json` is a CLOZE: zero text inputs, so on a real phone no
+ * keyboard opens there at all, and a state that pinned a 336 px inset on it would measure nothing
+ * but its own artefact (the finding this helper was written for, round 1 of layout-safari). So walk
+ * to a question that has a field, driven by the screen's own `data-phase`, and bounded.
+ * @returns {Promise<number>} the number of editable fields on the question it stopped at
  */
 async function jobToTypedTarget(page, { max = 10 } = {}) {
   for (let i = 0; i < max; i++) {
     const phase = await jobPhase(page);
-    if (phase == null) break;                                   // the job screen went away
-    if (phase === 'getaway') { await tap(page, '.job-screen .job-crack', { wait: 800 }); continue; }
-    if (phase === 'brief') { await tap(page, '.job-screen .job-brief-go, .job-screen .btn-primary', { wait: 700 }); continue; }
-    if (await has(page, '.job-screen .job-beat:not([hidden])')) {
-      await tap(page, '.job-screen .job-push, .job-screen .job-bag', { wait: 900 });
-      continue;
-    }
-    if (await has(page, '.job-screen .job-call')) { await jobLockCall(page); await cardLive(page); }
+    if (phase == null || phase === 'over') break;
+    if (phase === 'call' || phase === 'flip') { if (!(await jobCall(page))) break; continue; }
     const n = await keyboardFields(page);
-    if (n > 0) return n;                                        // a typed target: stop here
-    if (!(await jobAnswerOne(page))) break;                     // no field: miss it and take the beat
+    if (n > 0) return n;                                        // a typed question: stop here
+    if (!(await jobAnswerOne(page))) break;                     // no field: miss it and move on
   }
   return keyboardFields(page);
-}
-
-/** The debrief's root — the one screen `job-debrief` and `job-debrief-quit` both name. */
-const DEBRIEF_ROOT = '.job-screen .sum-job-take, .job-screen .run-summary';
-
-/**
- * Play the live job to its DEBRIEF, driven by the screen's own `data-phase` rather than by a fixed
- * tap sequence (ticket integrate:r1).
- *
- * Why it is a loop. The old choreography was a straight line — answer, push, wait for the getaway,
- * crack, answer, push, wait for the summary — which is only correct when every answer CLEARS. A
- * missed target is requeued (`requeueReview`), so one miss grows the queue, `targetsLeft` never
- * reaches 0, and every later step lands on the wrong screen; the state then reports `unreached`
- * having measured nothing. `trimJob` now keeps the vault clearable, which removes the usual cause,
- * but a fixed line stays wrong in principle: this loop reaches the debrief for ANY queue, whether
- * its targets clear or miss, and it is bounded so it can never hang the audit.
- *
- * It does not paper over a broken app: every exit is a real control the student has, the bound is
- * generous, and reaching the bound still leaves the root absent, so the `unreached` BLOCKER fires
- * exactly as it should when the debrief genuinely cannot be reached.
- */
-async function jobPlayToDebrief(page, { max = 16 } = {}) {
-  for (let i = 0; i < max; i++) {
-    if (await has(page, DEBRIEF_ROOT)) return true;
-    const phase = await jobPhase(page);
-    if (phase == null) break;                               // the job screen went away: nothing to drive
-    if (phase === 'getaway') {                              // the one all-in: CRACK, never WALK
-      await tap(page, '.job-screen .job-crack', { wait: 800 });
-      continue;
-    }
-    if (await has(page, '.job-screen .job-beat:not([hidden])')) {
-      // the payout beat — PUSH keeps the pile riding; on the last target it banks free
-      await tap(page, '.job-screen .job-push, .job-screen .job-bag', { wait: 900 });
-      continue;
-    }
-    if (await has(page, '.job-screen .job-call')) {         // a sealed envelope: call it and answer
-      await jobAnswerOne(page, { clear: true });
-      continue;
-    }
-    if (phase === 'brief') { await tap(page, '.job-screen .job-brief-go, .job-screen .btn-primary', { wait: 700 }); continue; }
-    await nap(page, 400);                                   // a beat mid-transition: let it land
-  }
-  await page.waitForSelector(DEBRIEF_ROOT, { timeout: 20000 }).catch(() => {});
-  return has(page, DEBRIEF_ROOT);
 }
 
 /** Answer the live job target from its own stored answer. Returns true only if it actually cleared. */
@@ -545,12 +534,17 @@ async function jobClearLive(page) {
 }
 
 /**
- * Cut the drafted queue down to `n` targets and re-enter the job. `state.queueOf` reads
- * `inProgress.queue` directly and `setPhase` flips to the getaway at `targetsLeft === 1`, so a
- * two-target queue reaches the getaway, the vault and a FINISHED debrief after one answer instead
- * of eleven. The store's write is debounced (250 ms), so the save is given time to land first.
+ * Cut the queue down to `n` questions and re-enter the session, so the end panel is reachable after
+ * one answer instead of eleven. `state.queueOf` reads `inProgress.queue` directly and the session is
+ * over at `targetsLeft === 0`. The store's write is debounced (250 ms), so the save is given time to
+ * land first.
  *
- * r1 INTEGRATION FIX — the kept targets are chosen, not sliced. `q.slice(0, n)` took whatever the
+ * THE CUT (designs/CUT-BRIEF.md): the getaway, the vault and the debrief are deleted, and this no
+ * longer writes `inProgress.game.vault` — a key of the deleted design that `state.serialize` dropped
+ * on the next write anyway. What survives is the choice of which questions to keep, below, which is
+ * about the harness being able to ANSWER them and has nothing to do with the old mechanics.
+ *
+ * r1 INTEGRATION FIX — the kept questions are chosen, not sliced. `q.slice(0, n)` took whatever the
  * composer happened to put first, and a drafted queue is a mix of bank cards and GENERATED VARIANTS
  * (`T-cs-lin#1cb4fa`). `jobClearLive` can only clear a bank card — it reads the stored answer out of
  * `data/cards.js` and a variant has no entry there ("a generated Variant has no bank entry") — so
@@ -564,10 +558,10 @@ async function jobClearLive(page) {
  * twenty minutes later; re-run in isolation afterwards, chromium AND webkit both failed. Nothing
  * about the app changed between those runs — only which card the composer put second.
  *
- * So: prefer bank-backed targets, in the composer's own order, and top up with whatever is left
- * only if there are not `n` of them. The LAST kept target is the vault, and it is bank-backed
- * whenever the queue holds one at all. `reachable` is reported back so a caller that needs a
- * clearable vault can say so instead of silently mis-choreographing.
+ * So: prefer bank-backed questions, in the composer's own order, and top up with whatever is left
+ * only if there are not `n` of them. The LAST kept question is the one the session ends on, and it
+ * is bank-backed whenever the queue holds one at all. `clearable` is reported back so a caller that
+ * needs to clear it can say so instead of silently mis-choreographing.
  */
 async function trimJob(H, page, n) {
   await nap(page, 400);
@@ -591,15 +585,14 @@ async function trimJob(H, page, n) {
     if (kept.length < k) return false;
     s.inProgress.queue = kept;
     if (s.inProgress.idx != null) s.inProgress.idx = 0;
-    if (s.inProgress.game && kept[k - 1]?.id) s.inProgress.game.vault = kept[k - 1].id;
     localStorage.setItem('u1a.save', JSON.stringify(s));
-    return { clearableVault: !!(byId && byId[kept[k - 1]?.id]), kept: kept.map((it) => it.id) };
+    return { clearable: !!(byId && byId[kept[k - 1]?.id]), kept: kept.map((it) => it.id) };
   }, n);
   if (!ok) return false;
   await H.gotoRoute(page, '#/run/job');                    // a real load, so the store re-reads it
   await page.waitForSelector('.job-screen', { timeout: 20000 }).catch(() => {});
   await H.waitReady(page);
-  return ok;                                               // { clearableVault, kept } — truthy
+  return ok;                                               // { clearable, kept } — truthy
 }
 
 /** Drive the rootcase widget on the live card to 'roots' | 'reject' | 'cases'. */
@@ -901,178 +894,158 @@ export function states(h) {
   add('run-upgrade', 'Upgrade run: every Bronze/Silver original, hints off, first try only', ['run', 'card', 'host', 'fixture'], '.run-screen .card-screen',
     async (page) => { await go(H, page, '#/run/upgrade', { save: await fx('midweek.json'), root: '.run-screen' }); await cardLive(page); });
 
-  /* ---------------- THE JOB (J6) — the game layer's one screen ----------------
-     Added by ticket J6 (COMPOSED-GAME G8): `node qa/layout-audit.mjs --only job` is one of that
-     ticket's acceptance criteria, and a criterion with no state in this catalog cannot be measured.
-     Additive only — nothing above or below is touched. See notes/J6.md → Requests (AUDIT-STATES). */
-  add('job-board', "THE JOB · the board: five contracts, the guard's published odds, the token press", ['job', 'game', 'phone-critical', 'fixture'], '.job-screen[data-phase="board"] .job-contracts',
+  /* ---------------- THE GAME (designs/CUT-BRIEF.md, designs/CUT-SPEC.md) ----------------
+     `node qa/layout-audit.mjs --only job --engine both` is the screen lane's acceptance, and a
+     criterion with no state in this catalog cannot be measured.
+
+     THE ELEVEN STATES THIS REPLACES drove the board, the sealed envelope, the press panel, the
+     payout beat, the brief window, the getaway, the vault and the debrief. Every one of those
+     mechanics is deleted (notes/DEMOLISH.md §1), so every one of those states measured nothing —
+     they would each report the `unreached` BLOCKER for ever. What the student actually sees is
+     four screens, and here they are. */
+  /* THE FIRST CARD THE STUDENT ACTUALLY DECIDES ON.
+     This used to be the state a cold session opened on, and on 2026-09-23 it reported the
+     `unreached` BLOCKER in both engines and both themes: a session opens at an empty pile, where
+     `job/pay.js decides` is false, so the app locks the one call there is and mounts the question
+     without drawing a card at all (see `jobStart`). The state was describing a screen the build no
+     longer has \u2014 "two greyed at an empty pile" is a card that cannot exist \u2014 so it measured nothing
+     and would have gone on measuring nothing for ever. It now plays to the first card there IS:
+     a pile, a live call, and the unaffordable ones greyed beside it. */
+  add('job-facedown', 'THE GAME \u00b7 the face-down card: the three slots, the skill, the calls the pile covers (the rest greyed) and bank', ['job', 'game', 'phone-critical', 'regression', 'fixture'], '.job-screen[data-phase="call"] .job-face-down',
     async (page) => {
-      await go(H, page, '#/run/job', { save: await fx('midweek.json'), root: '.job-screen' });
-      await page.waitForSelector('.job-screen .job-contracts li', { timeout: 20000 }).catch(() => {});
+      await jobStart(H, page);
+      if (!(await jobToCard(page))) throw new Error('job-facedown: no face-down card was reached \u2014 '
+        + 'the session never carried a pile, so there was never a bid to make');
       await nap(page, 300);
     });
 
-  add('job-envelope', 'THE JOB · the SEALED envelope and the call row — the stem is not in the DOM yet', ['job', 'game', 'phone-critical', 'regression', 'fixture'], '.job-screen .job-envelope .job-calls',
+  /* A PILE AND A STREAK: all three calls live, nothing greyed, and a two-digit pile in slot 1 —
+     the widest the strip ever gets before a call is in. */
+  /* IT HAS TO REACH THE STREAK, NOT JUST TRY THREE TIMES. This used to play exactly three questions
+     and stop, whatever they graded: `jobClearLive` can only clear the widgets whose answer it can
+     read off `data/cards.js`, so a generated Variant or a widget it does not drive fell through to
+     `missOn`, the streak reset on the miss, and the state its name promises \u2014 the one where the
+     multiplier is up \u2014 was audited at \u00d71 (measured 2026-09-22: pile 18, streak \u00d71). It now plays
+     the real loop until the ENGINE says the streak is there, and gives up after `MAX` questions
+     rather than after three attempts. The two numbers are read off the save, not off the strip, so
+     the state cannot certify itself from the thing under test. */
+  add('job-streak', 'THE GAME \u00b7 the face-down card carrying a pile and a streak: three live calls and the widest strip', ['job', 'game', 'phone-critical', 'fixture'], '.job-screen[data-phase="call"] .job-face-down',
     async (page) => {
-      await go(H, page, '#/run/job', { save: await fx('midweek.json'), root: '.job-screen' });
-      await page.waitForSelector('.job-screen .job-primary', { timeout: 20000 }).catch(() => {});
-      await tap(page, '.job-screen .job-primary', { wait: 700 });
-      await page.waitForSelector('.job-screen .job-envelope', { timeout: 20000 }).catch(() => {});
+      await jobStart(H, page);
+      /* IT GIVES UP ON THE STREAK BEFORE IT GIVES UP ON THE CARD. `jobClearLive` can only clear the
+         widgets whose answer it can read off `data/cards.js`, so a generated Variant falls through
+         to `missOn` and the streak resets \u2014 and this state used to `break` out of its own loop the
+         moment the screen was not on a card, which after r4 is the first paint of every session.
+         Ask the engine for \u00d73 first; take a card with a pile on it if the fixture will not give one,
+         because a card at \u00d71 is still the screen this state exists to measure, and NO card is not. */
+      if (!(await jobToCard(page, { pile: 1, streak: 3 }))
+        && !(await jobToCard(page, { pile: 1, streak: 1 }))) {
+        throw new Error('job-streak: no face-down card was reached in this session');
+      }
       await nap(page, 300);
     });
 
-  // The regression state: a card hosted inside a NEW container, with the board collapsed above it.
-  // This is the shape that printed one letter per line in the placement (notes/LAYOUT-ROOT.md).
-  add('job-answer', 'THE JOB · a stem live inside the job stage, board collapsed to one 36 px line', ['job', 'game', 'card', 'host', 'phone-critical', 'regression', 'fixture'], '.job-screen .card-screen',
+  /**
+   * THE WIDEST STRING THE ENGINE CAN PRODUCE — `496 · ×5 · pays 50`, with a call locked.
+   *
+   * `job-streak` plays the real loop, so it is capped by what `midweek.json` can actually reach in
+   * eight questions: measured on 2026-09-22 that is a two-digit pile, and the strip's widest shape
+   * — a THREE-digit pile beside the cap streak beside a two-digit `pays` — had never been rendered
+   * at any of the 17 viewports (notes/cut-screen.md Requests 8, and notes/cut-tests.md's copy of
+   * it). A limit measured only on the narrow case is measured on the easy case.
+   *
+   * It is written onto the save and reloaded, the way `trimJob` writes a queue: the pile and the
+   * streak are the engine's own two fields, and reloading makes the SCREEN render them through the
+   * shipped `readingOf` / `stripFor` rather than having the state paint a strip of its own. 496 is
+   * what an unbanked twelve-question session can carry (notes/cut-screen.md measured 496 against an
+   * honest 478), and ×5 is `econ.MULT_MAX`. Then a call is locked so the third slot is at its widest
+   * too — `pays 50` is `sure` at ×5, the largest number the strip can print.
+   */
+  add('job-widest', 'THE GAME · the widest strip the engine can reach: a three-digit pile, the cap streak and the biggest pay', ['job', 'game', 'phone-critical', 'fixture'], '.job-screen .job-slot',
     async (page) => {
-      await go(H, page, '#/run/job', { save: await fx('midweek.json'), root: '.job-screen' });
-      await page.waitForSelector('.job-screen .job-primary', { timeout: 20000 }).catch(() => {});
-      await tap(page, '.job-screen .job-primary', { wait: 700 });
-      await page.waitForSelector('.job-screen .job-call', { timeout: 20000 }).catch(() => {});
-      await tap(page, '.job-screen .job-call[data-call="70"], .job-screen .job-call', { wait: 700 });
+      await jobStart(H, page);
+      await nap(page, 300);
+      await page.goto(H.base + 'version.js', { waitUntil: 'load' });
+      await killServiceWorkers(page);
+      const ok = await page.evaluate(() => {
+        let s = null;
+        try { s = JSON.parse(localStorage.getItem('u1a.save') || 'null'); } catch { return false; }
+        if (!s?.inProgress?.game) return false;
+        s.inProgress.game.pile = 496;
+        s.inProgress.game.streak = 5;
+        s.inProgress.game.call = null;
+        localStorage.setItem('u1a.save', JSON.stringify(s));
+        return true;
+      });
+      if (!ok) throw new Error('job-widest: no live session to widen — jobStart did not write inProgress.game');
+      await H.gotoRoute(page, '#/run/job');
+      await page.waitForSelector('.job-screen .job-face-down .job-call', { timeout: 20000 }).catch(() => {});
+      await jobCall(page, { which: 2 });                 // `sure` at ×5 — the widest third slot
+      await nap(page, 400);
+    });
+
+  /* THE REGRESSION SHAPE, and the one the student found the last layout bug in: a card hosted
+     inside a NEW container, under a sticky band this screen brings with it. It is the shape that
+     printed one letter per line in the placement (notes/LAYOUT-ROOT.md) one level down. */
+  add('job-answer', 'THE GAME \u00b7 a stem live inside the job stage, with the three-slot strip pinned above it', ['job', 'game', 'card', 'host', 'phone-critical', 'regression', 'fixture'], '.job-screen .card-screen',
+    async (page) => {
+      await jobStart(H, page);
+      await jobCall(page);
       await cardLive(page);
     });
 
-  add('job-payout', 'THE JOB · the payout beat: the line, the chain ticks and BAG / PUSH under the card', ['job', 'game', 'card', 'host', 'fixture'], '.job-screen .job-beat:not([hidden])',
+  /* The keyboard-open phone. `VP_KB` gives these the height an open keyboard actually leaves, and
+     `jobToTypedTarget` stops on a question a keyboard really opens on rather than on target 1. */
+  add('job-answer-kb', 'THE GAME \u00b7 the stem and the Answer Dock with the on-screen keyboard open, under the pinned strip', ['job', 'game', 'card', 'host', 'dock', 'keyboard', 'phone-critical', 'fixture'], '.job-screen .card-screen',
     async (page) => {
-      await jobToEnvelope(H, page);
-      await jobAnswerOne(page);
-      await nap(page, 300);
-    });
-
-  /* The keyboard-open phone. J6's acceptance is "a full 10-target job at 375×667 WITH THE KEYBOARD
-     OPEN, no horizontal scroll", and until this landed the layout net measured neither half of it:
-     no job state pinned `data-kb`, and VP_ALL's shortest phone row is 568 px tall. `vps` gives these
-     two states the height an open keyboard actually leaves (layout-safari finding 4). */
-  add('job-answer-kb', 'THE JOB · the stem and the Answer Dock with the on-screen keyboard open — J6\'s own acceptance configuration', ['job', 'game', 'card', 'host', 'dock', 'keyboard', 'phone-critical', 'fixture'], '.job-screen .card-screen',
-    async (page) => {
-      await jobToEnvelope(H, page);
-      /* ROUND-1 VERIFICATION: stop on a target a keyboard actually opens on, not on target 1. */
+      await jobStart(H, page);
       const fields = await jobToTypedTarget(page);
-      if (!fields) throw new Error('job-answer-kb: no target in this job mounts a live text field — '
-        + 'the fixture has changed and this state can no longer model a keyboard (css/job.css records '
-        + 'three typed targets of ten on qa/fixtures/midweek.json)');
+      if (!fields) throw new Error('job-answer-kb: no question in this session mounts a live text field — '
+        + 'the fixture has changed and this state can no longer model a keyboard');
       await pinKeyboard(page);
       await nap(page, 300);
     }, { vps: VP_KB });
 
-  /**
-   * THE PAYOUT BEAT ON A PHONE THE KEYBOARD HAS JUST LEFT — and the measurement that says why the
-   * keyboard is not still up (round-1 verification, layout-safari).
-   *
-   * This state used to pin a 336 px inset on the beat and call it "the payout beat with the keyboard
-   * open". It is not a configuration the app produces, and that is settled by the app's own code
-   * rather than by argument: the beat is drawn from `state.applyTarget`, which runs off the card's
-   * `onDone`, and `screens/card.js:1023 lockAll()` runs first — `entry.w.lock(true)` sets
-   * `input.disabled = true` on every widget field (`widgets/base.js:431`) and `dock.keys.el.hidden`
-   * puts the keypad away. A disabled field is blurred, and a blurred field closes the OS keyboard,
-   * so by the time `.job-beat` exists there is nothing focused for a keyboard to be open for.
-   * Measured, driving a typed target to its beat: `widgets: ["w w-pairs is-complete is-locked"],
-   * activeElement: MAIN`, zero focusable fields — which is why `pinKeyboard` now refuses it.
-   *
-   * What it measures instead is the real thing: the beat at the LAYOUT heights a phone has
-   * (`VP_KB`), reached through a target the student TYPED into, with the keyboard down because the
-   * app put it down. The residual — whether `.job-beat` should ride `--kb` during the OS's ~250 ms
-   * dismissal animation — is a `site/css/job.css` question and is filed there (layout-safari's own
-   * round-3 BLOCKER on that file), not modelled here by inventing a state.
-   */
-  add('job-payout-kb', 'THE JOB · the payout beat and BAG / PUSH on a phone, right after a TYPED target (the app closes the keyboard itself)', ['job', 'game', 'card', 'host', 'dock', 'keyboard', 'phone-critical', 'fixture'], '.job-screen .job-beat:not([hidden])',
+  /* The end of a session: the queue is trimmed to one question so the panel is reachable in seconds
+     rather than by answering ten. */
+  add('job-over', "THE GAME \u00b7 the end of a session: today's points, the best day, the measured split and Today", ['job', 'game', 'summary', 'fixture'], '.job-screen .job-over',
     async (page) => {
-      await jobToEnvelope(H, page);
-      const fields = await jobToTypedTarget(page);
-      if (!fields) throw new Error('job-payout-kb: no target in this job mounts a live text field');
+      await jobStart(H, page);
+      await trimJob(H, page, 1);
+      await jobCall(page);
       await jobAnswerOne(page);
-      /* THE ASSERTION THIS STATE EXISTS TO MAKE: the app itself took the keyboard away. If a field is
-         still live at the beat, the reasoning above is out of date and the state must go back to
-         pinning an inset — so it fails loudly rather than drifting. */
-      const live = await keyboardFields(page);
-      if (live > 0) {
-        throw new Error(`job-payout-kb: ${live} field(s) are STILL editable at the payout beat — `
-          + 'card.js lockAll() no longer disables them, so the keyboard really is open here and this '
-          + 'state must pin the inset again (see the note above it)');
-      }
-      await page.evaluate(() => {
-        document.documentElement.style.setProperty('--kb', '0px');
-        document.documentElement.dataset.kb = 'closed';
-      });
+      await page.waitForSelector('.job-screen .job-over', { timeout: 20000 }).catch(() => {});
       await nap(page, 300);
-    }, { vps: VP_KB });
-
-  /* The three beats that had no state at all until fix:tests r1 (layout-safari finding 5): the
-     brief window, the getaway and the vault target. Each is a decision G1 counts, each is drawn by
-     `screens/job.js` and by nothing else, and none of them was measured by any detector at any
-     viewport in either engine. */
-  add('job-brief', 'THE JOB · the brief window: guard bars, the token press, the crew re-rank and the walk-away minute', ['job', 'game', 'phone-critical', 'long', 'fixture'], '.job-screen .job-brief',
-    async (page) => {
-      await jobToEnvelope(H, page);
-      for (let i = 0; i < 6; i++) {
-        if (await has(page, '.job-screen .job-brief')) break;
-        if (!(await jobAnswerOne(page))) break;
-        await tap(page, '.job-screen .job-push', { wait: 800 });
-      }
-      await page.waitForSelector('.job-screen .job-brief', { timeout: 20000 }).catch(() => {});
-      await nap(page, 300);
-    });
-
-  add('job-getaway', "THE JOB · the getaway: the job's one all-in, CRACK against WALK, with what each banks", ['job', 'game', 'phone-critical', 'fixture'], '.job-screen .job-getaway',
-    async (page) => {
-      await jobToEnvelope(H, page);
-      await trimJob(H, page, 2);
-      await jobAnswerOne(page);
-      await tap(page, '.job-screen .job-push', { wait: 800 });
-      await page.waitForSelector('.job-screen .job-getaway', { timeout: 20000 }).catch(() => {});
-      await nap(page, 300);
-    });
-
-  add('job-vault', 'THE JOB · the vault target: the last envelope, opened with the whole pile riding on it', ['job', 'game', 'phone-critical', 'fixture'], '.job-screen .job-envelope .job-calls',
-    async (page) => {
-      await jobToEnvelope(H, page);
-      await trimJob(H, page, 2);
-      await jobAnswerOne(page);
-      await tap(page, '.job-screen .job-push', { wait: 800 });
-      await page.waitForSelector('.job-screen .job-getaway', { timeout: 20000 }).catch(() => {});
-      await tap(page, '.job-screen .job-crack', { wait: 800 });
-      await page.waitForSelector('.job-screen .job-envelope .job-calls', { timeout: 20000 }).catch(() => {});
-      await nap(page, 300);
-    });
-
-  /* Added at integration: `screens/job.js renderDebrief` now mounts `run.js`'s Page Summary (G7,
-     notes/J6b.md R1) instead of a placeholder panel, so the debrief is a REAL screen with blocks
-     nothing else in this catalog draws — the take, the two regret lines, the guard redraw and the
-     Fault Index deltas. `run-page-summary` covers the shared half; this covers the job half.
-     THE QUIT DEBRIEF IS NOT THE DEBRIEF (ticket fix:tests r1, layout-safari finding 3). Walking out
-     after one target reaches a Page Summary that says "Left mid-job · 0 of 11 · 0 XP this run" and
-     draws NONE of the blocks this state's describe used to promise: no `sum-regret`, no `sum-mint`
-     / `sum-tiles`, no `sum-hist`, no `sum-bars`, no `sum-bag-bonus`. Those live on a job that
-     FINISHED. So the walk-out keeps its own state under its own name, and `job-debrief` now plays a
-     two-target job to the end — which is what the catalog's preamble means by opening the same
-     components through every host they live in. */
-  add('job-debrief-quit', 'THE JOB · the QUIT debrief: the Page Summary of a job walked out of mid-run — no take, no mint, no bars', ['job', 'game', 'summary', 'fixture'], '.job-screen .sum-job-take, .job-screen .run-summary',
-    async (page) => {
-      await jobToEnvelope(H, page);
-      await jobAnswerOne(page);
-      await tap(page, '.job-screen .run-quit', { wait: 400 });
-      await tap(page, '.job-screen .job-quit-bag', { wait: 900 });
-      await page.waitForSelector('.job-screen .sum-job-take, .job-screen .run-summary', { timeout: 20000 }).catch(() => {});
-      await nap(page, 700);                      // the bag drop is 600 ms; measure it settled
-    });
-
-  add('job-debrief', 'THE JOB · the debrief of a FINISHED job: the take, the regret lines, the tile mint, the rung histogram, the skill bars and the guard redraw', ['job', 'game', 'summary', 'mint', 'long', 'fixture'], '.job-screen .sum-job-take, .job-screen .run-summary',
-    async (page) => {
-      await jobToEnvelope(H, page);
-      await trimJob(H, page, 2);                 // keeps a CLEARABLE vault — see trimJob's note
-      // Phase-driven, not a fixed tap sequence: one missed target is requeued and every later step
-      // of a straight line then lands on the wrong screen (integrate:r1 — this state was reporting
-      // BLOCKER `unreached` whenever the composer's clock put a generated Variant on the vault).
-      await jobPlayToDebrief(page);
-      await nap(page, 700);                      // the bag drop is 600 ms; measure it settled
     });
 
   add('run-baseline', 'Baseline: the 10-item mini-mock under Mock rules (delegated to the Mock engine)', ['run', 'mock', 'fixture'], '.mock-screen, .run-screen',
     async (page) => { await go(H, page, '#/run/baseline', { save: await fx('aced.json'), root: '.mock-screen, .run-screen' }); });
 
+  /**
+   * THIS STATE USED TO DEPEND ON THE WALL CLOCK, which is the same thing as not being measured.
+   *
+   * After 22:00 local the Night Before opens on its closing card instead of its intro — COMPOSED S7,
+   * `screens/night.js:592` (`isQuietHours`, `getHours() >= 22`) — so the declared root `.nb-intro`
+   * never arrived and the auditor reported `unreached` as a BLOCKER on every run after 22:00 and
+   * green on every run before it. Eight of them on 2026-09-22 (2 themes × 2 engines × the motion
+   * pass), all one defect, and none of it in the app: every lane that ran this group ran before
+   * 22:00 and saw a pass. A state that measures the screen only during office hours measures nothing
+   * anyone can rely on the night before a test — which is the one night this screen exists for.
+   *
+   * The way through is the app's OWN, not an override: the closing card offers "Keep going anyway",
+   * which is what a student at 23:56 taps, and it renders the same `.nb-intro` the daytime path does.
+   * Nothing is stubbed, no clock is faked, and the state now lands on the screen it names at every
+   * hour. The quiet card itself is measured on the way past.
+   */
   add('run-night', 'Night Before (T−1): thirty minutes, four blocks, every door open', ['run', 'night', 'fixture'], '.nb-intro, .run-screen',
-    async (page) => { await go(H, page, '#/night', { save: await fx('night.json'), root: '.nb-intro, .run-screen' }); });
+    async (page) => {
+      await go(H, page, '#/night', { save: await fx('night.json'), root: '.nb-close, .nb-intro, .run-screen' });
+      if (!(await has(page, '.nb-intro')) && await has(page, '.nb-close')) {
+        await tap(page, '.nb-close .ob-nav button.btn-ghost', { wait: 500 });
+        await page.waitForSelector('.nb-intro', { timeout: 15000 }).catch(() => { /* the auditor reports the blank */ });
+        await nap(page, 300);
+      }
+    });
 
   add('run-morning', 'Test Morning (T−0): five minutes of things you already know, then Go', ['run', 'morning', 'fixture'], '.tm-intro, .run-screen',
     async (page) => { await go(H, page, '#/morning', { save: await fx('morning.json'), root: '.tm-intro, .run-screen' }); });

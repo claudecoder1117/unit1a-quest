@@ -1,7 +1,7 @@
 // store.js — the save (COMPOSED S6 "Save schema"). localStorage["u1a.save"], JSON, `v` + a migration
 // chain, debounced writes, visibilitychange flush, try/catch around every storage access with an
 // in-memory fallback + banner flags, corrupt JSON copied to "u1a.save.bak", and the S6 caps.
-// Pure pieces (fresh, migrate, applyCaps, reconcileStreak, markStreakDay) are exported for tests and for
+// Pure pieces (fresh, migrate, applyCaps, reconcileStreak, markStreakDay, reconcileGameDay) are exported for tests and for
 // later tickets; `createStore` builds an instance around any Storage-like object; the default instance
 // is bound to window.localStorage (memory-only under Node or when storage throws).
 import { todayISO, diffDays, addDays } from './days.js';
@@ -12,12 +12,13 @@ import { SKILL_IDS } from '../data/skills.js';
 export const SAVE_KEY = 'u1a.save';
 export const BAK_KEY = 'u1a.save.bak';
 /**
- * v1 = COMPOSED S6's schema. v2 = COMPOSED-GAME.md G7's save-schema delta: the two new top-level keys
- * `player` (KEPT_KEYS — it measures the student) and `game` (ARCHIVED_KEYS — it measures THIS unit's
- * skills and errors). The split is two TOP-LEVEL keys because `archiveUnit` copies top-level keys only
- * (there is no sub-key path support and G7 #19 declines to add one).
+ * v1 = COMPOSED S6's schema. v2 added the game layer's two top-level keys, `player` (KEPT_KEYS — it
+ * measures the student) and `game` (ARCHIVED_KEYS — it measures THIS unit). v3 CUTS both of them
+ * down to the two numbers the game still keeps (designs/CUT-BRIEF.md): `player.best` and
+ * `game.today` / `game.day`. The split is two TOP-LEVEL keys because `archiveUnit` copies top-level
+ * keys only.
  */
-export const SAVE_VERSION = 2;
+export const SAVE_VERSION = 3;
 
 /**
  * The unit this build of the app teaches. It is stamped on every save (`unitId`) so that swapping the
@@ -49,14 +50,13 @@ export const LEGACY_UNIT_ID = 'u1a';
  *   jumps       — JUMP-HERE marks on old module ids
  *   postTest    — the old unit's test score
  *   inProgress  — a half-finished run whose item ids no longer resolve
- *   game        — G7: crew ranks, the 68-tag Fault Index, heat, the job log — every one of them a
- *                 statement about THIS unit's skill ids and THIS unit's misconception tags
+ *   game        — the points banked today, on THIS unit's questions, on a day of THIS unit's week
  */
 export const ARCHIVED_KEYS = Object.freeze(['cards', 'variants', 'frozen', 'runs', 'errors', 'skills', 'forecastLog', 'placement', 'jumps', 'postTest', 'inProgress', 'game']);
 /**
  * Kept live across a unit swap (S8 #19: xp, streak, trophies, settings — plus the identity/ledger keys).
- * `player` joins them (G7): rating, rank, elo and records measure the STUDENT — a 50-call calibration
- * window and an Elo pair do not stop being true when the packet changes.
+ * `player` joins them: the best day measures the STUDENT, and the best day he has had does not stop
+ * being true when the packet changes.
  */
 export const KEPT_KEYS = Object.freeze(['v', 'unitId', 'profileId', 'createdAt', 'settings', 'xp', 'streak', 'daily', 'counters', 'trophies', 'seedCounter', 'archive', 'player']);
 
@@ -73,18 +73,12 @@ export const CAPS = Object.freeze({
   frozen: 100,        // soonest-due kept; entries with bucket ≥ 3 are pruned (S6)
   daily: 90,          // one entry per local day
   forecastLog: 90,    // one point per day (7-day sparkline needs 7)
-  /**
-   * COMPOSED-GAME G7 — the game layer's five caps, and the whole reason its measured budget closes.
-   *   calls   50  the rating window is a FIXED 50-call window (G2 "Rating"), so the array is the window
-   *   log     30  `game.log`, one record per job
-   *   tags    68  one per tag in data/misconceptions.js — the Fault Index is finite by construction
-   *   bundles  5  `composeBundles` partitions the queue into exactly 5 (G1 "What a contract is")
-   *   heat    10  `game.heat.window`, the stake-weighted press window (`GUARD.xHatWindowJobs`)
-   * Enforced twice: `normalizeGame`/`normalizePlayer` apply all five at migrate time (every load,
-   * every import), and `applyCaps` re-trims the four unbounded collections on every update so a
-   * session that never reloads cannot outgrow the budget. See notes/J10.md, notes/J3.md §5.5.
-   */
-  game: Object.freeze({ calls: 50, log: 30, tags: 68, bundles: 5, heat: 10 }),
+  /* THE GAME HAS NO CAP HERE, and must never grow one. Its whole save is three integers and a
+     seven-field record (`data/job.js IN_PROGRESS_KEYS`), all bounded by construction. The five caps
+     that used to sit on this line trimmed a 50-call rating window, a 30-job log, a 68-tag Fault
+     Index, five bundles and a ten-job heat window — every one of them cut with the mechanic it
+     priced (designs/CUT-BRIEF.md "What is DELETED"). A cap is a tuning knob; a knob is how the old
+     layer got to fourteen numbers. */
 });
 
 const WORK_KINDS = new Set(['mock', 'baseline', 'night']);
@@ -97,53 +91,27 @@ function newProfileId(now) {
   return 'p-' + now.toString(36);
 }
 
-/* ---------------- the game layer's two keys (COMPOSED-GAME G7) ----------------
-   These literals are the SAME OBJECTS as `data/job.js`'s `SAVE_DEFAULTS` / `TAG_RECORD_DEFAULT` /
-   `CAPS`, and `tests/job-save.test.mjs` asserts them deep-equal in both directions so the two can
-   never drift. They are repeated here rather than imported because `store.js` is on the cold-open
-   boot path of every screen and `data/job.js` is 41 KB of constants that a student with
-   `settings.game = false` never needs. See notes/J10.md §Deviations.                               */
+/* ---------------- the game's two keys (designs/CUT-SPEC.md §8) ----------------
+   These literals are the SAME OBJECTS as `data/job.js`'s `SAVE_DEFAULTS`, and
+   `tests/job-save.test.mjs` asserts them deep-equal in both directions so the two can never drift.
+   They are repeated here rather than imported because `store.js` is on the cold-open boot path of
+   every screen and a student with `settings.game = false` never needs the game's data file.
 
-/** G7 KEPT_KEYS — measures the STUDENT, survives the unit handoff. */
+   DEMOLITION (notes/DEMOLISH.md): the 50-call rating window, the rank, the Elo pair, the eight
+   records, the crew map, the press heat window, the 68-tag Fault Index, the Backcheck purse, the
+   phase-mean ledger, the 30-job log and the COMMIT declaration are all gone — with the mechanics
+   they measured. What is left is a best day and today's points.                                   */
+
+/** Measures the STUDENT, survives the unit handoff: the best single day, in points. */
 export function freshPlayer() {
-  return {
-    rating: { calls: [], value: 5.0, n: 0 },     // calls capped at CAPS.game.calls — the window IS the array
-    rank: 2,                                      // G2 "Rank": calling 50 on everything scores 5.0 = Called 2
-    elo: { player: 1000, house: 1000 },
-    // `bestRating` — the rank ratchet's audit record (S3.1(c)); declared in data/job.js too, see normalizePlayer.
-    records: { bestBag: 0, bestChain: 0, bestRating20: 0, bestRating: 0, cleanJobs: 0, cracked: 0, walked: 0, cleanGetaway: false },
-  };
+  return { best: 0 };
 }
 
-/** G7 ARCHIVED_KEYS — measures THIS unit's skills and errors. */
+/** Measures THIS unit's sitting: the points banked today, and the day they were banked on. */
 export function freshGame() {
-  return {
-    crew: {},                                     // make → rank (1 STEADY, 2 HELD), ≤ 12 manned (J4 owns the cap)
-    heat: { press: { RECALL: 0, FIGURES: 0, WORDS: 0, ALGEBRA: 0 }, weight: 0, jobs: 0, window: [] },   // window ≤ CAPS.game.heat
-    tags: {},                                     // ≤ CAPS.game.tags, each TAG_RECORD-shaped
-    backchecks: { held: 0, mintedDay: null },
-    /* `debriefAt` — the instant `state.endJob` opened the debrief, which `closeDebrief` subtracts
-       from `now` to fold the one phase mean the job that opened it cannot measure (notes/J8.md §322).
-       DECLARED here because `state.js` writes it on every job end: it used to reach disk only as an
-       undeclared pass-through of `normalizeGame`'s `over()`, unpriced by G7's budget and uncoerced,
-       so a corrupt value walked straight into `closeDebrief`'s `now − debriefAt` subtraction. */
-    ledger: { jobs: 0, tGame: 0, tAnswer: 0, phaseMeans: { board: 18, guard: 12, brief: 20, getaway: 25, debrief: 65 }, debriefAt: null },
-    log: [],                                      // ≤ CAPS.game.log, newest kept
-    commit: { kind: null, byMin: null, honored: 0, bound: false },
-  };
+  return { today: 0, day: null };
 }
 
-/** G7 — one Fault Index record. `days` is a COUNT plus a last date, NEVER an array (G12 #18). */
-export function freshTag() {
-  return { resolved: 0, triggered: 0, days: 0, lastDay: null, cleared: false, sealed: false };
-}
-
-const WING_KEYS = Object.freeze(['RECALL', 'FIGURES', 'WORDS', 'ALGEBRA']);
-const PHASE_KEYS = Object.freeze(['board', 'guard', 'brief', 'getaway', 'debrief']);
-/** G2 "Backchecks — max 3 held". Mirrors `data/job.js`'s `BACKCHECK.max` (asserted equal in J10's suite). */
-const BACKCHECK_MAX = 3;
-
-const num = (x, d) => (typeof x === 'number' && Number.isFinite(x) ? x : d);
 const nat = (x, d) => (Number.isFinite(x) && x >= 0 ? Math.floor(x) : d);
 const bool = (x, d) => (typeof x === 'boolean' ? x : d);
 const isoOrNull = x => (typeof x === 'string' && x ? x : null);
@@ -152,132 +120,27 @@ const over = (d, raw) => (isObj(raw) ? { ...d, ...raw } : { ...d });
 
 /**
  * normalizePlayer(raw) → a well-formed `save.player`. A non-object (or a missing key) becomes the
- * defaults; a corrupt SUB-object becomes its own default without touching its siblings; unknown keys
- * pass through. Idempotent: `normalizePlayer(normalizePlayer(x))` deep-equals `normalizePlayer(x)`.
+ * defaults; unknown keys pass through. Idempotent.
  */
 export function normalizePlayer(raw) {
   const d = freshPlayer();
   const p = over(d, raw);
-
-  const r = over(d.rating, raw?.rating);
-  // The rating window is a FIXED 50-call window (G2). Only well-formed records count, newest kept.
-  r.calls = (Array.isArray(r.calls) ? r.calls.filter(isObj) : []).slice(-CAPS.game.calls);
-  r.value = num(r.value, d.rating.value);
-  r.n = nat(r.n, 0);
-  p.rating = r;
-
-  p.rank = Number.isInteger(raw?.rank) && raw.rank >= 1 && raw.rank <= 5 ? raw.rank : d.rank;
-
-  const e = over(d.elo, raw?.elo);
-  e.player = num(e.player, 1000); e.house = num(e.house, 1000);
-  p.elo = e;
-
-  const rec = over(d.records, raw?.records);
-  /* `bestRating` — the rank ratchet's audit record (REPAIR-DECISION S3.1(c): under a rank FLOOR,
-     `p.rank` stops being recomputable from the 50-call window, so the rating that earned it is
-     stored and printed beside it on Settings/Stats). DECLARED in `freshPlayer()` above and in
-     `data/job.js SAVE_DEFAULTS.player` — the two copies of this schema are deep-equalled in both
-     directions by `tests/job-save.test.mjs`, so they moved in one change at integration
-     (notes/repair-save.md Request A + notes/repair-meta.md Request 1 + notes/repair-state.md
-     Request 4). The coercion is therefore UNCONDITIONAL, like every other record: the field can
-     never reach disk as an uncoerced pass-through of `over()` the way `ledger.debriefAt` did. */
-  for (const k of ['bestBag', 'bestChain', 'bestRating20', 'bestRating', 'cleanJobs', 'cracked', 'walked']) rec[k] = num(rec[k], 0);
-  rec.cleanGetaway = bool(rec.cleanGetaway, false);
-  p.records = rec;
-
+  p.best = nat(p.best, 0);
   return p;
 }
 
 /**
- * normalizeGame(raw, opts) → a well-formed `save.game`, with every CAPS.game cap applied.
- * The one repair that is not just a type coercion: a `tags[id].days` ARRAY (the shape G7 rejected —
- * 68 tags × 20 ISO dates ≈ 18 KB on its own) is collapsed to its length, and its last entry becomes
- * `lastDay` when none is recorded. Sealing needs a count and a last date and nothing more.
+ * normalizeGame(raw) → a well-formed `save.game`. A non-object (or a missing key) becomes the
+ * defaults; unknown keys pass through. Idempotent.
  *
- * `opts.makes` is the make list the crew map is filtered against — this build's `SKILL_IDS` by
- * default. Pass `null` to keep every well-ranked make whatever its id; the ONE caller that does is
- * `migrate` on a UNIT-HANDOFF pass (see there), because filtering a 1A crew against 1B's makes
- * before `archiveUnit` copies `game` into the archive would delete the old unit's crew ranks on the
- * way past — and "zero data loss" is meant literally.
+ * `today` is a count of points and can only ever have been banked, so it is coerced to a
+ * non-negative integer; `day` is the ISO day those points belong to, or null.
  */
-export function normalizeGame(raw, { makes = SKILL_IDS } = {}) {
+export function normalizeGame(raw) {
   const d = freshGame();
   const g = over(d, raw);
-
-  /* The crew map is keyed by MAKE, and the key has to be one of this unit's makes: a rank left over
-     from another unit's data set would survive a load and spend this unit's capacity. `crew.crewOf`
-     filters defensively on every read, so nothing was broken — this makes the save itself clean
-     (notes/J4.md §7 → J10). `SKILL_IDS` is already imported here for `normalizeSkills`. */
-  const MAKES = makes === null ? null : new Set(makes);
-  const crew = {};
-  if (isObj(g.crew)) for (const k of Object.keys(g.crew)) { const r = g.crew[k]; if ((r === 1 || r === 2) && (MAKES === null || MAKES.has(k))) crew[k] = r; }
-  g.crew = crew;
-
-  const heat = over(d.heat, raw?.heat);
-  const press = over(d.heat.press, heat.press);
-  for (const w of WING_KEYS) press[w] = num(press[w], 0);
-  heat.press = press;
-  heat.weight = num(heat.weight, 0);
-  heat.jobs = nat(heat.jobs, 0);
-  /* The press window is DISCARDED, never repaired (notes/J3.md §5.5): `guard.xHatFrom` already reads
-     a malformed window as a cold start rather than throwing, so the only thing a repair would buy is
-     rubbish persisted under a well-formed name. An entry is `{press: {wing: n}, posted: n}`. */
-  heat.window = (Array.isArray(heat.window) ? heat.window : [])
-    .filter(e => isObj(e) && isObj(e.press) && Number.isFinite(+e.posted))
-    .slice(-CAPS.game.heat)
-    .map(e => ({ press: Object.fromEntries(WING_KEYS.map(w => [w, num(e.press[w], 0)])), posted: num(e.posted, 0) }));
-  g.heat = heat;
-
-  const tags = {};
-  if (isObj(g.tags)) {
-    for (const id of Object.keys(g.tags).slice(0, CAPS.game.tags)) {
-      const t = over(freshTag(), g.tags[id]);
-      t.resolved = nat(t.resolved, 0);
-      t.triggered = nat(t.triggered, 0);
-      if (Array.isArray(t.days)) {                       // G12 #18: a count, never an array
-        const last = t.days.filter(x => typeof x === 'string').at(-1) ?? null;
-        t.lastDay = isoOrNull(t.lastDay) ?? last;
-        t.days = t.days.length;
-      } else {
-        t.days = nat(t.days, 0);
-        t.lastDay = isoOrNull(t.lastDay);
-      }
-      t.cleared = bool(t.cleared, false);
-      t.sealed = bool(t.sealed, false);
-      tags[id] = t;
-    }
-  }
-  g.tags = tags;
-
-  const bc = over(d.backchecks, raw?.backchecks);
-  bc.held = Math.min(BACKCHECK_MAX, nat(bc.held, 0));
-  bc.mintedDay = isoOrNull(bc.mintedDay);
-  g.backchecks = bc;
-
-  const led = over(d.ledger, raw?.ledger);
-  led.jobs = nat(led.jobs, 0);
-  led.tGame = num(led.tGame, 0); led.tAnswer = num(led.tAnswer, 0);
-  const means = over(d.ledger.phaseMeans, led.phaseMeans);
-  for (const k of PHASE_KEYS) means[k] = num(means[k], d.ledger.phaseMeans[k]);
-  led.phaseMeans = means;
-  /* `closeDebrief` folds `now − ledger.debriefAt` into `phaseMeans.debrief`, so a string, a NaN or a
-     negative stamp out of a hand-edited or half-written save would poison the projection the board
-     prints. Coerced to a finite non-negative ms stamp or null, like every other clock in this file.
-     BOTH `null` (the default: no debrief has been opened) and `0` (`closeDebrief`'s "already folded"
-     stamp) mean the same thing and both survive — `closeDebrief` reads `num(L.debriefAt, 0)` and
-     folds nothing unless it is `> 0`, so the two are interchangeable by construction. */
-  led.debriefAt = Number.isFinite(led.debriefAt) && led.debriefAt >= 0 ? +led.debriefAt : null;
-  g.ledger = led;
-
-  g.log = (Array.isArray(g.log) ? g.log.filter(isObj) : []).slice(-CAPS.game.log);
-
-  const c = over(d.commit, raw?.commit);
-  c.kind = typeof c.kind === 'string' && c.kind ? c.kind : null;
-  c.byMin = Number.isFinite(c.byMin) ? c.byMin : null;
-  c.honored = nat(c.honored, 0);
-  c.bound = bool(c.bound, false);
-  g.commit = c;
-
+  g.today = nat(g.today, 0);
+  g.day = isoOrNull(g.day);
   return g;
 }
 
@@ -292,11 +155,11 @@ export function fresh(now = Date.now()) {
       theme: 'auto', sound: false, dailyGoal: 400,
       testDate: null, testTime: '08:00',
       askReasonOnMiss: true, callYourShot: false,
-      /* THE JOB's master switch (COMPOSED-GAME G7: "`settings.game = false` kills it in one tap").
-         `screens/settings.js:318` writes it and five modules read it, and for a whole round it was
-         declared NOWHERE — it reached disk only because `fillDefaults`'s `{...d.settings,
-         ...s.settings}` is not a whitelist, which is verbatim the drift `ledger.debriefAt` and
-         `tags[].days` were each caught for. Declared here, coerced in `fillDefaults`, 13 B. */
+      /* The game's master switch (CUT-BRIEF: "`settings.game = false` returns the app to
+         byte-identical COMPOSED behaviour"). Settings writes it and the game's modules read it, and
+         for a whole round it was declared NOWHERE — it reached disk only because `fillDefaults`'s
+         `{...d.settings, ...s.settings}` is not a whitelist. Declared here, coerced in
+         `fillDefaults`, 13 B. */
       game: true,
     },
     xp: 0,
@@ -316,7 +179,7 @@ export function fresh(now = Date.now()) {
     placement: { done: false, at: null },
     jumps: {},
     postTest: { score: null },
-    // COMPOSED-GAME G7, v2. `player` is kept across a unit swap, `game` is archived with the unit.
+    // `player` is kept across a unit swap; `game` is archived with the unit.
     player: freshPlayer(),
     game: freshGame(),
     archive: {},
@@ -335,14 +198,32 @@ export const MIGRATIONS = {
    * (a v2 save hand-edited down to v1, an import) keeps its own — `fillDefaults` repairs it after.
    */
   1: (s) => ({ player: freshPlayer(), game: freshGame(), ...s, v: 2 }),
+  /**
+   * 2 → 3 (designs/CUT-BRIEF.md). DROPS the cut game keys and touches nothing else: every v2 key is
+   * spread through untouched and exactly two are replaced — `player` and `game` — by the two the cut
+   * design keeps. `fillDefaults` coerces them after.
+   *
+   * The old numbers are NOT carried over. `records.bestBag`, the rating, the rank and the Elo pair
+   * were denominated in a currency that no longer exists (loot, bagged, rating points); re-printing
+   * one of them as `best 419` would put a number on screen that the engine never computed — the one
+   * thing CUT-BRIEF's hard limits forbid outright. `best` starts at 0 and is earned again in points.
+   *
+   * A live OLD session record is dropped with them, and the PAGE it was running is left exactly as
+   * it is: `inProgress.queue`/`idx` survive untouched, so the student's half-answered page is still
+   * there as a plain Today's Page and not one item of it leaves the schedule.
+   */
+  2: (s) => {
+    const out = { ...s, player: freshPlayer(), game: freshGame(), v: 3 };
+    if (isObj(out.inProgress) && 'game' in out.inProgress) {
+      out.inProgress = { ...out.inProgress };
+      delete out.inProgress.game;
+    }
+    return out;
+  },
 };
 
-/**
- * Fill every missing top-level key and sub-key with its default; coerce wrong types. Idempotent.
- * `crewMakes` is handed straight to `normalizeGame` — `null` on a unit-handoff pass, so the crew
- * ranks reach `archiveUnit` intact (see `migrate`).
- */
-function fillDefaults(s, now, { crewMakes = SKILL_IDS } = {}) {
+/** Fill every missing top-level key and sub-key with its default; coerce wrong types. Idempotent. */
+function fillDefaults(s, now) {
   const d = fresh(now);
   const out = { ...d, ...s };
   for (const k of ['settings', 'streak', 'placement', 'postTest']) out[k] = { ...d[k], ...(isObj(s[k]) ? s[k] : {}) };
@@ -354,15 +235,14 @@ function fillDefaults(s, now, { crewMakes = SKILL_IDS } = {}) {
   if (typeof out.unitId !== 'string' || !out.unitId) out.unitId = LEGACY_UNIT_ID;
   if (typeof out.createdAt !== 'number' || !Number.isFinite(out.createdAt)) out.createdAt = now;
   if (out.inProgress !== null && !isObj(out.inProgress)) out.inProgress = null;
-  // G7's two keys. A corrupt `player` or `game` is discarded to its defaults here and nowhere else,
-  // so it can never take a sibling key down with it. Both normalizers are idempotent.
+  // The game's two keys. A corrupt `player` or `game` is discarded to its defaults here and nowhere
+  // else, so it can never take a sibling key down with it. Both normalizers are idempotent.
   out.player = normalizePlayer(s.player);
-  out.game = normalizeGame(s.game, { makes: crewMakes });
+  out.game = normalizeGame(s.game);
   const t = out.settings.theme; if (t !== 'light' && t !== 'dark') out.settings.theme = 'auto';
   const g = out.settings.dailyGoal; out.settings.dailyGoal = Number.isFinite(g) ? Math.min(800, Math.max(100, Math.round(g))) : 400;
-  /* THE JOB's master switch, coerced in the SAME DIRECTION every reader reads it. Every read is
-     `settings.game !== false` (`plan.js:342,492,628`, `screens/settings.js:314,746`,
-     `screens/stats.js:223`), so this FAILS OPEN by construction: only a literal `false` switches the
+  /* The game's master switch, coerced in the SAME DIRECTION every reader reads it. Every read is
+     `settings.game !== false`, so this FAILS OPEN by construction: only a literal `false` switches the
      layer off, and a hand-edited `"false"`, an imported `{}` or a `0` becomes `true` on the way in
      instead of surviving as an undeclared, uncoerced pass-through. Nothing about the layer's
      on/off decision changes — what changes is that the stored value is now a declared boolean. */
@@ -391,16 +271,10 @@ export function migrate(raw, now = Date.now(), { unit = null } = {}) {
     if (s.v !== v + 1) throw new Error(`migration ${v} → ${v + 1} produced v${s.v}`);
     v = s.v;
   }
-  /* The unit this save was WRITTEN under, resolved exactly the way `archiveUnit` resolves it. When it
-     is not the unit this build teaches, the pass below is a HANDOFF: `archiveUnit` is about to copy
-     `game` into `save.archive[<old unit>]`, and `normalizeGame`'s crew filter runs first. Filtering a
-     Unit-1A crew against Unit 1B's `SKILL_IDS` there would delete every make 1B does not reuse BEFORE
-     it was archived — store.js's own "nothing is ever deleted" promise, broken by the order of two
-     lines. So the filter is disabled for that one pass. Nothing foreign reaches play: `archiveUnit`
-     resets the live `game` to `freshGame()`, and `crew.crewOf` filters on every read besides. */
-  const from = typeof s.unitId === 'string' && s.unitId ? s.unitId : LEGACY_UNIT_ID;
-  const handoff = !!unit && String(unit?.id ?? '') !== from;
-  const out = fillDefaults(s, now, { crewMakes: handoff ? null : SKILL_IDS });
+  /* The unit hand-off no longer needs a special pass: `save.game` is two scalars, so there is no
+     crew map to filter and nothing a filter could delete before `archiveUnit` copies it out
+     (notes/DEMOLISH.md). */
+  const out = fillDefaults(s, now);
   return unit ? archiveUnit(out, unit, now) : out;
 }
 
@@ -520,43 +394,10 @@ export function applyCaps(s) {
   if (dk.length > CAPS.daily) { dk.sort(); for (const k of dk.slice(0, dk.length - CAPS.daily)) delete s.daily[k]; }
   if (s.forecastLog.length > CAPS.forecastLog) s.forecastLog = s.forecastLog.slice(-CAPS.forecastLog);
 
-  // COMPOSED-GAME G7's three unbounded collections. The full normalisation (types, `tags[].days`,
-  // the frozen-default guard) runs at migrate time — on load and on import. This is the cheap half:
-  // a session that plays forty jobs without ever reloading must not let the rating window, the job
-  // log or the Fault Index grow past their caps between reloads. O(1) unless something is over.
-  const calls = s.player?.rating?.calls;
-  if (Array.isArray(calls) && calls.length > CAPS.game.calls) s.player.rating.calls = calls.slice(-CAPS.game.calls);
-  if (Array.isArray(s.game?.log) && s.game.log.length > CAPS.game.log) s.game.log = s.game.log.slice(-CAPS.game.log);
-  const heatWin = s.game?.heat?.window;
-  if (Array.isArray(heatWin) && heatWin.length > CAPS.game.heat) s.game.heat.window = heatWin.slice(-CAPS.game.heat);
-  if (isObj(s.game?.tags)) {
-    const tk = Object.keys(s.game.tags);
-    if (tk.length > CAPS.game.tags) for (const id of tk.slice(CAPS.game.tags)) delete s.game.tags[id];
-  }
-  /* WHAT IS **NOT** CAPPED HERE, said out loud (round-2 save audit, finding 6).
-     `inProgress.game.calls` and `inProgress.bench` have no cap in `CAPS.game` and none in
-     `js/job/state.js` `serialize()` either — `out.calls = g.calls.map(cleanCall)` has no `.slice()`.
-     Nothing is truncated here on purpose: `endJob` reads `g.calls.every(c => c.ok)` for `cleanJobs`
-     and `g.calls.length` for the clean-vault mint, so a silent truncation mid-job would change the
-     GAME, not just the save. They are bounded STRUCTURALLY instead, and round 3 turned that from a
-     sentence into the priced figure: one call is written per ANSWERED queue entry, `page.requeueReview`
-     re-queues an entry at most `MAX_REQUEUE = 1` time (the copy carries `requeued: 1`, so there is no
-     third), and the only other growth is `state.swapIn` splicing in contracts the board already
-     declined — so `queue ≤ 2 × (drafted + bench)` and `calls ≤ queue`. G7's table prices that ceiling
-     (36 calls, a 36-entry queue, 4 bench entries) and `tests/job-save.test.mjs` asserts every link of
-     the chain against a corpus of real JOB12s on every run.
-     ROUND 4 re-measured the ceiling independently, because a round-3 critic reported 26 against a
-     fixture that then priced 26 (zero headroom): **8 000 real JOB12s** on all-overdue saves (a
-     week-off catch-up) across four answer policies, taking **15 909** brief-window swaps through the
-     shipped `{ swap: { id } }` action shape, reach **28 calls, a 28-entry queue, 13 drafted, 2
-     benched** — every input of the derived ceiling holds, with 8 calls of headroom on the line.
-     DO NOT restate this as "N seeded jobs reach 23" again. That was rounds 1-2's figure and it was
-     measured on a corpus that never took a swap: the driver passed `brief(save, { swap: id })` where
-     `state.brief` wants `{ swap: { id } }` and silently ignores anything else. Corrected to the
-     shipped action shape, real JOB12s reach 28 calls against a figure that priced 26 — which is why
-     the bound is now derived from the shapes rather than observed. An explicit documented cap in
-     `serialize()` is still the better home for it and is requested of the `state` lane in
-     notes/save-fix.md round 2 §6. */
+  /* THE GAME'S TWO KEYS ARE BOUNDED BY CONSTRUCTION and need no cap here: `player.best` and
+     `game.today` are single integers, and `inProgress.game` is seven scalar fields
+     (`data/job.js IN_PROGRESS_KEYS`). The rating window, the job log, the press heat window and the
+     68-tag Fault Index — the four collections this block used to trim — are cut (notes/DEMOLISH.md). */
   return s;
 }
 
@@ -588,6 +429,156 @@ export function markStreakDay(s, today = todayISO()) {
   st.lastDay = today;
   if (st.count % 5 === 0) st.freezes = Math.min(2, st.freezes + 1);
   return s;
+}
+
+/* ---------------- the game's day (designs/CUT-SPEC.md §6 `today 186 points`) ---------------- */
+/**
+ * `game.today` is the points banked ON `game.day`. Opened on any other day those points are
+ * yesterday's, and printing them as today's would put a number on screen that the engine never
+ * computed — the one thing CUT-BRIEF's hard limits forbid outright. So the day rolls over HERE, and
+ * here only: on load, on import, and before every `update()`. No surface has to remember to check the
+ * date, and there is no second rollover to disagree with this one.
+ *
+ * THE ORDER OF THE TWO LINES IS THE WHOLE FUNCTION. `player.best` is floored from `game.today`
+ * BEFORE the roll zeroes it, so the day that is closing is still counted: a save that arrives with a
+ * 186-point day dated yesterday and `best 9` leaves with `best 186`. (Flooring after the roll read
+ * the `0` it had just written, so the floor was dead in exactly the case it was written for — an
+ * import or a hand edit that arrives with the two disagreeing.) The floor only ever RAISES `best`
+ * (CUT-BRIEF math #6: improving never costs), and only to a number the engine did compute: the points
+ * banked on a day that happened.
+ *
+ * A LIVE SESSION DOES NOT OWN THE CALENDAR. The roll used to be skipped while `inProgress.game`
+ * existed (notes/cut-machine.md R4, notes/cut-integrate.md §2.2), so that a session running through
+ * local midnight did not watch `today` fall across a reload. That exemption is what let a session
+ * started before bed and finished the next afternoon print `today 548 points` when 48 of them were
+ * banked today — and because `best` is only ever raised, the two-day sum became the student's "best
+ * single day" permanently. A number that falls to 0 at midnight is exact; a number that is the sum
+ * of two days is not, and `today` must only ever name the calendar day the student is looking at.
+ * Nothing is lost by rolling: the floor above has already taken the closing day into `best`, and the
+ * unbanked pile goes home with it — see the next paragraph, which is the other half of the same
+ * sentence and used to say this function never touched the live record.
+ *
+ * The roll STAMPS the new day rather than clearing it. `job/state.js bank()` takes no clock and rolls
+ * nothing of its own — it adds its points to whatever day `game.day` names — so leaving `null` behind
+ * would make the NEXT reconcile roll away the points that had just been banked.
+ *
+ * AND THE UNBANKED PILE COMES HOME TO THE DAY IT WAS WON ON (r3, exploit-hunt). Flooring `best` and
+ * zeroing `today` fixed the BANKED half and left the other one: banking is never required, so the
+ * pile survived the roll intact and banked the next afternoon, and `today 946 points` / `best 946`
+ * then named a day on which the student had answered nothing. That is the same defect in the same
+ * sentence — `today` must only ever name the calendar day the student is looking at, and `best` is
+ * "the best single day, in points", not one day's pile plus another day's play. So the closing day
+ * takes its own pile with it, in the one order that works: DRAIN, then floor, then roll. The pile is
+ * added to the closing day's `today`, the floor (already here, already only ever raising) carries
+ * that true total into `best`, and the roll then zeroes `today` for the day the student is looking
+ * at. Nothing is destroyed and no number is invented — `best` is a day that happened, and the
+ * session, its queue, its index, its seed and its answered count carry on into the new day exactly
+ * as they did. The pile goes to 0 and the streak to ×1 because that is what taking a pile home IS
+ * (`job/state.js bankPile`): the drain is the bank the student could have tapped, not a new verb.
+ *
+ * A BID IN FLIGHT HOLDS THE DAY OPEN. `bank()` refuses while a call is locked — the bid is backed by
+ * the pile and the question is already on screen — and this function obeys the same refusal, because
+ * draining a pile out from under a standing bid floors its cost to nothing and hands the student a
+ * free question at full pay, which is the exploit that refusal exists to prevent. So a real bid
+ * defers the WHOLE roll (the floor still runs; it only ever raises), and that deferral is invisible
+ * and bounded: no surface reads `game.today` during play, `bank()` cannot be reached over a bid, and
+ * the bid is cleared by the next thing that happens to it either way — `screens/job.js
+ * settleAbandonedBid` on the next mount, or `answer` in a tab that never reloaded. The roll then
+ * completes on the very next `update()`, before anything can print a number. A bidless seal
+ * (`{ id: null }` — a requeued review, an abandoned question) is not a bid and does not defer it,
+ * exactly as `bank()` already treats it.
+ *
+ * …AND THE DEFERRED ROLL BANKS THE PILE THE CLOSING DAY HAD, NOT THE ONE THE NEXT DAY MADE OF IT
+ * (r5, exploit-hunt, MAJOR). The deferral above is right about the bid and was wrong about the
+ * arithmetic: the bid is settled by `answer()`, which ADDS this question's pay to the pile, and the
+ * roll then ran against the grown pile and credited the closing day with points won after midnight —
+ * a 500-point day with a 94-point pile on the table became `best 644`, which is 594 plus a 50-point
+ * question answered on the NEXT day. That is the two-day sum this whole function exists to prevent,
+ * one verb further down.
+ *
+ * `opts.held` is the closing day's own pile — the pile as it stood at the instant the day turned —
+ * and the drain credits `min(pile, held)` and leaves the rest where it is, on the new day, in the
+ * pile that won it. It needs no field on the save and no memory between sessions, because WHILE A
+ * REAL BID STANDS THE PILE CANNOT MOVE: the only two writers are `job/state.js answer()`, which
+ * clears the bid in the same breath, and `bankPile`, which `bank()` refuses to reach over one. So
+ * the pile this function reads on any deferred pass IS the closing pile, however many updates or
+ * reloads the bid is held across, and `store.update()` reads it once before the verb runs and hands
+ * it back here after (see `update`). Omit `held` — every other caller does — and the whole pile goes
+ * home exactly as it always did.
+ *
+ * THE DRAIN IS WRITTEN HERE RATHER THAN CALLED FROM THE ENGINE, and that is a dependency fact, not a
+ * preference: `store.js` reaches 3 modules today and would reach 58 through `js/job/state.js`, which
+ * imports `page.js` → `schedule.js` → back into this file. A save layer that pulls the whole card
+ * bank onto the cold-open boot path is also a save layer that loads the game for a student who has
+ * switched it off. What keeps the two copies honest is a test, not a comment: `tests/job-save.test.mjs`
+ * drives the SHIPPED `job/state.js bank()` and this roll over the same pile and asserts they leave
+ * the same `today` / `best` / `pile` / `streak`.
+ *
+ * Idempotent, and total: a save whose `game` or `player` is not an object is left to `fillDefaults`,
+ * and a record whose `pile` or `today` is not a non-negative integer is carried unchanged — this
+ * function repairs nothing and throws on nothing.
+ */
+export function reconcileGameDay(s, today = todayISO(), opts = {}) {
+  const held = isObj(opts) ? opts.held : null;
+  const g = s.game;
+  if (!isObj(g)) return s;
+  const p = s.player;
+  const floorBest = () => {
+    if (isObj(p) && Number.isFinite(+p.best) && Number.isFinite(+g.today) && +g.today > +p.best) p.best = +g.today;
+  };
+  const live = isObj(s.inProgress) && isObj(s.inProgress.game) ? s.inProgress.game : null;
+  // …a bid is on the table: the day is not closable yet. Floor, and leave everything else standing.
+  if (live && isObj(live.call) && typeof live.call.id === 'string') { floorBest(); return s; }
+  // The day that is CLOSING takes its own pile home first. `g.day === null` names no day to credit.
+  if (g.day !== today && typeof g.day === 'string' && g.day && live
+      && Number.isInteger(+g.today) && +g.today >= 0
+      && Number.isInteger(+live.pile) && +live.pile > 0) {
+    const pile = +live.pile;
+    /* The closing day's OWN pile, and no more of it than that: what the next day's play has since
+       added stays in the pile it was won in (see `held` above). `held` is a count of points, so a
+       non-integer, a negative or a `null` is not one and the whole pile goes home as it always did. */
+    const owed = typeof held === 'number' && Number.isInteger(held) && held >= 0 ? Math.min(pile, held) : pile;
+    if (owed > 0) {
+      g.today = +g.today + owed;
+      live.pile = pile - owed;
+      live.streak = 1;
+    }
+  }
+  floorBest();
+  if (g.day !== today) { g.today = 0; g.day = today; }
+  return s;
+}
+
+/**
+ * The pile a standing bid is holding the roll open over — the closing day's own — or `null` when
+ * nothing is deferred. Read by `update()` BEFORE the verb runs, so it is the pile as the day turned
+ * and not the pile the verb is about to make of it; see `reconcileGameDay`'s `held` for why that is
+ * the same number on every deferred pass. Pure, DOM-free, and it repairs nothing.
+ */
+export function deferredPile(s, today = todayISO()) {
+  const g = isObj(s) ? s.game : null;
+  if (!isObj(g) || g.day === today || typeof g.day !== 'string' || !g.day) return null;
+  const live = isObj(s.inProgress) && isObj(s.inProgress.game) ? s.inProgress.game : null;
+  if (!live || !isObj(live.call) || typeof live.call.id !== 'string') return null;
+  return Number.isInteger(+live.pile) && +live.pile > 0 ? +live.pile : 0;
+}
+
+/**
+ * Everything the roll can move, as one comparable string: `game.today` / `game.day`, `player.best`
+ * and the live record's pile and streak. `update()` and `rollDay()` use it to answer one question —
+ * "did the clock just move a number?" — because a roll that moved one and was neither written nor
+ * announced leaves memory, the disk and the screen holding three different piles (r5, exploit-hunt,
+ * BLOCKER). Cheap: five scalars, off the hot path of nothing.
+ */
+function gameReading(s) {
+  const g = isObj(s) ? s.game : null;
+  const p = isObj(s) ? s.player : null;
+  const live = isObj(s?.inProgress) && isObj(s.inProgress.game) ? s.inProgress.game : null;
+  return JSON.stringify([
+    isObj(g) ? [g.today ?? null, g.day ?? null] : null,
+    isObj(p) ? (p.best ?? null) : null,
+    live ? [live.pile ?? null, live.streak ?? null] : null,
+  ]);
 }
 
 /* ---------------- disk format (packed) ----------------
@@ -674,6 +665,7 @@ export function createStore({ storage = undefined, now = Date.now, debounceMs = 
   let state = null;
   let dirty = false;
   let timer = null;
+  let dayTimer = null;   // the local-midnight tick (browser only — see `armDayTick`)
   let blocked = false;   // a save we could not READ is never overwritten this session (reset/import lift it)
   const subs = new Set();
 
@@ -723,6 +715,7 @@ export function createStore({ storage = undefined, now = Date.now, debounceMs = 
     }
     applyCaps(state);
     reconcileStreak(state, today);
+    reconcileGameDay(state, today);
     flags.loaded = true;
     if (dirty) writeNow();
     notify('load');
@@ -756,17 +749,96 @@ export function createStore({ storage = undefined, now = Date.now, debounceMs = 
   }
 
   /**
+   * THE ROLL, AS ITS OWN TRANSACTION — reconcile, and if the clock moved a number, cap it, announce
+   * it and write it THEN, before anything else happens. Returns whether it moved anything.
+   *
+   * Every path into the roll goes through here, and that is the whole of r5's fix: the day is an
+   * event of its own on the shell's clock (`rollDay`), on the document coming back, on load — and
+   * even inside `update()`, where it is committed before the verb runs rather than folded into it.
+   * A roll that is not its own transaction is a roll a throw can strand (memory, the disk and the
+   * strip each holding a different pile) and a roll that empties the pile the verb it preceded is
+   * about to report on.
+   */
+  function rollAt(day, held = null) {
+    const s = getState();
+    const before = gameReading(s);
+    reconcileGameDay(s, day, { held });
+    if (gameReading(s) === before) return false;
+    applyCaps(s);
+    notify('update');
+    save({ immediate: true });
+    return true;
+  }
+
+  /**
    * update(fn, {immediate}) — fn(state) mutates in place (or returns a replacement object); caps are
    * re-applied, subscribers notified, the write scheduled. Returns the state.
    */
   function update(fn, { immediate = false } = {}) {
-    const s = getState();
-    const r = fn(s);
-    if (isObj(r) && r !== s) state = r;
+    getState();                                   // the state is loaded before the clock is read
+    const day = todayISO(new Date(now()));
+    /* THE DAY ROLLS BEFORE THE MUTATION, never after it. `js/job/state.js bank()` reads no clock by
+       design — it adds its points to whatever day `game.day` already names — so the save layer owes it
+       a `game` that names the current one. A reconcile placed after `fn` would zero points banked a
+       moment earlier; placed here, a session that outlives local midnight banks into the new day and
+       `game.today` is the points banked today even in the tab that was never reloaded. Idempotent, and
+       inert on the study path: it reads the clock and touches `player`, `game` and — only to send a
+       closing day's unbanked pile home with it — `inProgress.game`. Ledger A is never in reach.
+
+       THIS IS THE BACKSTOP, NOT THE CLOCK. `rollDay()` below is armed on local midnight and on the
+       document coming back, so in a browser the roll has almost always already happened by the time a
+       verb runs and the student taps against the reading he is looking at (r5, exploit-hunt). What is
+       left here is the tab that saw neither event — and a save layer that trusted a timer would be a
+       save layer with a day that sometimes does not turn.
+
+       AND IT IS COMMITTED BEFORE THE VERB, NOT WITH IT. `rollAt` announces and writes whatever the
+       clock moved on its own; a throw out of `fn` can then cost the verb and nothing else. The roll
+       used to ride inside this call, so `call()` throwing `unaffordable` against a pile the same call
+       had just emptied left memory at 0, localStorage at 94 and the strip printing a third reading
+       with two dead controls on it (r5, exploit-hunt, BLOCKER). */
+    rollAt(day);
+    /* The pile a standing bid is deferring, read BEFORE `fn` — the closing day's own. */
+    const held = deferredPile(state, day);
+    let r; let failure = null;
+    try { r = fn(state); } catch (e) { failure = e; }
+    if (!failure && isObj(r) && r !== state) state = r;
+    /* …and the deferral ends the moment the bid does. `answer()` settles the bid and adds this
+       question's pay in one breath, so the roll has to finish AFTER it or the closing day is credited
+       with points won on the next one — and it has to be told what the closing pile was, or it credits
+       them anyway. A bid still standing leaves this a no-op, exactly as the pass above was. */
+    if (held !== null) rollAt(day, held);
+    if (failure) throw failure;
     applyCaps(state);
     notify('update');
     save({ immediate });
     return state;
+  }
+
+  /**
+   * ROLL THE DAY, ON ITS OWN, AT THE MOMENT IT TURNS — and announce it.
+   *
+   * The roll used to happen only inside `update()`, which made the verb the student tapped the verb
+   * that silently emptied his pile: a session left open across local midnight drained on whichever
+   * verb came first, so BANK reported the pile it had already sent home and the receipt said
+   * `today 0 points` over a tap the student had watched grow to 144 (r5, exploit-hunt, MAJOR).
+   *
+   * The day is the shell's event, not the student's. This is armed on local midnight and on the
+   * document coming back from hidden — a phone locked overnight on a face-down card is the common
+   * case, and `visibilitychange` is the browser telling us the clock may have moved. It writes
+   * immediately and notifies, so the pile that went home did so at an instant every surface can see,
+   * before anything is tapped against it. No-op when nothing moved. Returns whether it moved.
+   */
+  function rollDay() { return rollAt(todayISO(new Date(now()))); }
+
+  /** The next local midnight, one second past it, as a delay in ms — clamped so it can never spin. */
+  function armDayTick() {
+    if (typeof setTimeout !== 'function') return;
+    if (dayTimer) clearTimeout(dayTimer);
+    const t = new Date(now());
+    const next = new Date(t.getFullYear(), t.getMonth(), t.getDate() + 1, 0, 0, 1).getTime();
+    const ms = Math.min(Math.max(next - now(), 1000), 86400000);
+    dayTimer = setTimeout(() => { dayTimer = null; try { rollDay(); } catch (e) { console.error(e); } armDayTick(); }, ms);
+    if (typeof dayTimer?.unref === 'function') dayTimer.unref();
   }
 
   /** The save as disk-format JSON (packed, compact) — what Settings shows in the textarea / download link. */
@@ -786,7 +858,9 @@ export function createStore({ storage = undefined, now = Date.now, debounceMs = 
     let next;
     try { next = unpack(migrate(parsed, now(), { unit })); } catch (e) { throw new Error('Could not migrate that save: ' + e.message); }
     applyCaps(next);
-    reconcileStreak(next, todayISO(new Date(now())));
+    const todayIn = todayISO(new Date(now()));
+    reconcileStreak(next, todayIn);
+    reconcileGameDay(next, todayIn);
     if (state && !blocked) { try { backup(JSON.stringify(pack(state))); } catch { /* ignore */ } }
     blocked = false;
     state = next; dirty = true; flags.loaded = true;
@@ -826,13 +900,16 @@ export function createStore({ storage = undefined, now = Date.now, debounceMs = 
   }
 
   if (doc && typeof doc.addEventListener === 'function') {
-    doc.addEventListener('visibilitychange', () => { if (doc.visibilityState === 'hidden') flush(); });
+    /* Going away: write. Coming back: the clock may have passed midnight while nobody was looking,
+       and the reading on screen is about to be tapped against. Roll first, print after. */
+    doc.addEventListener('visibilitychange', () => { if (doc.visibilityState === 'hidden') flush(); else { try { rollDay(); } catch (e) { console.error(e); } } });
     if (doc.defaultView) doc.defaultView.addEventListener('pagehide', flush);
+    armDayTick();
   }
 
-  return { load, getState, update, save, flush, exportJSON, importJSON, reset, subscribe, readBackup, migrateUnit, unit, flags, get dirty() { return dirty; }, get blocked() { return blocked; } };
+  return { load, getState, update, save, flush, rollDay, exportJSON, importJSON, reset, subscribe, readBackup, migrateUnit, unit, flags, get dirty() { return dirty; }, get blocked() { return blocked; } };
 }
 
 /* ---------------- default instance (the app's save) ---------------- */
 export const store = createStore({ doc: typeof document !== 'undefined' ? document : undefined });
-export const { load, getState, update, save, flush, exportJSON, importJSON, reset, subscribe, readBackup, migrateUnit, flags } = store;
+export const { load, getState, update, save, flush, rollDay, exportJSON, importJSON, reset, subscribe, readBackup, migrateUnit, flags } = store;

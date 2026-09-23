@@ -9,10 +9,9 @@ import {
   UNIT_ID, LEGACY_UNIT_ID, ARCHIVED_KEYS, KEPT_KEYS, archiveUnit, archivedUnits,
 } from '../site/js/store.js';
 import { todayISO, parseISO, diffDays, addDays, daysUntilTest, dayIndex, nextSchoolDay, weekday, testMoment } from '../site/js/days.js';
-// J10 / COMPOSED-GAME G7 — the game layer's half of the worst case. Pure fixtures, parameterised by
-// `CAPS.game` and this suite's own clock, so they can never disagree with the shipped caps.
-import { GAME_RUN_FIELDS, worstCasePlayer, worstCaseGame, inProgressJob12, worstCaseBench, worstCaseJobQueue, worstCaseGameTrophies, withoutGameKeys, worstCaseJobBefore, GAME_META_FIELDS } from './_helpers.mjs';
-import { SAVE_BUDGET_KB } from '../site/data/job.js';
+// The STUDY layer's own worst case: the queue `composePage` writes, at its widest. The game layer's
+// half of this fixture is gone with the mechanics it priced (notes/DEMOLISH.md).
+import { worstCaseJobQueue } from './_helpers.mjs';
 // ROUND-1 VERIFICATION (tests lane, save-budget finding) — `inProgress.meta`'s OTHER half. The
 // before-snapshot below is only what `screens/run.js` writes INTO the slot; `page.startPage` creates
 // the slot itself with the page-label block (day / counts / modules / minutes …), on the flat Page
@@ -77,8 +76,6 @@ export function worstCaseSave() {
       kind: 'mock', n: i, seed: 'mock#' + i, startedAt: T0, submittedAt: T0 + 2400000, limitMs: 2400000, tabAway: 3, status: 'done',
       items: Array.from({ length: 20 }, () => ({ id: 'T-wp-07#a91f2c1', skill: 'CS-RATIO', tier: 3, raw: 'x = 3 or x = -1/2 and 174.5', credit: 0.4, ms: 123456, flagged: true, work: 'k'.repeat(CAPS.workChars + 1000) })),
       score: 81, pred: 88, splits: Array.from({ length: 20 }, (_, k) => 12345 + k), flagged: false,
-      // J10 / G7 "The measured budget": the seven fields a job adds to every run record.
-      ...GAME_RUN_FIELDS,
     });
   }
   for (let i = 0; i < CAPS.errors + 50; i++) s.errors.push({ item: 'T-wp-07#a91f2c1', seed: 'a91f2c1', t: T0 + i, got: 'x = 3 or x = -1/2', tags: ['gave-complement', 'stopped-early'], cleared: i % 3 === 0 });
@@ -88,40 +85,44 @@ export function worstCaseSave() {
   for (let i = 0; i < CAPS.daily + 60; i++) s.daily[addDays('2026-01-01', i)] = { xp: 612, clears: 14, goalMet: true, mockDone: true };
   for (let i = 0; i < CAPS.forecastLog + 60; i++) s.forecastLog.push({ day: addDays('2026-01-01', i), r: 73 });
   for (let i = 0; i < 40; i++) s.trophies['sheet-gold:AP-' + i] = { at: T0 };
-  /* the six trophies only a JOB can earn (`site/data/trophies.js:308-334`, each predicate reading
-     `ctx.save.player` / `ctx.save.game` and nothing else). Round 3: `js/trophies.js` writes them
-     into a top-level STUDY key, `withoutGameKeys` kept them, and neither carrier held one — so the
-     199 B were charged to the study half and priced in neither measurement. */
-  Object.assign(s.trophies, worstCaseGameTrophies(T0));
   for (let i = 0; i < 30; i++) s.counters['counter-name-' + i] = 1234;
-  /* `bench` is the GAME layer's third key on `inProgress` — `job.startJob` writes it and
-     `page.startPage` does not — so it belongs on this carrier and `withoutGameKeys` deletes it.
-     Round 1 had neither, which charged ~1.9 KB of game bytes to the STUDY half of the split and left
-     them out of G7's addition at the same time (notes/save-fix.md round 2 §5). */
-  /* ROUND 3 — a REAL job queue, not 24 synthetic items carrying study keys only. `job.startJob`
-     writes the queue `page.draftUnion` builds, which adds `from, sources, wing, posted, x2,
-     critical` to every entry (and `basePosted, declined` on the ones `state.swapIn` splices in);
-     the synthetic items carried none of them, so the 8 fields appeared in NO measurement — not in
-     the study half, not in the addition. `worstCaseJobQueue` is the same record at its widest. */
-  /* ROUND 4 (verify) — the BEFORE-SNAPSHOT, `inProgress.meta.before`. `screens/job.js:533` calls
-     `captureJobBefore` inside `update()` on every job, so it reaches disk on every job; it writes
-     the flat Page's five keys PLUS seven of its own (`GAME_META_FIELDS`), and `withoutGameKeys`
-     stopped at the `inProgress` key list and the queue ENTRIES — so 2.4 KB was charged to the STUDY
-     half and, with no `inProgress.meta` on either carrier, measured in neither.
-
-     ONLY THE SEVEN GAME FIELDS ARE PRICED HERE, and that is deliberate and recorded: the snapshot's
-     STUDY half (`skills` alone is 3.6 KB of `readiness.skillStates()`) is written by the FLAT PAGE
-     path too, so it belongs to T01's 500 000-char bound — and it does not fit inside it: this
-     carrier's study half measures 498 475 chars with 1 525 to spare, against a real snapshot's
-     3 917. That is a study-layer line, not this layer's, and it is filed as notes/repair-save.md
-     Request D with the measurement rather than papered over by narrowing a game fixture. The test
-     below measures both halves of a full snapshot on this very carrier on every run, so the number
-     in that request cannot go stale. */
-  s.inProgress = { kind: 'job', seed: 123456789, queue: worstCaseJobQueue(T0), idx: 5, hearts: 3, xp: 120, startedAt: T0, game: inProgressJob12(T0, CAPS.game), bench: worstCaseBench(T0), meta: { ...PAGE_META, before: worstCaseJobBefore(T0, CAPS.game, { study: false }) } };
+  /* A LIVE PAGE, at its widest: `composePage`'s queue with one re-queued copy of every review, the
+     page-label block `startPage` writes, the before-snapshot `screens/run.js` / `screens/job.js`
+     take, and the game's own seven-scalar record (`data/job.js IN_PROGRESS_KEYS`). */
+  s.inProgress = {
+    kind: 'page', seed: 123456789, seedTag: 'a91f2c', queue: worstCaseJobQueue(T0), idx: 5, hearts: 3, xp: 120,
+    startedAt: T0, day: '2026-09-16', dayIndex: 4, pageIndex: 1,
+    meta: { ...PAGE_META, before: worstCaseBefore(T0, { study: false }) },
+    game: { pile: 99999, streak: 5, call: { id: 'pretty sure', at: T0 }, answered: 99, tGame: 3599999, tAnswer: 3599999, seed: '123456789' },
+  };
   s.settings.testDate = '2026-09-22'; s.placement = { done: true, at: T0 }; s.jumps = { M10: true, M9: true };
-  s.player = worstCasePlayer(T0, CAPS.game);
-  s.game = worstCaseGame(T0, CAPS.game);
+  /* the game's two keys, at their widest: a best day and today's points */
+  s.player = { best: 99999 };
+  s.game = { today: 99999, day: '2026-09-16' };
   return s;
+}
+
+/**
+ * The before-snapshot `screens/run.js captureJobBefore` writes into `inProgress.meta.before`, at its
+ * widest — the flat Page's five keys plus the three identity fields, on BOTH routes. Every one of
+ * them is a STUDY cost: the flat page writes them with the game off.
+ *
+ * `{ study: false }` is the three identity fields alone, which is what the carrier holds — the five
+ * study keys are measured separately, against T01's bound, in `size bound` below. That split is the
+ * accounting the previous suite used and the open question it left (the study half does not fit
+ * under 500 000 with a full snapshot attached) is still pinned there rather than absorbed here.
+ */
+function worstCaseBefore(now, { study = true } = {}) {
+  const ident = { startedAt: now, seed: 123456789, seedTag: 'a91f2c' };
+  if (!study) return ident;
+  return {
+    skills: SKILLS.map((id) => ({ id, name: id, m: 72.123456789, n: 19, state: 'shaky', w: 8 })),
+    readiness: { r: 73, provisional: false },
+    xp: 123456,
+    coverage: { cleared: 140, total: 164 },
+    tiles: Object.fromEntries(SKILLS.map((id) => [`${id}-tile`, { rarity: 'silver', foil: false }])),
+    ...ident,
+  };
 }
 
 /* ================================================================ */
@@ -569,24 +570,21 @@ describe('packed disk format', () => {
 });
 
 describe('size bound', () => {
-  // Two bounds, because the worst case now has two halves and each has its own published number.
-  // T01's 500 000 still binds exactly the bytes T01 measured — the study layer at every S6 cap. The
-  // game layer's addition is bound separately by COMPOSED-GAME G7's own "≤ 26 KB added" (J10, and
-  // the integration ruling under G7's budget table: `game.heat.window` was added to the schema after
-  // the 25 KB line was written, and G3.4's stake-weighted `x̂` cannot be computed without it). Every
-  // per-line figure in SAVE_BUDGET_KB was restated at the round-1 save audit — see notes/save-fix.md.
+  /* T01's bound binds the bytes T01 measured: the study layer at every S6 cap, with a live page on
+     the disk. The GAME layer's addition used to have a published budget of its own (26 KB, with a
+     12-target job live); the cut design's two keys are three scalars and a seven-field record, so
+     the addition is asserted directly instead of bounded by a table (notes/DEMOLISH.md). */
   const BUDGET = 500_000;          // chars of JSON ≈ 1 MB of the 5 MB localStorage quota (UTF-16)
-  const GAME_BUDGET = SAVE_BUDGET_KB.totalAdded * 1024;   // G7 "The measured budget", with a 12-target job live
+  const GAME_BUDGET = 1024;        // the whole game layer, on a saturated save with a session live
 
-  /* ROUND 3 — THE STUDY HALF MOVED, AND IT IS WORTH KNOWING WHY BEFORE READING THE SLACK. The
-     carrier's `inProgress.queue` used to be 24 synthetic items of study keys only (~2.1 KB). A job
-     writes the queue `page.draftUnion` builds — the same items plus 8 fields — and a real PAGE
-     answered to the end reaches 43 entries and 14.3 KB, so the old figure was not a worst case for
-     either half. With `worstCaseJobQueue` the study half measures ≈ 498 K chars against T01's
-     500 000: roughly 1.5 KB of slack, where it used to read 480 K.
-     That slack is thin, and it is a STUDY-layer number, not this layer's: T01 set the 500 000 bound
-     against the 2.1 KB queue. It is recorded as an open issue for that owner in notes/save-fix.md
-     round 3 §Requests rather than papered over by narrowing the queue fixture. */
+  /** The save with every game key emptied — what a `settings.game = false` student's disk holds. */
+  const withoutGameKeys = (save) => {
+    const s = structuredClone(save);
+    delete s.player; delete s.game;
+    if (s.inProgress && typeof s.inProgress === 'object') delete s.inProgress.game;
+    return s;
+  };
+
   test('a save with EVERY cap saturated stays under the budget (see notes/T01.md for the arithmetic)', () => {
     const s = applyCaps(worstCaseSave());
     const text = JSON.stringify(pack(s));
@@ -594,122 +592,69 @@ describe('size bound', () => {
     const parts = Object.fromEntries(Object.keys(s).map(k => [k, JSON.stringify(pack(s)[k]).length]));
     console.log(`  worst-case save: ${text.length} chars = ${study.length} study + ${text.length - study.length} game (cards ${parts.cards}, runs ${parts.runs}, errors ${parts.errors}, frozen ${parts.frozen}, inProgress ${parts.inProgress})`);
     console.log(`  slack: study ${BUDGET - study.length} chars of ${BUDGET} · game ${GAME_BUDGET - (text.length - study.length)} B of ${GAME_BUDGET}`);
-    assert.ok(study.length < BUDGET, `study layer worst case ${study.length} ≥ ${BUDGET} — T01's bound. It was set against a 24-item synthetic inProgress.queue; a real one is ~25 KB (notes/save-fix.md round 3)`);
+    assert.ok(study.length < BUDGET, `study layer worst case ${study.length} ≥ ${BUDGET} — T01's bound`);
     assert.ok(text.length - study.length <= GAME_BUDGET, `the game layer added ${text.length - study.length} > ${GAME_BUDGET}`);
     assert.ok(text.length < BUDGET + GAME_BUDGET, `worst case ${text.length} ≥ ${BUDGET + GAME_BUDGET}`);
     assert.deepEqual(applyCaps(unpack(JSON.parse(text))), s, 'round-trips through disk unchanged');
   });
 
-  /**
-   * ROUND 4 (verify) — THE BEFORE-SNAPSHOT, MEASURED IN BOTH HALVES, ON THIS CARRIER.
-   *
-   * `inProgress.meta.before` is written by both paths into the same slot, so it splits: the seven
-   * fields `captureJobBefore` adds are the GAME layer's (`GAME_META_FIELDS`, priced as G7's
-   * `inProgress.meta` row) and the five the flat Page writes are the STUDY layer's. This test pins
-   * the split in both directions and prints what the study half costs, because that half is the one
-   * T01's 500 000-char bound does not have room for (notes/repair-save.md Request D).
-   */
-  test('the before-snapshot splits: seven fields are the layer\'s, five are T01\'s', () => {
-    const base = applyCaps(worstCaseSave());
-    const full = applyCaps(worstCaseSave());
-    full.inProgress.meta = { before: worstCaseJobBefore(T0, CAPS.game) };   // study half attached too
-    const added = (x) => JSON.stringify(pack(x)).length - JSON.stringify(pack(withoutGameKeys(x))).length;
-    const study = (x) => JSON.stringify(pack(withoutGameKeys(x))).length;
-
-    /* The GAME half is the same with or without the snapshot's study keys — they cancel in the
-       split. The 1 B of tolerance is JSON's own separator and nothing else: stripping the seven
-       fields out of a snapshot that still holds its five study keys leaves one comma behind that
-       stripping them out of a game-only snapshot (which collapses to `{}`) does not. */
-    assert.ok(Math.abs(added(full) - added(base)) <= 1,
-      `attaching the flat Page's own five snapshot keys moved the ADDITION by ${added(full) - added(base)} B — withoutGameKeys() is charging study bytes to the game layer`);
-    // … and the seven game fields are really in the addition, not in the study half
-    const noMeta = applyCaps(worstCaseSave());
-    delete noMeta.inProgress.meta;
-    const gameFields = added(base) - added(noMeta);
-    assert.ok(gameFields > 1024,
-      `the before-snapshot's seven game fields are worth ${gameFields} B of the addition — withoutGameKeys() is charging them to the study half again`);
-    assert.deepEqual(Object.keys(pack(withoutGameKeys(full)).inProgress.meta.before).sort(), ['coverage', 'readiness', 'skills', 'tiles', 'xp'],
-      'the STUDY half must keep exactly the five keys screens/run.js\'s flat Page path writes');
-    assert.deepEqual([...GAME_META_FIELDS].sort(), Object.keys(worstCaseJobBefore(T0, CAPS.game, { study: false })).sort(),
-      'worstCaseJobBefore({study:false}) must price exactly the fields withoutGameKeys() strips');
-
-    /* THE STUDY HALF'S COST, MEASURED — this is the number notes/repair-save.md Request D asks T01
-       to rule on, re-measured on every run so it cannot go stale. `screens/run.js:856` writes these
-       same five keys for a flat PAGE, so they are inside T01's bound by construction; they do not
-       fit in what is left of it. */
-    const overBy = study(full) - BUDGET;
-    console.log(`  before-snapshot: game fields ${gameFields} B (priced, G7 inProgress.meta) · study keys ${study(full) - study(base)} B (T01's)`);
-    console.log(`  T01's bound with a FULL before-snapshot on this carrier: ${study(full)} of ${BUDGET} — ${overBy > 0 ? `OVER by ${overBy}` : `${-overBy} to spare`} (notes/repair-save.md Request D)`);
-    assert.ok(study(full) > study(base), 'the study half must carry the flat Page\'s own snapshot keys');
-  });
-
-  /**
-   * ROUND-1 VERIFICATION (tests lane, save-budget finding) — THE PAGE-LABEL BLOCK, AND AN EXCESS
-   * THAT IS ASSERTED RATHER THAN ONLY PRINTED.
-   *
-   * Two residuals of the round-4 repair above, both of them the difference between a number that is
-   * measured and a number that is stated:
-   *
-   *   1. `inProgress.meta` is not only the before-snapshot. `page.startPage` CREATES the slot with
-   *      the page-label block, on the flat Page route as well as the job route, and no carrier held
-   *      it — so ≈ 278 B of STUDY bytes that every live page and every live job carries were in
-   *      neither half of the split. `PAGE_META` puts the shipped writer's own block on the carrier;
-   *      this arm proves it is really the shipped writer's and really lands in the study half.
-   *
-   *   2. The excess over T01's bound was printed and not asserted, so Request D could expire in
-   *      silence. It is pinned here in both directions: it must still be over (or Request D has been
-   *      answered and this arm has to be rewritten with the new bound), and it may not grow.
-   *
-   * MEASURED, this run: label block 278 B → 276 chars of the study half; a FULL before-snapshot puts
-   * the study half at **505 671** against T01's 500 000 — over by **5 671**. COMPOSED-GAME G7's
-   * "≈ 1.5 KB of slack" is a statement about a carrier that omits both, and that is the sentence
-   * notes/repair-tests.md asks G7's owner to restate.
-   *
-   * ROUND 5 (verify): the overrun moved 4 843 → 5 671 because `worstCaseJobQueue()` now prices
-   * `params`, the S7 algebra floor's key — 828 B of STUDY bytes the shipped composer writes and no
-   * fixture priced (notes/repair-save.md round 5). The cap below is deliberately NOT moved with it:
-   * it is a growth alarm on an OPEN product question, and it now has 329 chars of headroom, so the
-   * next study-side key that gets priced trips it and Request D has to be answered instead of
-   * re-measured. Raising the cap to keep this green would be the wrong fix.
-   */
-  test('the page-label block is the shipped writer\'s, is charged to the study half, and Request D\'s excess is pinned', () => {
+  test('the page-label block and the before-snapshot are the SHIPPED writers\' own, and both are STUDY bytes', () => {
     const study = (x) => JSON.stringify(pack(withoutGameKeys(x))).length;
     const s = applyCaps(worstCaseSave());
 
-    /* 1a. the block on the carrier IS `startPage`'s, key for key — not a hand-typed copy of it */
+    /* the block on the carrier IS `startPage`'s, key for key — not a hand-typed copy of it */
     const carried = Object.keys(s.inProgress.meta).filter((k) => k !== 'before').sort();
     assert.deepEqual(carried, Object.keys(PAGE_META).sort(),
       'the carrier\'s page-label block has drifted from page.startPage\'s');
     assert.ok(carried.includes('counts') && carried.includes('modules') && carried.includes('minutesMax'),
       `the label block is a stub: ${carried.join(', ')}`);
-    assert.ok(JSON.stringify(PAGE_META).length > 200,
-      `page.startPage now writes only ${JSON.stringify(PAGE_META).length} B of meta — re-measure this row`);
 
-    /* 1b. …and it is a STUDY cost: `withoutGameKeys` does not strip it, because `composePage` writes
-           it with the layer off. Removing it from the carrier moves the study half and nothing else. */
+    /* …and both are STUDY costs: `composePage` writes the label block and the flat page writes the
+       before-snapshot, with the game off. Removing either moves the study half and nothing else. */
     const noLabel = applyCaps(worstCaseSave());
     noLabel.inProgress.meta = { before: noLabel.inProgress.meta.before };
     const labelCost = study(s) - study(noLabel);
     assert.ok(labelCost >= 200 && labelCost <= 800,
-      `the page-label block costs the study half ${labelCost} chars — outside the measured 276, re-price it`);
+      `the page-label block costs the study half ${labelCost} chars — outside the measured band, re-price it`);
     assert.equal(
       JSON.stringify(pack(s)).length - study(s),
       JSON.stringify(pack(noLabel)).length - study(noLabel),
       'the label block moved the GAME addition — it belongs to the study half in full',
     );
 
-    /* 2. THE RATCHET on notes/repair-save.md Request D. */
+    /* THE BEFORE-SNAPSHOT'S STUDY HALF, MEASURED — the open question the previous suite filed as
+       notes/repair-save.md Request D, re-measured on every run so it cannot go stale. `screens/
+       run.js` writes these five keys for a flat PAGE too, so they are inside T01's bound by
+       construction; they do not fit in what is left of it. The alarm below is deliberately NOT
+       raised to keep this green: the next study-side key that gets priced trips it, and Request D
+       has to be answered instead of re-measured. */
     const full = applyCaps(worstCaseSave());
-    full.inProgress.meta = { ...PAGE_META, before: worstCaseJobBefore(T0, CAPS.game) };
+    full.inProgress.meta = { ...PAGE_META, before: worstCaseBefore(T0) };
+    assert.ok(study(full) > study(s), 'the study half must carry the flat Page\'s own snapshot keys');
+    assert.equal(
+      JSON.stringify(pack(full)).length - study(full),
+      JSON.stringify(pack(s)).length - study(s),
+      'the before-snapshot moved the GAME addition — every one of its keys is the flat page\'s',
+    );
     const over = study(full) - BUDGET;
-    console.log(`  a LIVE in-progress save (label block + full before-snapshot): study ${study(full)} of ${BUDGET} — over by ${over}`);
+    console.log(`  a LIVE in-progress save (label block + full before-snapshot): study ${study(full)} of ${BUDGET} — ${over > 0 ? `over by ${over}` : `${-over} to spare`} (notes/repair-save.md Request D)`);
     assert.ok(over > 0,
       `the study half now fits under ${BUDGET} with a full before-snapshot (${study(full)}, ${-over} to spare). `
       + 'Request D has been answered: fold the snapshot into the carrier and delete this arm.');
     assert.ok(over <= 6000,
-      `the study half is now ${over} chars over T01's bound with a live snapshot, against the ${5671} measured `
-      + 'at round-5 verification (4 843 at round 1, + 828 B of `params` priced at round 5) — the overrun is '
-      + 'growing and nothing has ruled on it yet. Answer Request D; do not raise this cap');
+      `the study half is now ${over} chars over T01's bound with a live snapshot — the overrun is growing `
+      + 'and nothing has ruled on it yet. Answer Request D; do not raise this cap');
+  });
+
+  test('the game layer\'s whole addition is its two keys and one record', () => {
+    const s = applyCaps(worstCaseSave());
+    const add = (x) => JSON.stringify(pack(x)).length - JSON.stringify(pack(withoutGameKeys(x))).length;
+    const total = add(s);
+    const noRecord = applyCaps(worstCaseSave());
+    delete noRecord.inProgress.game;
+    console.log(`  the game layer: ${total} B (player + game + inProgress.game), of which the live record is ${total - add(noRecord)} B`);
+    assert.ok(total < GAME_BUDGET, `the game layer costs ${total} B — it is three scalars and a seven-field record`);
+    assert.ok(add(noRecord) < 80, `save.player + save.game cost ${add(noRecord)} B — they are three scalars`);
   });
 });
 

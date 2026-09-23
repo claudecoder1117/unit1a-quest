@@ -27,15 +27,12 @@ import { moduleById, families, bossById } from '../data/modules.js';
 import { isBonus } from '../data/source-manifest.js';
 import { familyRarity } from './rarity.js';
 import { isCleared } from './readiness.js';
-import { bossReady, LIMITS } from './page.js';
+import { bossReady, LIMITS, pageIndexFor } from './page.js';
 import { latestMock, readiness } from './readiness.js';
 import { dueList } from './schedule.js';
-// J11 — the week, quiet hours and the board gate. `data/job.js` is a constants file with ZERO imports
-// and `job/econ.js` imports only xp/schedule/data-job, so neither adds a byte of card or generator data
-// to this module's graph (which onboard.js and night.js carry statically). `schedule.js` was already on
-// that graph twice over (page.js and econ.js both import it), so `dueList` adds nothing to it either.
-import { WEEK, SHAPES, REVIEW_BOARD, BACKCHECK, COMMIT_BONUS, COPY, WING_OF_SKILL, WING_IDS } from '../data/job.js';
-import { shapeTable } from './job/econ.js';
+// The week and quiet hours. `data/job.js` is a constants file with ZERO imports, so it adds no card
+// or generator data to this module's graph (which onboard.js and night.js carry statically).
+import { WEEK } from '../data/job.js';
 
 /* ---------------- constants (S7) ---------------- */
 /** Tier-weighted uncleared work (S7): a 10-second ASN or vocab card is not a 5-minute diagram. */
@@ -162,6 +159,26 @@ export function composeOpts(save, opts = {}) {
   return { q: info.target, tier4: low.tier4PerDay, microFlashOnly: low.microFlashOnly };
 }
 
+/**
+ * THE OPTS EVERY ROUTE THAT STARTS TODAY'S PAGE MUST PASS — `composeOpts` without `q`.
+ *
+ * Three routes start the same page (`screens/home.js`, `screens/run.js` and the game's `#/run/job`),
+ * and CUT-BRIEF's session shape is "same queue as Today's Page, same length, same items". Two of
+ * them had their own copy of the `const { q, ...rest } = composeOpts(save)` line; a third that
+ * forgot it composes a DIFFERENT page, and then the game is not Today's Page at all. One function,
+ * so the three cannot drift.
+ *
+ * `q` is dropped deliberately and is not an oversight: `page.js` derives the identical target from
+ * its own `qFor` (pinned in tests/integration-w4.test.mjs), while an EXPLICIT `q` switches off
+ * page.js's session budget — which turned a 25-item page into a 33-item, 44-minute one.
+ *
+ * @returns {{tier4:number, microFlashOnly:boolean}}
+ */
+export function pageOpts(save, opts = {}) {
+  const { q, ...rest } = composeOpts(save, opts);
+  return rest;
+}
+
 /* ---------------- placement size (S7 onboarding) ---------------- */
 /** 8 items, trimmed to 4 when D ≤ 2. */
 export function placementSize(D) {
@@ -201,6 +218,25 @@ export function modeFor(save, { now = Date.now(), today = todayISO(new Date(now)
 /* ---------------- pills ---------------- */
 const pillHref = kind => (kind === 'morning' ? '#/morning' : kind === 'night' ? '#/night' : '#/today');
 
+/**
+ * THE ROUTE THE BROWSER IS ON, spelled the way a pill spells its destination (`#/today`), or null
+ * outside a browser. The query string is dropped: `#/run/page?seed=x` is the `#/run/page` screen.
+ *
+ * Why this exists: a page-day pill's destination IS `#/today`, and the strip lives on `#/today`, so
+ * every one of those pills is a link to the page you are already reading. That used to be a no-op
+ * click; `app.js` now installs a global `sameRouteClick` handler that re-routes any anchor whose
+ * href is the whole current URL, so the same tap re-mounts the screen and throws the scroll back to
+ * the top — a student who has scrolled to the weak-spot list and taps a calendar chip loses their
+ * place. A link to here is not a link, so `self` pills are rendered with no `href` at all
+ * (`fillPlanStrip` below, and Home's fallback strip): nothing to activate, nothing to re-mount, and
+ * a screen reader stops announcing "link" for a chip that goes nowhere.
+ */
+export function hereNow(loc = (typeof location === 'undefined' ? null : location)) {
+  const raw = typeof loc?.hash === 'string' ? loc.hash : '';
+  if (!raw || raw === '#') return null;
+  return raw.split('?')[0].replace(/\/+$/, '') || null;
+}
+
 function dayState(save, iso, today) {
   if (save?.daily?.[iso]?.goalMet) return 'done';
   if (iso === today) return 'today';
@@ -211,10 +247,18 @@ function dayState(save, iso, today) {
  * The strip's pills, today → test day (S7: "D−n … D as pills (planned/done, Boss days ♛ …, Night Before
  * and Test Morning fixed)"). Long weeks collapse the middle into one "…" pill so seven pills always fit
  * a 343 px column; the Night and Test pills are never collapsed.
- * → [{ k, iso, offset, kind:'page'|'night'|'morning'|'gap', state, label, sub, href, planned, boss, title }]
+ * `self` is true when the pill's destination is the route the strip is being drawn on (`here`), which
+ * makes it a link to this very screen — rendered without an `href`, see `hereNow`.
+ * → [{ k, iso, offset, kind:'page'|'night'|'morning'|'gap', state, label, sub, href, self, planned, boss, title }]
  */
-export function pillsFor(save, { today = todayISO(), D = daysUntilTest(save?.settings?.testDate, today), target = null, boss = null } = {}) {
+export function pillsFor(save, { today = todayISO(), D = daysUntilTest(save?.settings?.testDate, today), target = null, boss = null, here = null } = {}) {
   if (D == null || D < 0) return [];
+  /* GATED ON THE FLAG (round-3 integration; CUT-BRIEF "settings.game = false returns the app to
+     byte-identical COMPOSED behaviour"). `self` exists only to keep `app.js`'s same-route click
+     handler off a pill, and that handler is itself gated now — so with the game OFF there is no
+     handler to hide from and every pill is a link again, exactly as COMPOSED shipped it. The
+     DESTINATIONS never move either way; `self` only decides whether an href is rendered. */
+  const marksSelf = here != null && gameOn(save);
   const plan = target ?? qFor(save, { D }).target;
   const out = [];
   const pageDays = Math.max(0, D - 1);                 // offsets 0 … D−2 are ordinary page days
@@ -229,6 +273,7 @@ export function pillsFor(save, { today = todayISO(), D = daysUntilTest(save?.set
       label: kind === 'morning' ? 'Test' : kind === 'night' ? 'Night' : `D−${k}`,
       sub: `${DOW[weekday(iso)]} ${iso.slice(8)}`,
       href: pillHref(kind),
+      self: marksSelf && pillHref(kind) === here,
       planned: kind === 'page' ? plan : 0,
       boss: kind === 'page' && offset === 0 && boss ? boss : null,
       title: kind === 'page'
@@ -243,7 +288,7 @@ export function pillsFor(save, { today = todayISO(), D = daysUntilTest(save?.set
     const from = addDays(today, near), to = addDays(today, pageDays - 1);
     out.push({
       k: null, iso: from, offset: near, kind: 'gap', state: 'planned',
-      label: `+${skipped}`, sub: 'days', href: '#/today', planned: plan, boss: null,
+      label: `+${skipped}`, sub: 'days', href: '#/today', self: marksSelf && here === '#/today', planned: plan, boss: null,
       title: `${skipped} more page day${skipped === 1 ? '' : 's'} (${from} … ${to}) at ${plan} new a day`,
     });
   }
@@ -264,7 +309,7 @@ export function pillsFor(save, { today = todayISO(), D = daysUntilTest(save?.set
  * Recompute on every Home visit and at local midnight (Home re-renders on the bus `state` event; the
  * date arithmetic is calendar-based so a midnight crossing changes D without any timer).
  */
-export function planFor(save, { now = Date.now(), today = todayISO(new Date(now)) } = {}) {
+export function planFor(save, { now = Date.now(), today = todayISO(new Date(now)), here = null } = {}) {
   const st = save?.settings ?? {};
   const D = daysUntilTest(st.testDate, today);
   const mode = modeFor(save, { now, today });
@@ -274,7 +319,7 @@ export function planFor(save, { now = Date.now(), today = todayISO(new Date(now)
   const bossDef = boss ? bossById[boss.id] ?? null : null;
   const scored = latestMock(save);
   const mockOffered = D != null && D >= 0 && D <= MOCK_FROM_D && !scored;
-  const pills = mode === 'nodate' || mode === 'post' ? [] : pillsFor(save, { today, D, target: info.target, boss });
+  const pills = mode === 'nodate' || mode === 'post' ? [] : pillsFor(save, { today, D, target: info.target, boss, here });
 
   const notes = [];
   if (mode === 'nodate') notes.push('No test date yet — pages run at 12 new a day. Set the date in Settings and the plan sizes itself.');
@@ -306,40 +351,42 @@ export function describePlan(plan) {
 }
 
 /* ==========================================================================================
-   J11 — THE WEEK, QUIET HOURS AND THE BOARD GATE (COMPOSED-GAME G5, G7's `nextAction` branch)
+   THE GAME GATE (designs/CUT-BRIEF.md, designs/CUT-SPEC.md)
    ==========================================================================================
 
-   G7 lists this branch under `plan.js`; the function it names, `nextAction`, actually lives in
-   `page.js` (and `page.js` may not import this module — `plan.js` already imports `page.js`, so the
-   edge would be a cycle). **The code wins** (the same ruling G10 #20/#21 makes twice): the branch is
-   implemented here as `nextActionFor(save, act)`, a pure decorator over whatever `page.nextAction`
-   returned, and `screens/home.js` — the one screen that paints the primary button — applies it. The
-   request for the one-line hook inside `page.nextAction` is in notes/J11.md.
+   Pure policy: no DOM, no writes, and the only clock is the 22:00 close COMPOSED already had.
 
-   Everything below is pure: no DOM, no writes except the two explicit mutators at the end, which are
-   called inside `store.update()`. No payoff term reads a clock — the only clocks here are the truthful
-   `ends HH:MM`, the 22:00 gate and the school window, exactly as G10 #9 allows.                     */
+   TWO STRUCTURAL PROPERTIES, both asserted in tests/cut-home.test.mjs:
 
-/** The Night Before is 30 minutes (S7). Pinned equal to `screens/night.js NIGHT_MINUTES` by the suite. */
-export const NIGHT_BEFORE_MINUTES = 30;
-/** Test Morning: "5 minutes of things you already know" (S7). */
-export const MORNING_MINUTES = 5;
-/** G5 — after this local hour no new board posts. COMPOSED's soft close; the layer adds no constant. */
+   1. THIS BLOCK CANNOT PRICE ANYTHING. `plan.js` imports no line of `js/job/*` — not the payoff
+      table, not the session state — so it cannot read the pile, the streak, a call or a point. A
+      module that cannot see a number cannot leak one onto Home.
+
+   2. THIS BLOCK PRINTS NOTHING. The game IS Today's Page with a different top strip, so Home keeps
+      the PAGE's own label and the PAGE's own sub-line; the game contributes no word and no number
+      to the screen (CUT-SPEC §6 is the whole vocabulary and none of it lives on Home). `why` below
+      is a DIAGNOSTIC for tests and the console, never copy — the test greps `screens/home.js` for it
+      and asserts that none of the gate's seven diagnostics reaches the rendered button.
+
+   DEMOLITION (notes/DEMOLISH.md): the shape table, the projected end time, the 22:00 refusal with
+   its one-tap alternative, the REVIEW BOARD, G2's crew terminus, the bound COMMIT declaration, the
+   Clean Getaway stamp and the Backcheck mint are gone with the mechanics they gated. THE CUT:
+   `quietLimit`, `nightBeforeDone`, `NIGHT_BEFORE_MINUTES`, `MORNING_MINUTES` and the `.board`
+   decoration `nextActionFor` hung on every action went too — nothing read one of them, and dead
+   code that "might come back" is how the old layer got here.
+
+   What is left is the one question the route has to answer: is the game on, and is there a session
+   to resume?                                                                                     */
+
+/** After this local hour no new session starts; studying is untouched. */
 export const QUIET_HOUR = WEEK.quietHour;
-/** G5 — Mon–Fri 07:00–14:15 posts the RUN shape only. */
-export const SCHOOL_WINDOW = WEEK.schoolWindow;
-/**
- * G2 "Where the economy ends" — the TERMINUS. At `crew held ∧ Readiness ≥ 88` with nothing due, the
- * board stops LEADING with a job and says so. The number is G2's own; `screens/home.js` carries the
- * same constant for its static pass and `tests/job-week.test.mjs` pins the two equal.
- */
-export const QUIET_READINESS = 88;
-/** The crew rank G2 calls "held" (`job/crew.js HELD`; the table is `data/job.js CREW_RANKS`). */
-export const CREW_HELD = 2;
-/** The shape a refused one falls back to, with its own real end time on the button. */
-export const REFUSAL_ALT = 'RUN';
+/* `SCHOOL_WINDOW` and `inSchoolWindow` WERE HERE, and are deleted with `boardPolicy().school`
+   (notes/cut-home.md R5). The school window arrived with the deleted game layer's week, COMPOSED
+   names no such rule, and the whole chain — `data/job.js WEEK.schoolWindow` → `SCHOOL_WINDOW` →
+   `inSchoolWindow` → `policy.school` — had exactly zero readers under `site/`, `tests/` or `qa/`.
+   The 22:00 close below is the ONE clock rule that is actually read. */
 
-/** The layer is on unless Settings switched it off (G7: `settings.game = false` kills it in one tap). */
+/** The game is on unless the student switched it off in Settings. */
 export const gameOn = (save) => save?.settings?.game !== false;
 
 const toDate = (t) => (t instanceof Date ? t : new Date(Number.isFinite(t) ? t : Date.now()));
@@ -353,426 +400,146 @@ export function minuteOfDay(now = Date.now()) {
 /** After 22:00 local — `days.isQuietHours`, so there is exactly one implementation of the question. */
 export function isQuietNow(now = Date.now()) { return isQuietHours(toDate(now)); }
 
-/** The local ms timestamp of today's 22:00 — the wall the projected end time is measured against. */
-export function quietLimit(now = Date.now()) {
-  const d = toDate(now);
-  return new Date(d.getFullYear(), d.getMonth(), d.getDate(), WEEK.refuseIfEndsAfterHour, 0, 0, 0).getTime();
-}
-
-/** G5 — the school window: Mon–Fri, 07:00 ≤ t < 14:15. */
-export function inSchoolWindow(now = Date.now()) {
-  const d = toDate(now);
-  if (!SCHOOL_WINDOW.days.includes(d.getDay())) return false;
-  const m = minuteOfDay(d);
-  return m >= SCHOOL_WINDOW.fromMin && m < SCHOOL_WINDOW.toMin;
-}
+/** Is there a session LIVE on this save — an `inProgress.game` record? */
+export const hasLiveJob = (save) => !!save?.inProgress?.game;
 
 /**
- * endsFor(shape, opts) → a shape's PROJECTED end time, computed from its own wall clock
- * (`econ.shapeTable`, which is derived from `data/job.js`'s constants) — never from a fixed
- * 21:30 (G5, G10 #25). `minutes` is the drafted ANSWER minutes when the board knows them; without it
- * the shape's published answer seconds are used.
- * @param {string} shape  a SHAPES id
- * @param {{now?: number, minutes?: number|null, wallS?: number|null, path?: 'default'|'full'}} [opts]
- * @returns {{shape, wallS, gameS, endsAt, ends, minutes, split}}
- */
-export function endsFor(shape, opts = {}) {
-  const id = SHAPES[shape] ? shape : 'JOB';
-  const { now = Date.now(), minutes = null, wallS = null, path = 'default' } = opts;
-  const t = shapeTable(id);
-  const gameS = t.gameS[path] ?? t.gameS.default;
-  const wall = Number.isFinite(wallS) ? wallS
-    : Number.isFinite(minutes) ? minutes * 60 + gameS
-      : (t.wallS[path] ?? t.wallS.default);
-  const endsAt = toDate(now).getTime() + Math.round(wall * 1000);
-  return {
-    shape: id, wallS: wall, gameS,
-    endsAt, ends: timeHM(new Date(endsAt)),
-    minutes: Math.ceil(wall / 60),        // the button may never promise LESS time than the shape takes
-    split: t.split[path] ?? t.split.default,
-  };
-}
-
-/**
- * refuseFor(shape, opts) → `null` when the shape fits before 22:00, else the refusal, carrying the
- * ONE-TAP alternative and the REAL end time of both options (G5, G9 #9).
- * @returns {null|{shape, ends, endsAt, limit, over, alt, line}}
- */
-export function refuseFor(shape, opts = {}) {
-  const { now = Date.now(), alt = REFUSAL_ALT } = opts;
-  const end = endsFor(shape, opts);
-  const limit = quietLimit(now);
-  if (end.endsAt <= limit) return null;
-  const other = endsFor(alt, { now, path: opts.path });
-  return {
-    shape: end.shape, ends: end.ends, endsAt: end.endsAt, limit,
-    over: Math.round((end.endsAt - limit) / 60000),
-    alt: { shape: other.shape, ends: other.ends, endsAt: other.endsAt, minutes: other.minutes, fits: other.endsAt <= limit },
-    line: COPY.refuse({ ends: end.ends, minutes: other.minutes }),
-  };
-}
-
-/**
- * The shape the REVIEW BOARD posts at D = 2 — **never** the VAULT, because D = 2 has no vault, and
- * never JOB12 either: the Final Sweep already makes every bucket ≤ 2 item due, and a 12-target shape
- * on top of that leaves COMPOSED S1's 10–25 minute session (JOB12 full-use is 20:56 before the sweep).
- * It is a CONSTANT so that Home's static pass-1 gate can name the same shape without `plan.qFor`
- * (which needs data/cards.js) — the pin `weekGate ≡ boardPolicy` in tests/job-week.test.mjs.
- */
-export const REVIEW_SHAPE = 'JOB';
-
-/**
- * G2's terminus, the half that is about the crew: **every wing has a crew at HELD**.
+ * IS TODAY'S PAGE ALREADY CLOSED? (round-4 exploit-hunt, MAJOR.)
  *
- * Read off `save.game.crew` alone. `plan.js` may not import `job/crew.js` (G10 #21, and the header
- * above), and Home's static pass may not either, so both halves compute the same predicate from store
- * data plus `data/job.js`'s `WING_OF_SKILL` — which is derived from `WINGS`, so the mapping can never
- * drift from the four wings the guard draws on.
- * @returns {{held: boolean, wings: string[]}}
+ * The game is Today's Page, and `page.pageIndexFor` is the study layer's own count of the pages this
+ * save has closed today — the same number `page.pageSeed` deals from, so "Today's Page" is literally
+ * `pageIndex === 0` and everything after it is an extra page. It costs nothing to get: `page.js` is
+ * already this module's import, and this is a study fact — a count of run records — not a game one.
+ * Deliberately NOT `save.game.today > 0`: a module that can read a point can leak one onto Home
+ * (tests/cut-home.test.mjs block D), and this question does not need one.
+ *
+ * WHAT IT IS FOR. Home re-offered `#/run/job` the moment a session ended, over a page whose items
+ * were 11 of 13 the ones just answered with every worked solution read — so `save.game.today` and
+ * `save.player.best` counted laps, 546 a lap on the midweek save and unbounded, against 264–397 for
+ * honest play of the same page. `best` is the game's only reward (CUT-SPEC §8), and a record you
+ * beat by tapping the same button again is not a record. The day's first page is the one that counts.
+ *
+ * STUDYING A SECOND PAGE STAYS FREE. This withholds an OFFER, never a page: `page.nextAction` still
+ * returns its own page action, untouched, and Home's button still runs it on `#/run/page` with the
+ * study layer's own label and sub-line — which is exactly the shape the switch-off door already has.
+ * The ROUTE is not gated: `#/run/job` opens on a bookmark as it always did (`jobEntryGate` is deleted
+ * and stays deleted), and a LIVE session resumes into it from any hour — `nextActionFor` answers the
+ * resume before it asks the week anything.
  */
-export function crewHeldEverywhere(save) {
-  const raw = save?.game?.crew;
-  const wings = new Set();
-  if (raw != null && typeof raw === 'object' && !Array.isArray(raw)) {
-    for (const [make, rank] of Object.entries(raw)) {
-      if (rank !== CREW_HELD) continue;
-      const w = WING_OF_SKILL[make];
-      if (w) wings.add(w);
-    }
-  }
-  return { held: wings.size >= WING_IDS.length, wings: [...wings] };
-}
+export const pageSpentToday = (save, today = todayISO()) => pageIndexFor(save, today) > 0;
 
 /**
- * G2 — `crew held ∧ Readiness ≥ 88` (with nothing due): **"the board stops leading with a job:
- * `Board quiet · Readiness 89 · 0 due` — with the job still one tap away. The game has a terminus and
- * admits it."** This is the predicate; `boardPolicy`'s `quiet` branch is where it is spent.
+ * Does the GAME own Today's Page right now? A record is not an owner on its own: `screens/job.js`
+ * refuses to mount with the switch off, so a page handed to `#/run/job` in that state came straight
+ * back to `#/today` and Today's Page was unreachable for good (round 3, `notes/cut-run.md` R3-2).
  *
- * Nothing here locks a door (G9 #9): the branch sets `post: false`, which everywhere else in this
- * file means "Home's primary button goes back to the study action" — and it carries `takeBoard`, the
- * one tap G2 promises.
- * @returns {{quiet: boolean, readiness: number, due: number, crew: boolean}}
+ * It lives HERE because this is the door — `tests/job-ledger.test.mjs` ("only the door itself reads
+ * the flag — no study module does") names `js/screens/run.js` among the files that may not read the
+ * switch, and it is right to: what may cross into a study screen is this ANSWER, never the flag, so
+ * nothing out there can branch a QUEUE on it. Study state is untouched either way — with the switch
+ * off the record simply lies dormant, and comes back with the switch.
  */
-export function terminusFor(save, { now = Date.now(), today = todayISO(new Date(now)), r = null, due = null } = {}) {
-  let rr = Number.isFinite(r) ? r : 0;
-  if (!Number.isFinite(r)) { try { rr = readiness(save).r; } catch { rr = 0; } }
-  const crew = crewHeldEverywhere(save).held;
-  if (rr < QUIET_READINESS || !crew) return { quiet: false, readiness: rr, due: 0, crew };
-  let d = Number.isFinite(due) ? due : 0;
-  if (!Number.isFinite(due)) { try { d = dueList(save, { now, today }).length; } catch { d = 0; } }
-  return { quiet: d === 0, readiness: rr, due: d, crew };
-}
+export const jobOwnsPage = (save) => hasLiveJob(save) && gameOn(save);
 
 /**
- * boardPolicy(save, opts) → what the WEEK and the clock allow right now. Nothing here decides WHAT is
- * studied (COMPOSED Global rule 5 — the composer owns that) and nothing here locks a study door: every
- * `post: false` state still names the study route that is one tap away.
+ * What the week allows right now. Nothing here decides WHAT is studied (COMPOSED global rule 5 — the
+ * composer owns that) and nothing here locks a study door: every `post: false` names the study route
+ * that is one tap away.
  *
- * kinds: `off` (layer switched off) · `closed` (after 22:00) · `nodate` · `post` · `morning` (D = 0) ·
- *        `night` (D = 1) · `review` (D = 2) · `school` (Mon–Fri 07:00–14:15) · `quiet` (G2's
- *        terminus) · `job` (D ≥ 3)
+ * `why` IS NOT COPY. It is a diagnostic for tests and the console; it names a setting, a clock or a
+ * design decision, and CUT-BRIEF forbids every one of those on a student's screen. No surface
+ * renders it, and `tests/cut-home.test.mjs` greps `screens/home.js` to keep it that way.
  *
- * @returns {{on, D, mode, today, now, quiet, school, post, kind, shape, shapeOpts, stakes, calls,
- *            vault, guard, tokens, flatLadder, backchecksFree, href, line, why}}
+ * @returns {{on, D, mode, today, now, quiet, post, kind, href, why}}
  */
 export function boardPolicy(save, opts = {}) {
   const now = opts.now ?? Date.now();
   const today = opts.today ?? todayISO(new Date(now));
   const D = opts.D !== undefined ? opts.D : daysUntilTest(save?.settings?.testDate, today);
   const mode = opts.mode ?? modeFor(save, { now, today });
-  const quiet = isQuietNow(now);
-  const school = inSchoolWindow(now);
   const base = {
-    on: gameOn(save), D, mode, today, now, quiet, school,
-    post: false, kind: 'off', shape: null, shapeOpts: {},
-    stakes: false, calls: false, vault: false, guard: false, tokens: false,
-    flatLadder: false, backchecksFree: false,
-    href: '#/today', takeBoard: null, line: '', why: '',
+    on: gameOn(save), D, mode, today, now,
+    quiet: isQuietNow(now),
+    post: false, kind: 'off', href: '#/today', why: '',
   };
-  if (!base.on) return { ...base, kind: 'off', why: 'settings.game = false' };
-
-  /* 1. the 22:00 close wins over every other rule: no new board posts, studying is untouched */
-  if (quiet) {
-    const ends = timeHM(new Date(now + NIGHT_BEFORE_MINUTES * 60000));
-    return {
-      ...base, kind: 'closed', post: false, href: '#/today', why: 'after 22:00',
-      line: COPY.closed({ minutes: NIGHT_BEFORE_MINUTES, ends }),
-      keepGoing: COPY.keepGoing(), ends,
-    };
-  }
-
-  /* 2–3. the week's own modes */
+  if (!base.on) return { ...base, why: 'settings.game = false' };
+  /* the 22:00 close wins over every other rule: no new session starts, studying is untouched */
+  if (base.quiet) return { ...base, kind: 'closed', href: '#/today', why: 'after 22:00' };
   if (mode === 'nodate') return { ...base, kind: 'nodate', why: 'no test date — the plan runs at 12 new a day' };
   if (mode === 'post') return { ...base, kind: 'post', why: 'the test is done' };
-  if (mode === 'morning') {
-    return {
-      ...base, kind: 'morning', post: true, stakes: false, calls: false,
-      href: '#/run/morning', line: COPY.morning(), why: 'D = 0 — the final ledger and Go.',
-    };
-  }
-  if (mode === 'night') {
-    const ends = timeHM(new Date(now + NIGHT_BEFORE_MINUTES * 60000));
-    return {
-      ...base, kind: 'night', post: false, href: '#/run/night',
-      line: COPY.night({ minutes: NIGHT_BEFORE_MINUTES, ends }), ends,
-      why: 'D = 1 — no board; the Night Before pays the Clean Getaway stamp and one Backcheck',
-    };
-  }
-
-  /* 4. D = 2 — the REVIEW BOARD. The game frame stays; the gambling frame leaves. */
-  if (D === WEEK.reviewBoardD) {
-    const shape = school ? 'RUN' : REVIEW_SHAPE;
-    return {
-      ...base, kind: 'review', post: true, stakes: true, calls: 'optional',
-      ...REVIEW_BOARD, shape, shapeOpts: { shape }, href: '#/run/job',
-      why: 'D = 2 — Final Sweep: every contract is dues, no vault, no guard, no tokens, flat ladder',
-    };
-  }
-
-  /* 5. the school window posts the RUN shape only, and says why */
-  if (school) {
-    return {
-      ...base, kind: 'school', post: true, stakes: true, calls: true, guard: true, tokens: true,
-      shape: 'RUN', shapeOpts: { shape: 'RUN' }, href: '#/run/job',
-      why: 'Mon–Fri 07:00–14:15 — the school window posts the RUN shape only',
-    };
-  }
-
-  /* 5b. G2's TERMINUS. `crew held ∧ Readiness ≥ 88 ∧ 0 due` → the board stops LEADING with a job and
-     prints `Board quiet · Readiness 89 · 0 due`. `post: false` sends Home's primary button back to
-     the study action; `takeBoard` is G2's "still one tap away", and the stakes flags below are the
-     ordinary evening board's, so the tap that takes one gets the real thing and not a stub. Settings
-     already tells the student "The game has a terminus and says so" — this is the half that says it. */
-  const term = opts.terminus ?? terminusFor(save, { now, today });
-  if (term.quiet) {
-    return {
-      ...base, kind: 'quiet', post: false, stakes: true, calls: true, guard: true, tokens: true, vault: true,
-      shape: null, shapeOpts: {}, href: '#/today', takeBoard: '#/run/job',
-      line: COPY.quiet({ readiness: term.readiness, due: term.due }),
-      readiness: term.readiness, due: term.due,
-      why: 'crew held and Readiness ≥ 88 with nothing due — the board stops leading with a job',
-    };
-  }
-
-  /* 6. D ≥ 3 — the ordinary evening board. `shape: null` lets job/board.js's own shapeFor decide. */
-  return {
-    ...base, kind: 'job', post: true, stakes: true, calls: true, guard: true, tokens: true, vault: true,
-    shape: null, shapeOpts: {}, href: '#/run/job', why: 'D ≥ 3 — the board is the primary action',
-  };
+  if (mode === 'morning') return { ...base, kind: 'morning', href: '#/run/morning', why: 'D = 0 — the final ledger and Go.' };
+  if (mode === 'night') return { ...base, kind: 'night', href: '#/run/night', why: 'D = 1 — the Night Before replaces the page' };
+  /* ONE SCORING PAGE A DAY (`pageSpentToday` above). The week posts the game over TODAY'S page; once
+     that page is closed the day's extra pages are study, and Home offers them as study. */
+  if (pageSpentToday(save, today)) return { ...base, kind: 'spent', href: '#/run/page', why: "today's page is closed — an extra page is study, not a score" };
+  return { ...base, kind: 'game', post: true, href: '#/run/job', why: "the game is Today's Page with a different top strip" };
 }
 
 /**
- * jobAction(save, opts) → the game layer's primary button, or `null` when the week posts no board.
- * The label is G5's contract: cards, minutes, the wall-clock end time and the projected split.
- * @returns {null|{kind:'job', label, href, sub, shape, policy, ends, endsAt, minutes, split, targets, refusal}}
+ * The game's primary button, or `null` when the week posts none. The queue is Today's Page's, so the
+ * label is the PAGE's own label — the game never chooses, adds, removes or reorders a question, and
+ * it does not rename the button either.
+ *
+ * There is no `sub`. The old action carried `policy.why` as a sub-line and Home printed it, which
+ * put "the game is Today's Page with a different top strip" — this document, quoted at the student —
+ * under the button. The game adds no copy: Home prints the PAGE's sub-line or nothing.
+ *
+ * @returns {null|{kind:'job', label, href, policy}}
  */
 export function jobAction(save, opts = {}) {
   const policy = opts.policy ?? boardPolicy(save, opts);
-  if (!policy.post || policy.kind === 'morning') return null;
-  const now = policy.now;
-  const shape = policy.shape ?? (opts.shape && SHAPES[opts.shape] ? opts.shape : 'JOB');
-  const targets = Number.isInteger(opts.targets) ? opts.targets : SHAPES[shape].targets;
-  /* `wallS` is the board's OWN projected wall clock, when a board has been drafted. Without it the
-     two numbers below come off `econ.shapeTable` — the canonical tier mix — and the button can promise
-     `ends 21:57` for a job whose real queue ends at 22:04, which is the refusal gating itself on a
-     number the product contradicts one tap later. `screens/home.js` pass 2 passes it (and re-runs
-     `refuseFor` against it), so the CTA, the panel and the gate are one sentence about one board. */
-  const clock = { now, minutes: opts.minutes ?? null, wallS: opts.wallS ?? null, path: opts.path };
-  const end = endsFor(shape, clock);
-  const split = Math.round(Number.isFinite(opts.split) ? opts.split : end.split);   // the board prints whole points
-  const refusal = refuseFor(shape, clock);
-  const name = policy.kind === 'review' ? 'REVIEW BOARD' : SHAPES[shape].name;
+  if (!policy.post) return null;
   return {
-    kind: 'job', shape, policy, targets, refusal,
-    ends: end.ends, endsAt: end.endsAt, minutes: end.minutes, split,
-    href: policy.href,
-    label: COPY.primary({ shape: name, targets, minutes: end.minutes, ends: end.ends, split }),
-    sub: policy.why,
+    kind: 'job', policy, href: policy.href,
+    label: typeof opts.label === 'string' && opts.label ? opts.label : "Today's Page",
   };
 }
 
-/**
- * jobEntryGate(save, opts) → what the `#/run/job` ROUTE must do when it is opened.
- *
- * Home and `jobAction` stop OFFERING a board when the week says no, but the route itself stayed open,
- * and the debrief links straight at it (`Another board`), so `Board closed · after 22:00` and
- * `School window · RUN only` were both true of the button and false of the app. This is the one place
- * that decides it, so a deep link, the debrief's secondary and Home's primary all obey one rule.
- *
- * Nothing here locks a study door (G9 #9): every `allow: false` carries the study route the week
- * already named plus the line that says why, and the caller navigates there instead of mounting.
- *
- *   `off`                       → `#/today` (G10 #22 — the switch is a door)
- *   a LIVE job                  → allowed, always. Whether a NEW board may post has nothing to do with
- *                                 finishing the one already running; 22:00 is `jobBoundary`'s job, and
- *                                 stranding a live record would lose the stakes on the disk.
- *   `closed` `night` `nodate` `post` → refused to `policy.href`, with `policy.line`
- *   `morning`                   → refused to `#/run/morning` (D = 0 posts the ledger and `Go.`)
- *   `quiet` (G2's terminus)     → ALLOWED: the terminus stops the board LEADING, it does not close it
- *   `school` `review` `job`     → allowed, carrying the shape and the stakes flags the week permits
- *
- * @returns {{allow, resume, redirect, line, why, policy, shape, shapeOpts, stakes, calls, guard,
- *            tokens, vault, flatLadder, backchecksFree}}
- */
-export function jobEntryGate(save, opts = {}) {
-  const policy = opts.policy ?? boardPolicy(save, opts);
-  const live = hasLiveJob(save);
-  const stakes = {
-    shape: policy.shape, shapeOpts: policy.shapeOpts ?? {},
-    stakes: policy.stakes, calls: policy.calls, guard: policy.guard, tokens: policy.tokens,
-    vault: policy.vault, flatLadder: policy.flatLadder, backchecksFree: policy.backchecksFree,
-  };
-  const no = (redirect, why) => ({ allow: false, resume: false, redirect, line: policy.line ?? '', why, policy, live, ...stakes });
-  const yes = (why, resume = false) => ({ allow: true, resume, redirect: null, line: policy.line ?? '', why, policy, live, ...stakes });
-
-  if (!policy.on) return { ...no('#/today', 'settings.game = false'), line: '' };
-  if (live) return yes('a live job finishes where it started — 22:00 is the boundary rule, not a door', true);
-  if (policy.kind === 'morning') return no(policy.href || '#/run/morning', policy.why);
-  if (policy.kind === 'quiet') return yes(policy.why);
-  if (!policy.post) return no(policy.href || '#/today', policy.why);
-  return yes(policy.why);
-}
+/* `jobEntryGate` WAS HERE, and it is deleted rather than left uncalled (notes/cut-home.md R2 asked
+   the job screen to adopt it; its own open issue 1 named this as the alternative). It answered "may
+   `#/run/job` be opened?" with the whole week — the Night Before, the Morning Of, after the test, a
+   save with no test date, and every hour past 22:00 — so the route would have refused a bookmark on
+   most days of the plan, and `qa/fixtures/midweek.json` (whose test date has since arrived) is a
+   live demonstration: the gate refuses it, and the five job states of the layout audit could not
+   reach the screen at all. The game is Today's Page with a different top strip; if the page can be
+   run, the strip can be on it. What still governs the week is what Home OFFERS — `nextActionFor`
+   and `jobAction` below — which is how a student actually reaches the screen, and `screens/job.js`
+   still refuses on the one door CUT-BRIEF names: `settings.game`. */
 
 /**
- * G7's one branch, as a decorator over `page.nextAction`'s result: when `modeFor() === 'page'` and
- * `settings.game !== false` and `D ≥ 2` the primary button becomes the board's; at `D ≤ 1` the night /
- * morning action is returned UNCHANGED (the same object, by reference) — night and morning win.
- * A resume always wins: an unfinished page is never replaced by a new board.
+ * The one branch: when the week posts the game and the primary action is the PAGE, the page's button
+ * becomes the game's. Every other action `page.nextAction` ranks above the page — `resume`, `warmup`,
+ * `boss`, `mock`, `missed` — is a different study action and is returned UNCHANGED, so nothing the
+ * game does locks a study door.
  *
- * The board replaces the PAGE action and nothing else. `page.nextAction` ranks `resume`, `warmup`,
- * `boss`, `mock` and `missed` above the page; each is a distinct study action rather than a page in
- * another costume, so each is returned unchanged (carrying `.board` for the panel). See the block
- * comment on the guard below for the authority and the measurement.
+ * THE SWITCH IS A DOOR. With `settings.game = false` this function returns the VERY OBJECT it was
+ * given — same identity, same keys, same values — so Home cannot tell the game layer is installed
+ * and COMPOSED behaviour is byte-identical (CUT-BRIEF "The Law of Two Ledgers"). The old version
+ * decorated every action with `.board` even when the game was off; no surface has read `.board`
+ * since the board panel was demolished, so it is gone rather than carried.
+ *
  * @param {object} save
  * @param {object} act  whatever `page.nextAction(save, …)` returned
- * @returns {object} `act`, or the job action, each carrying `.board` (the policy) for the panel
+ * @returns {object} `act` itself, or the game's action over the SAME page
  */
 export function nextActionFor(save, act, opts = {}) {
+  /* the switch, read from the save and not from an injected policy */
+  if (!gameOn(save)) return act;
   const policy = opts.policy ?? boardPolicy(save, opts);
-  const out = (a) => (a === act ? Object.assign(Object.create(Object.getPrototypeOf(a) ?? Object.prototype), a, { board: policy }) : a);
-  /* A LIVE JOB is a resume to `#/run/job`, not to `#/run/page`. `state.startJob` writes
-     `inProgress.kind = 'page'` (the job IS a page, with a record beside it), so `page.nextAction`
-     honestly returns the flat page's href and a mid-job reload would land the student on the flat
-     runner with the stakes still on the disk. notes/J5c.md §7 called this "the one integration bug I
-     can see from here"; notes/J6.md §7 repeated it. Fixed here, where the branch lives.
-     It is checked BEFORE `policy.post`, because whether a NEW board may post tonight has nothing to
-     do with finishing the job already running — the 22:00 close is a boundary rule the job screen
-     applies through `jobBoundary`, not a reason to strand a live record. */
-  if (policy.on && act && act.kind === 'resume' && hasLiveJob(save)) {
-    const ip = save.inProgress;
-    const n = Math.min(Math.max(1, Number(ip?.idx) + 1 || 1), (ip?.queue?.length ?? 1));
-    return { ...act, href: '#/run/job', label: COPY.resumeJob({ n, of: ip?.queue?.length ?? n }), board: policy };
-  }
-  if (!policy.on || !policy.post) return out(act);
-  /* The board may only replace the PAGE action. G7: "One queue, two skins — Today's Page remains the
-     source of truth for what gets answered; a job draws its board from `composePage`'s queue." The
-     board IS tonight's page in another costume, so it substitutes for the page and for nothing else.
-     Every kind `page.nextAction` ranks ABOVE the page — `resume`, `warmup`, `boss`, `mock`, `missed`
-     — is a DIFFERENT study action, not a page in a costume, and swapping the board in for one of
-     them removes a door the week deliberately opened (G9 #9, "none of it locks a single study door";
-     G10 #11, "it gates no card, no boss, no Mock, no hint, no solution, no Variant").
-
-     r1 integration fix: this guard used to name only `resume` and `warmup`, so `boss`, `mock` and
-     `missed` were all displaced by the board. Measured on `qa/fixtures/audit/mock-cta.json` (T−3,
-     daily goal met, no Mock taken): `nextAction` → `mock`, `nextActionFor` → `job`, so
-     `.home-primary[data-kind="mock"]` never entered the DOM and the Mock stopped leading on the one
-     evening the week says it must. Caught by `qa/audit-states.mjs`'s `home-mock-cta` state once the
-     `unreached` detector landed (notes/tests-fix.md Requests #5). Pinned in `tests/job-week.test.mjs`
-     → "J11 — nothing the week does locks a study door (G9 #9)", which asserts all five above-page
-     kinds keep their own route and plays the T−3 case end to end through `page.nextAction`.
-     The positive branch is unchanged: a `page` action still becomes the board. */
-  if (act && act.kind !== 'page') return out(act);
-  const job = jobAction(save, { ...opts, policy });
-  return job ? { ...job, board: policy, page: act?.page ?? null, from: act ?? null } : out(act);
+  if (!policy.on) return act;
+  /* A LIVE session is a resume to `#/run/job`, not to `#/run/page`: `state.startJob` writes
+     `inProgress.kind = 'page'` (the session IS a page, with a record beside it), so `page.nextAction`
+     honestly returns the flat page's href and a mid-session reload would land on the flat runner.
+     The label, the kind and every other field are the study layer's and stay as they are. */
+  if (act && act.kind === 'resume' && hasLiveJob(save)) return { ...act, href: '#/run/job' };
+  if (!policy.post) return act;
+  if (act && act.kind !== 'page') return act;
+  const job = jobAction(save, { ...opts, policy, label: act?.label });
+  /* `page` is the SAME object `page.nextAction` composed — not a copy, not a re-compose: the game
+     never chooses, adds, removes or reorders a question. */
+  return job ? { ...job, page: act?.page ?? null, from: act ?? null } : act;
 }
 
-/**
- * jobBoundary(save, opts) → what must happen at the next TARGET BOUNDARY of a live job.
- * Pure policy; the caller applies it with `job/state.js` (`quietClose()` / `commitFire()`), which is
- * where the arithmetic lives. Both close AT FULL VALUE — nothing is ever lost at a boundary.
- * @param {object} save
- * @param {{now?: number, due?: boolean|null}} [opts]  `due` overrides the bound-COMMIT test
- *        (pass `state.commitDue(save, now)`; the local default is pinned equal to it by the suite)
- * @returns {{close, kind: null|'commit'|'quiet22', full, bonusRate, line, keepGoing, stakes}}
- */
-export function jobBoundary(save, opts = {}) {
-  const now = opts.now ?? Date.now();
-  const due = opts.due != null ? !!opts.due : commitIsDue(save, now);
-  if (due) {
-    return {
-      close: true, kind: 'commit', full: true, bonusRate: COMMIT_BONUS,
-      line: null, keepGoing: null, stakes: false,
-    };
-  }
-  if (isQuietNow(now)) {
-    return {
-      close: true, kind: 'quiet22', full: true, bonusRate: 0,
-      line: COPY.quietBanked(), keepGoing: COPY.keepGoing(), stakes: false, review: COPY.quietReview(),
-    };
-  }
-  return { close: false, kind: null, full: false, bonusRate: 0, line: null, keepGoing: null, stakes: true };
-}
-
-/** Is there a job LIVE on this save — a `inProgress.game` record with no terminal word yet? */
-export const hasLiveJob = (save) => !!save?.inProgress?.game && save.inProgress.game.outcome == null;
-
-/**
- * The local half of `job/state.js commitDue` — same rule, no import (this module must not drag the
- * job machine onto onboard.js's and night.js's static graph). The suite pins the two equal.
- */
-export function commitIsDue(save, now = Date.now()) {
-  const c = save?.game?.commit;
-  if (!c || c.bound !== true || !Number.isFinite(c.byMin) || c.byMin <= 0) return false;
-  if (!save?.inProgress?.game || save.inProgress.game.outcome != null) return false;
-  if (c.kind === 'walk') {
-    const started = Number(save?.inProgress?.startedAt) || Number(save.inProgress.game?.guard?.drawnAt) || 0;
-    return started > 0 && (now - started) >= c.byMin * 60000;
-  }
-  return minuteOfDay(now) >= c.byMin;
-}
-
-/* ---------------- the two mutators (call inside store.update()) ---------------- */
-
-/** Was the Night Before completed? `night.js` writes both marks; either one is proof. */
-export function nightBeforeDone(save) {
-  for (const r of save?.runs ?? []) if (String(r?.kind) === 'night' && r?.status === 'done') return true;
-  for (const d of Object.values(save?.daily ?? {})) if (d?.nightDone === true) return true;
-  return false;
-}
-
-/**
- * G5 — completing the Night Before pays the one-time **Clean Getaway** ledger stamp **and one
- * Backcheck**: the game paying the player to stop playing it. Idempotent, capped, and a no-op with
- * the layer off or the Night Before unfinished.
- *
- * The mint arithmetic is `job/state.js mintBackcheck`'s, and the suite pins the two equal; it is
- * re-stated here rather than imported so `plan.js` stays off the job machine's graph (see the header).
- * @param {object} save  mutated in place
- * @param {{today?: string, now?: number, mint?: function}} [opts]
- * @returns {{stamped: boolean, minted: number, held: number, why: string}}
- */
-export function payCleanGetaway(save, opts = {}) {
-  const now = opts.now ?? Date.now();
-  const today = opts.today ?? todayISO(new Date(now));
-  const held0 = Math.max(0, Math.trunc(Number(save?.game?.backchecks?.held) || 0));
-  if (!gameOn(save)) return { stamped: false, minted: 0, held: held0, why: 'layer-off' };
-  if (!save?.player?.records || !save?.game?.backchecks) return { stamped: false, minted: 0, held: held0, why: 'no-save-keys' };
-  if (save.player.records.cleanGetaway === true) return { stamped: false, minted: 0, held: held0, why: 'already-stamped' };
-  if (!nightBeforeDone(save)) return { stamped: false, minted: 0, held: held0, why: 'night-unfinished' };
-  save.player.records.cleanGetaway = true;
-  if (typeof opts.mint === 'function') {
-    /* `night`, not `vault`: this is the Night Before's stamp, and `state.mintBackcheck` accepts both
-       as free reasons since notes/J11.md §6 was taken. The fallback below stays because `plan.js`
-       must not import `job/state.js` (G10 #21) — `opts.mint` is how the real one gets in. */
-    const r = opts.mint(save, { day: today, reason: 'night' });
-    return { stamped: true, minted: r?.minted ?? 0, held: r?.held ?? held0, why: 'stamped' };
-  }
-  if (save.game.backchecks.mintedDay === today) return { stamped: true, minted: 0, held: held0, why: 'already-today' };
-  const held = Math.min(BACKCHECK.max, held0 + BACKCHECK.mintPerDay);
-  save.game.backchecks.held = held;
-  save.game.backchecks.mintedDay = today;
-  return { stamped: true, minted: held - held0, held, why: held > held0 ? 'stamped' : 'at-cap' };
-}
 
 /* ---------------- the strip (the only DOM in this file) ---------------- */
 function el(tag, cls, text) {
@@ -791,7 +558,11 @@ function el(tag, cls, text) {
 export function fillPlanStrip(wrap, save, opts = {}) {
   if (!wrap || typeof document === 'undefined') return wrap;
   let plan;
-  try { plan = opts.plan ?? planFor(save, opts); } catch (e) { console.error('plan', e); return wrap; }
+  // The route this strip is being drawn on, so a pill that points at it is drawn as text, not a link
+  // (`hereNow`). Derived here rather than passed in: Home's one call site is pinned by three suites,
+  // and the strip has exactly one thing to ask the browser.
+  const here = opts.here !== undefined ? opts.here : hereNow();
+  try { plan = opts.plan ?? planFor(save, { ...opts, here }); } catch (e) { console.error('plan', e); return wrap; }
   wrap.dataset.mode = plan.mode;
   wrap.dataset.warn = String(plan.warn);
   wrap.hidden = !plan.strip.visible && plan.mode === 'nodate';   // S7: no date → the strip is hidden
@@ -816,13 +587,19 @@ export function fillPlanStrip(wrap, save, opts = {}) {
     li.dataset.kind = p.kind === 'page' ? 'page' : p.kind === 'gap' ? 'gap' : 'fixed';
     if (p.state === 'today') li.setAttribute('aria-current', 'date');
     const a = document.createElement(p.kind === 'gap' ? 'span' : 'a');
-    if (p.kind !== 'gap') a.href = p.href;
+    // A pill whose destination is THIS screen gets no href: an <a> without one is not a link, is not
+    // focusable and is not clickable, so `app.js`'s global same-route handler never sees it and the
+    // screen is never re-mounted under a student who has scrolled. The element stays an <a> so the
+    // strip's CSS (`.plan-pill a`) is untouched; the description moves to the <li>, which is a
+    // listitem and announces an aria-label (an href-less <a> is generic and may not).
+    if (p.kind !== 'gap' && !p.self) a.href = p.href;
     a.title = p.title;
     const day = el('span', 'pill-day', p.label);
     if (p.boss) { const b = el('span', 'pill-boss', '♛'); b.title = `Boss: ${p.boss.name}`; day.append(' ', b); }
     const sub = el('span', 'pill-sub mono', p.sub);
     a.append(day, sub);
-    a.setAttribute('aria-label', p.title);
+    if (p.self && p.kind !== 'gap') { li.dataset.self = 'true'; li.setAttribute('aria-label', p.title); }
+    else a.setAttribute('aria-label', p.title);
     li.append(a);
     list.append(li);
   }

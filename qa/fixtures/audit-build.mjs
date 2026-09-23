@@ -73,14 +73,33 @@ export function freshen(obj, today = todayISO()) {
 /* ------------------------------------------------------------------ small helpers */
 
 const stamp = (save, today) => { const o = pack(save); o.auditAnchor = today; return o; };
-const midweekSave = () => unpack(JSON.parse(readFileSync(MIDWEEK, 'utf8')));
 
-/** The mid-week save, moved so its own "today" is `today` (it was built anchored on some other day). */
+/** midweek.json as written, with the stamp taken off — it is a marker for `freshen`, not save state. */
+function midweekRaw() {
+  const o = JSON.parse(readFileSync(MIDWEEK, 'utf8'));
+  delete o.auditAnchor;
+  return o;
+}
+const midweekSave = () => unpack(midweekRaw());
+
+/**
+ * The mid-week save, moved so its own "today" is `today`.
+ *
+ * THE STAMP IS THE RULE NOW, and there is only one. midweek.json used to carry no `auditAnchor`, so
+ * `freshen()` — which every audit state loads it through — was a NO-OP on it and its `testDate`
+ * stayed frozen on the day it was built. On 2026-09-22 that day arrived: `modeFor` read **post**
+ * ("the test is done") and `qFor` composed a **40-item** page against the 10 the fixture's name
+ * promises, on every state built from it — the five job states and six run states included. This
+ * builder's own `testDate + 6` rule was the only thing keeping ITS fixtures honest, and it could not
+ * reach the states that read the file directly. The stamp is `testDate − 6`, so the two rules agree
+ * exactly on every day; the `testDate` fallback stays for a hand-edited file that loses the stamp.
+ */
 function midweekBase(today) {
-  const raw = JSON.parse(readFileSync(MIDWEEK, 'utf8'));
+  const raw = midweekRaw();
+  const anchor = anchorOf(JSON.parse(readFileSync(MIDWEEK, 'utf8')));
   const anchorTest = raw?.settings?.testDate;
-  // midweek.json is built with the test 6 days out; re-anchor on that promise, not on a stamp it lacks.
-  const days = anchorTest && ISO_RE.test(anchorTest) ? dayDelta(anchorTest, addDays(today, 6)) : 0;
+  const days = anchor ? dayDelta(anchor, today)
+    : anchorTest && ISO_RE.test(anchorTest) ? dayDelta(anchorTest, addDays(today, 6)) : 0;
   return unpack(reanchor(raw, days));
 }
 

@@ -77,8 +77,25 @@ const vp = `${W}x${H}${DARK ? '-dark' : ''}`;
 if (flag('kb')) {
   const { ctx, page, errors } = await newPage(375, 667);
   await page.evaluate(j => localStorage.setItem('u1a.save', j), state0);
-  const kbItem = opt('kbitem', null);   // --kbitem 11 → Today's Page item 11 (the systems Variant, two number boxes)
-  if (kbItem) {
+  /* --kbitem 11 → Today's Page item 11; --kbitem auto → THE FIRST ITEM OF TODAY'S PAGE THAT TYPES.
+     A PINNED ORDINAL IS A PROMISE ABOUT THE COMPOSER, AND THE COMPOSER IS NOT MAKING IT. `13` was an
+     item with a number box when this was written and is an MC/pairs widget now (the cut deleted
+     `gen/asn-reason.js`, which moved every ordinal after it) — so the measurement stopped having a
+     subject and said so, behind an env gate nobody sets. `auto` asks the page instead of telling it:
+     the same keyboard, the same assertion, on whichever item can raise one. It fails only if NO item
+     on Today's Page types, which is a fact about the app and not about this file. */
+  let kbItem = opt('kbitem', null);
+  if (kbItem === 'auto') {
+    await page.goto(base + '#/run/page', { waitUntil: 'networkidle' }); await ready(page);
+    const n = await page.evaluate(() => (JSON.parse(localStorage.getItem('u1a.save')).inProgress?.queue || []).length);
+    kbItem = null;
+    for (let k = 0; k < n; k++) {
+      await page.evaluate((i) => { const s = JSON.parse(localStorage.getItem('u1a.save')); s.inProgress.idx = i; localStorage.setItem('u1a.save', JSON.stringify(s)); }, k);
+      await page.goto(base + 'version.js'); await page.goto(base + '#/run/page', { waitUntil: 'networkidle' }); await ready(page);
+      if (await page.$('.card-parts input:not([disabled])')) { kbItem = String(k + 1); break; }
+    }
+    console.log(`keyboard-open: --kbitem auto picked page item ${kbItem ?? 'NONE'} of ${n}`);
+  } else if (kbItem) {
     await page.goto(base + '#/run/page', { waitUntil: 'networkidle' }); await ready(page);
     await page.evaluate((k) => { const s = JSON.parse(localStorage.getItem('u1a.save')); s.inProgress.idx = k; localStorage.setItem('u1a.save', JSON.stringify(s)); }, +kbItem - 1);
     await page.goto(base + 'version.js'); await page.goto(base + '#/run/page', { waitUntil: 'networkidle' }); await ready(page);

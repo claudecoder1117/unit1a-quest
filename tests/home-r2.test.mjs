@@ -147,7 +147,12 @@ test('home r2 / cold boot: Home paints without page.js, plan.js, the grader or t
     assert.ok(!/from '\.\.\/page\.js'/.test(home), 'no static page.js import');
     assert.ok(!/from '\.\.\/plan\.js'/.test(home), 'no static plan.js import');
     assert.match(home, /import\('\.\.\/page\.js'\), import\('\.\.\/plan\.js'\)/);
-    assert.match(home, /const planOpts = \(save, D\) => \{ const \{ q, \.\.\.rest \} = composeOpts\(save, \{ D \}\); return rest; \};/, 'tests/integration-w4 still holds');
+    // THE CUT (notes/cut-home.md): the drop-q line itself moved into `plan.pageOpts` — one
+    // implementation for the three routes that start Today's Page, instead of a copy per caller.
+    // The W4 contract is unchanged and is held behaviourally by tests/cut-home.test.mjs (pageOpts
+    // has no `q`) and tests/integration-w4.test.mjs (an explicit q enlarges the page).
+    assert.match(home, /const planOpts = \(save, D\) => pageOpts\(save, \{ D \}\);/, 'tests/integration-w4 still holds');
+    assert.ok(!/composeOpts/.test(home), 'and home.js keeps no second copy of it');
     assert.match(home, /function renderLight\(/, 'a first paint with a CTA placeholder');
     assert.match(home, /dataset: \{ kind: 'loading' \}/);
     assert.match(home, /if \(typeof window !== 'undefined'\) heavy\(\);/);

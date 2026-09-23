@@ -1,4 +1,11 @@
-// tests/job-ledger.test.mjs — J5c: THE LOAD-BEARING TEST OF THE WHOLE GAME LAYER.
+// tests/job-ledger.test.mjs — THE LOAD-BEARING TEST OF THE WHOLE GAME LAYER (THE LAW OF TWO LEDGERS).
+//
+// REWRITTEN BY THE DEMOLITION (notes/DEMOLISH.md) onto the cut design's three verbs — call → answer →
+// bank — with every byte-identity assertion kept verbatim. The old arm drove `beginTargets`,
+// `lockCall`, `applyTarget`, `bag`, `push`, `brief`, `crack`, `walk` and `callIt`; seven of those
+// nine mechanics are deleted by designs/CUT-BRIEF.md. What the file PROVES is unchanged, and that is
+// the point of keeping it: the same answers inside the game and through `#/run/page` leave
+// byte-identical study state.
 //
 // COMPOSED-GAME G3.7 proof 11 and G9 #8: *"the same answer sequence inside a job and through
 // `#/run/page` produces byte-identical `cards`, `skills`, `xp`, `errors`, `counters`,
@@ -30,8 +37,8 @@ import assert from 'node:assert/strict';
 
 import * as state from '../site/js/job/state.js';
 import {
-  startJob, beginTargets, lockCall, applyTarget, bag, push, brief, crack, walk, callIt,
-  queueOf, idxOf, targetsLeft, answered, guardSave, LedgerError, LEDGER_A_KEYS,
+  startJob, call as lockCall, answer as answerTarget, bank, endJob,
+  queueOf, targetsLeft, answered, guardSave, LedgerError, LEDGER_A_KEYS,
 } from '../site/js/job/state.js';
 import { markItem, requeueReview, finishPage, resumePage, composePage } from '../site/js/page.js';
 import { xpFor, nextCombo, levelFor } from '../site/js/xp.js';
@@ -46,7 +53,7 @@ import { check as trophyCheck, evaluate as trophyEvaluate } from '../site/js/tro
 import { trophyById } from '../site/data/trophies.js';
 import { fresh, markStreakDay } from '../site/js/store.js';
 import {
-  pushRun, makeRunRecord, captureJobBefore, jobSummaryContext, pageResults, composedCountOf,
+  pushRun, makeRunRecord, captureJobBefore, commitJobRun, pageResults, composedCountOf,
 } from '../site/js/screens/run.js';
 import { rngFrom } from '../site/js/rng.js';
 import { todayISO, addDays } from '../site/js/days.js';
@@ -244,65 +251,54 @@ const scriptFor = (seed) => {
  * ARM A — the flat path. `run.js:record()` verbatim: write Ledger A, then `requeueReview`, then
  * `markItem`; `run.js:finish()` at the end: `finishPage`.
  */
-function runFlat(save, queue, script, { now = NOW, today = TODAY, hold = null } = {}) {
+function runFlat(save, queue, script, { now = NOW, today = TODAY, hold = null, stopAt = Infinity } = {}) {
   save.inProgress = {
     kind: 'page', seed: 1, seedTag: null, queue: clone(queue), idx: 0, hearts: null, xp: 0,
     startedAt: now, day: today, dayIndex: 0, pageIndex: 0, meta: null,
   };
-  let t = now;
   let combo = 0;
   let n = 0;
   const answers = [];
   for (let i = 0; i < 400; i++) {
+    if (n >= stopAt) break;
     const ip = resumePage(save);
     if (!ip || ip.idx >= ip.queue.length) break;
     const idx = ip.idx;
     const it = ip.queue[idx];
     const raw = script(++n);
-    t += 40000;
     const result = writeLedgerA(save, it, raw, { now: gradeAt(n), today, combo });
     combo = nextCombo(combo, result);
     const r = { ...result, n: it.n, role: it.role, skill: it.skill ?? (it.skills || [])[0] ?? null, tier: it.tier };
     if (!result.cleared && (it.isReview || it.isRematch)) requeueReview(save, { idx, result: r });
     markItem(save, r, { idx });
-    /* `screens/index.js:72` installs `trophies.install({bus,getState,update})`, which awards every
-       satisfied trophy on bus 'graded' and on 'state' — i.e. after EVERY grade, on both routes.
-       Mirrored here (and in `runInJob`) at the same pinned clock, so `save.trophies` is a key the
-       two arms actually write instead of one they both leave untouched. */
+    /* `screens/index.js` installs `trophies.install({bus,getState,update})`, which awards every
+       satisfied trophy after EVERY grade, on both routes. Mirrored here (and in `runInJob`) at the
+       same pinned clock, so `save.trophies` is a key the two arms actually write. */
     trophyEvaluate(save, { now: gradeAt(n) });
     answers.push({ id: it.id, raw });
   }
   /* The page's FINAL queue — requeued Rematches and all — held before `finishPage` nulls
-     `inProgress`, because `run.js:finish()` records the results off the queue it just answered
-     (`record()` stores each one on the item; `pageResults` reads them back). */
+     `inProgress`, because `run.js:finish()` records the results off the queue it just answered. */
   if (hold && save.inProgress) hold.queue = save.inProgress.queue.slice();
-  finishPage(save);
+  if (n < stopAt) finishPage(save);
   return answers;
 }
 
 /**
  * ARM A′ — THE WHOLE flat path, including the three writes `run.js:finish()` makes AFTER
- * `finishPage` (ticket fix:tests r1, round-1 ledger-invariance finding item 1).
+ * `finishPage`:
  *
- *     site/js/screens/run.js:975-993
+ *     site/js/screens/run.js finish()
  *       if (kind === 'page') finishPage(s);
  *       pushRun(s, makeRunRecord({ … }));
  *       checkDailyGoal(s, todayISO(new Date(submittedAt)));
  *       logForecast(s, { today: todayISO(new Date(submittedAt)) });
- *
- * `runFlat` above stops at the first of those four, which is why `runs` and `forecastLog` used to
- * compare [] to [] — the exact shape of vacuity the round warns about. This arm runs all four, and
- * the test that uses it measures the gap rather than hiding it.
  */
 function runFlatScreen(save, queue, script, { now = NOW, today = TODAY } = {}) {
   const startedAt = now;
   const hold = {};
   const answers = runFlat(save, queue, script, { now, today, hold });
   const submittedAt = now + 60 * 60000;
-  /* ROUND 3: the results are `pageResults(queue)`, which is what `record()` stored on each item and
-     what `commitJobRun` reads on the job side. They used to be rebuilt by hand here from `answers`
-     — no `skill`, no `tier`, no `xp` — so the two arms' run records could not be compared at all
-     (`xp` read 0 against the job's 178). The record is only as honest as the results it is given. */
   pushRun(save, makeRunRecord({
     kind: 'page', id: null, seed: 1, seedTag: null, startedAt, submittedAt,
     results: pageResults(hold.queue ?? []),
@@ -316,88 +312,63 @@ function runFlatScreen(save, queue, script, { now = NOW, today = TODAY } = {}) {
 /**
  * A run record MINUS the identity of the sitting that produced it. The two arms are genuinely two
  * different pages closed at two different instants — the flat page gets the harness's own
- * `seed: 1`, the job gets `composePage`'s real seed, and each stamps its own `submittedAt` — so
+ * `seed: 1`, the game gets `composePage`'s real seed, and each stamps its own `submittedAt` — so
  * those three are dropped and EVERYTHING the record says about the study is compared exactly:
  * `kind`, `status`, `startedAt`, `limitMs`, `tabAway`, `xp`, `acc`, `flawless` and every item.
  */
 const runShape = (rec) => {
   if (!rec) return null;
-  /* VERIFY r1 (ledger-invariance), corrected by the `run` lane — see notes/repair-run.md.
-     `drafted` / `composed` / `partial` are the page's SIZE PROVENANCE, and they are dropped for the
-     same reason `seed` is: they are the identity of the PAGE, not of the study recorded on it. They
-     differ here because the two arms are not the same page — this harness hands the flat arm the
-     JOB's drafted queue, while `composed` is `composePage`'s own count for the page the job drafted
-     OUT of (7-10 of 16-24 items, mean 45 %). That gap is the finding; the record is now allowed to
-     state it, and `THE RUN RECORD` below asserts every one of the three against `composePage`
-     rather than waiving them. Everything the record says about the STUDY — `kind`, `status`,
-     `startedAt`, `limitMs`, `tabAway`, `xp`, `acc`, `flawless` and every item — is still compared
-     exactly, and nothing was removed from that list. */
-  const { seed, seedTag, submittedAt, drafted, composed, partial, ...rest } = rec;
+  const { seed, seedTag, submittedAt, ...rest } = rec;
   return rest;
 };
 
 /**
- * ARM B — the job. The SAME `writeLedgerA`, at the same beat, with `state.js` wrapped around it —
- * AND the screen terminal every real job goes through.
- *
- * ROUND 3 (ledger-invariance finding: "THE GAP and THE TROPHY GAP assert the pre-fix behaviour and
- * pass only because the harness skips the screen terminal"). This arm used to stop at `state.js`,
- * so `runs`, `forecastLog` and `trophies` compared [] to [] and the two GAP arms below pinned the
- * ABSENCE of a run record that `screens/job.js` had meanwhile started writing. `screens/job.js:1421`
- * calls `jobSummaryContext(getState(), d, { queue: jobQueue, before: jobBefore })` unconditionally
- * at the terminal — finish, the last push, a bag on the last beat, a walk at the getaway — and that
- * is where `commitJobRun` files the page's `runs[]` record, `checkDailyGoal` and `logForecast`.
- * Mirroring it here is the same standing-in-for-a-DOM-screen this file already does for `card.js`.
+ * ARM B — the game. The SAME `writeLedgerA`, at the same beat, with `state.js` wrapped around it —
+ * AND the screen terminal every real session goes through (`screens/job.js finish()` →
+ * `run.js commitJobRun`), which is where `runs[]`, the forecast point and the daily goal are filed.
  *
  * `terminal: false` plays the state machine ALONE, for the arms that are about `js/job/*` and must
- * not have a screen write in them (the guard proof's all-miss job).
+ * not have a screen write in them.
  */
 function runInJob(save, script, {
-  now = NOW, today = TODAY, bagAt = () => false, callOf = () => 70, terminal = true,
+  now = NOW, today = TODAY, bankAt = () => false, callOf = null, terminal = true, stopAt = Infinity,
 } = {}) {
   let t = now;
   startJob(save, { today, now: t });
-  /* The screen's two snapshots, taken where `screens/job.js` takes them: right after the draft is
-     on the board, off the RAW save (`captureJobBefore` reads Ledger A, so `js/job/*` cannot). */
-  let jobQueue = queueOf(save).slice();            // SHALLOW, exactly as screens/job.js:424 takes it:
-  const jobBefore = captureJobBefore(state.unguard(save), jobQueue);  // markItem writes each item's result
-  beginTargets(save, { now: (t += 6000) });
+  /* The screen's snapshot, taken where `screens/job.js` takes it: right after the session starts,
+     off the RAW save (`captureJobBefore` reads Ledger A, so `js/job/*` cannot take it). */
+  let jobQueue = queueOf(save).slice();            // SHALLOW, exactly as screens/job.js holds it:
+  const jobBefore = captureJobBefore(state.unguard(save), jobQueue);   // markItem writes each item's result
   let combo = 0;
   let n = 0;
-  let debrief = null;
   const answers = [];
   for (let i = 0; i < 400; i++) {
-    const g = state.stateOf(save);
-    if (!g || g.outcome != null) break;
-    /* re-read while the job is live, exactly as `render()` does (screens/job.js:430): a missed
-       review requeues a Rematch onto the page, and the record must carry it */
+    if (!state.stateOf(save) || targetsLeft(save) === 0 || n >= stopAt) break;
+    /* re-read while the session is live, exactly as `render()` does: a missed review requeues a
+       Rematch onto the page, and the record must carry it */
     if (queueOf(save).length) jobQueue = queueOf(save).slice();
-    if (g.phase === 'envelope') { lockCall(save, callOf(answered(save) + 1), { now: (t += 5000) }); continue; }
-    if (g.phase === 'answer') {
-      const it = state.currentItem(save);
-      const raw = script(++n);
-      t += 40000;
-      /* Ledger A is written by the grade path, BEFORE the game is told anything */
-      const result = writeLedgerA(state.unguard(save), it, raw, { now: gradeAt(n), today, combo });
-      combo = nextCombo(combo, result);
-      applyTarget(save, result, { now: t, cards: cardById });
-      trophyEvaluate(state.unguard(save), { now: gradeAt(n) });   // the same installer, same beat
-      answers.push({ id: it.id, raw });
-      continue;
-    }
-    if (g.phase === 'payout' || g.phase === 'bagpush') {
-      const r = bagAt(answered(save)) ? bag(save, { now: (t += 9000) }) : push(save, { now: (t += 9000) });
-      if (r && r.debrief) debrief = r.debrief;      // the last beat ends the job and hands it back
-      continue;
-    }
-    if (g.phase === 'brief') { brief(save, {}, { now: (t += 20000) }); continue; }
-    if (g.phase === 'getaway') { crack(save, { now: (t += 25000) }); continue; }
-    break;
+    const offered = state.callsFor(save);
+    const id = typeof callOf === 'function' ? callOf(answered(save) + 1, offered) : offered[offered.length - 1];
+    lockCall(save, id, { now: (t += 5000), ms: 5000 });
+    const it = state.currentItem(save);
+    const raw = script(++n);
+    t += 40000;
+    /* Ledger A is written by the grade path, BEFORE the game is told anything */
+    const result = writeLedgerA(state.unguard(save), it, raw, { now: gradeAt(n), today, combo });
+    combo = nextCombo(combo, result);
+    answerTarget(save, result, { now: t, ms: 40000 });
+    trophyEvaluate(state.unguard(save), { now: gradeAt(n) });   // the same installer, same beat
+    answers.push({ id: it.id, raw });
+    if (bankAt(answered(save))) bank(save, { now: (t += 9000), ms: 9000 });
   }
-  /* THE TERMINAL — `screens/job.js:1421`, the beat this harness used to skip. */
-  if (terminal && debrief) {
-    jobSummaryContext(save, debrief, { queue: jobQueue, before: jobBefore, now: t });
-    trophyEvaluate(state.unguard(save), { now: t });
+  if (n < stopAt) {
+    endJob(save, { now: (t += 1000), ms: 1000 });
+    /* THE TERMINAL — `screens/job.js finish()`, the one beat that writes Ledger A, and it writes it
+       through the SCREEN, never through `js/job/*`. */
+    if (terminal) {
+      commitJobRun(state.unguard(save), { queue: jobQueue, before: jobBefore, now: t });
+      trophyEvaluate(state.unguard(save), { now: t });
+    }
   }
   return answers;
 }
@@ -405,28 +376,28 @@ function runInJob(save, script, {
 const ledgerOf = (save, keys = COMPARED) => Object.fromEntries(keys.map((k) => [k, clone(save[k])]));
 
 /* ========================================================================================== */
-describe('J5c — byte-identical Ledger A: in a job, and through #/run/page', () => {
+describe('byte-identical Ledger A: in the game, and through #/run/page', () => {
   for (let i = 0; i < 6; i++) {
     test(`corpus save ${i}: cards · skills · xp · errors · counters · forecastLog all agree`, () => {
       const base = CORPUS[i];
       const script = scriptFor(i);
 
-      /* build the job first, so the flat arm can answer the SAME queue in the SAME order */
+      /* build the session first, so the flat arm can answer the SAME queue in the SAME order */
       const job = clone(base);
       const flat = clone(base);
-      const bagAt = (n) => n % 3 === 0;
+      const bankAt = (n) => n % 3 === 0;
 
       const probe = clone(base);
       startJob(probe, { today: TODAY, now: NOW });
       const queue = clone(queueOf(probe));
-      assert.ok(queue.length >= 6, `corpus ${i} drafted only ${queue.length} targets`);
+      assert.ok(queue.length >= 6, `corpus ${i} composed only ${queue.length} questions`);
 
       const flatAnswers = runFlatScreen(flat, queue, scriptFor(i));
-      const jobAnswers = runInJob(job, script, { bagAt });
+      const jobAnswers = runInJob(job, script, { bankAt });
 
       assert.deepEqual(jobAnswers.map((a) => a.id), flatAnswers.map((a) => a.id), 'the two arms answered different items');
       for (const k of COMPARED) {
-        assert.deepEqual(job[k], flat[k], `${k} differs between the job and the flat page`);
+        assert.deepEqual(job[k], flat[k], `${k} differs between the game and the flat page`);
       }
       assert.equal(JSON.stringify(ledgerOf(job)), JSON.stringify(ledgerOf(flat)), 'Ledger A is not byte-identical');
     });
@@ -440,7 +411,7 @@ describe('J5c — byte-identical Ledger A: in a job, and through #/run/page', ()
     const job = clone(base);
     const flat = clone(base);
     runFlatScreen(flat, queue, scriptFor(6));
-    runInJob(job, scriptFor(6), { bagAt: (n) => n % 2 === 0 });
+    runInJob(job, scriptFor(6), { bankAt: (n) => n % 2 === 0 });
     for (const k of ALL_LEDGER_A) {
       if (k === 'runs') continue;                  // compared through `runShape` — see THE RUN RECORD
       assert.deepEqual(job[k], flat[k], `${k} differs`);
@@ -453,7 +424,7 @@ describe('J5c — byte-identical Ledger A: in a job, and through #/run/page', ()
     const base = CORPUS[0];
     const before = ledgerOf(base);
     const job = clone(base);
-    runInJob(job, scriptFor(0), { bagAt: () => false });
+    runInJob(job, scriptFor(0), { bankAt: () => false });
     assert.notDeepEqual(ledgerOf(job), before, 'nothing was studied');
     assert.ok(job.xp > num(base.xp, 0), 'no XP was earned');
     assert.ok(job.counters.clears > 0);
@@ -468,107 +439,35 @@ describe('J5c — byte-identical Ledger A: in a job, and through #/run/page', ()
     const job = clone(base);
     const flat = clone(base);
     runFlatScreen(flat, queue, scriptFor(3));
-    runInJob(job, scriptFor(3), { bagAt: (n) => n % 3 === 0 });
+    runInJob(job, scriptFor(3), { bankAt: (n) => n % 3 === 0 });
     assert.deepEqual(readiness(job), readiness(flat));
   });
 
-  test('a job WALKED halfway leaves exactly the Ledger A of the same half-page', () => {
+  test('a session ABANDONED halfway leaves exactly the Ledger A of the same half-page', () => {
     const base = CORPUS[4];
     const probe = clone(base);
     startJob(probe, { today: TODAY, now: NOW });
     const queue = clone(queueOf(probe));
-    const half = Math.floor(queue.length / 2);
+    const half = Math.max(1, Math.floor(queue.length / 2));
 
     const job = clone(base);
-    const script = scriptFor(4);
-    let t = NOW, combo = 0, n = 0;
-    startJob(job, { today: TODAY, now: t });
-    beginTargets(job, { now: (t += 6000) });
-    while (answered(job) < half) {
-      const g = state.stateOf(job);
-      if (g.phase === 'envelope') { lockCall(job, 70, { now: (t += 5000) }); continue; }
-      if (g.phase === 'answer') {
-        const it = state.currentItem(job);
-        t += 40000;
-        const result = writeLedgerA(state.unguard(job), it, script(++n), { now: gradeAt(n), today: TODAY, combo });
-        combo = nextCombo(combo, result);
-        applyTarget(job, result, { now: t, cards: cardById });
-        continue;
-      }
-      if (g.phase === 'payout' || g.phase === 'bagpush') { push(job, { now: (t += 9000) }); continue; }
-      if (g.phase === 'brief') { brief(job, {}, { now: (t += 20000) }); continue; }
-      break;
-    }
-    walk(job, { now: t + 1000 });
+    runInJob(job, scriptFor(4), { stopAt: half });          // walked away mid-session: no endJob
 
-    /* the same half, flat */
     const flat = clone(base);
-    flat.inProgress = {
-      kind: 'page', seed: 1, seedTag: null, queue: clone(queue), idx: 0, hearts: null, xp: 0,
-      startedAt: NOW, day: TODAY, dayIndex: 0, pageIndex: 0, meta: null,
-    };
-    const script2 = scriptFor(4);
-    let t2 = NOW + 6000, combo2 = 0, m = 0;
-    while (m < half) {
-      const ip = resumePage(flat);
-      const idx = ip.idx;
-      const it = ip.queue[idx];
-      t2 += 45000;
-      const result = writeLedgerA(flat, it, script2(++m), { now: gradeAt(m), today: TODAY, combo: combo2 });
-      combo2 = nextCombo(combo2, result);
-      const r = { ...result, n: it.n, role: it.role, skill: it.skill ?? (it.skills || [])[0] ?? null, tier: it.tier };
-      if (!result.cleared && (it.isReview || it.isRematch)) requeueReview(flat, { idx, result: r });
-      markItem(flat, r, { idx });
-    }
-    /* run.js does NOT call finishPage on a mid-page exit, and neither does a job WALK */
-    for (const k of COMPARED) assert.deepEqual(job[k], flat[k], `${k} differs after a walk`);
+    runFlat(flat, queue, scriptFor(4), { stopAt: half });   // and run.js calls no finishPage either
+
+    for (const k of COMPARED) assert.deepEqual(job[k], flat[k], `${k} differs after an abandoned session`);
     assert.equal(job.counters.pages ?? 0, flat.counters.pages ?? 0);
-    assert.ok(job.inProgress, 'the job took the rest of Today\'s Page away');
+    assert.ok(job.inProgress, 'the game took the rest of Today\'s Page away');
     assert.equal(job.inProgress.idx, flat.inProgress.idx, 'the pointer differs');
-  });
-
-  test('a job CALLED (stakes off) still studies exactly what the flat page studies', () => {
-    const base = CORPUS[5];
-    const probe = clone(base);
-    startJob(probe, { today: TODAY, now: NOW });
-    const queue = clone(queueOf(probe));
-
-    const job = clone(base);
-    const script = scriptFor(5);
-    let t = NOW, combo = 0, n = 0;
-    startJob(job, { today: TODAY, now: t });
-    beginTargets(job, { now: (t += 6000) });
-    let called = false;
-    for (let i = 0; i < 400; i++) {
-      const g = state.stateOf(job);
-      if (!g || g.outcome != null) break;
-      if (!called && state.canCallIt(job)) { callIt(job, { now: (t += 1000) }); called = true; continue; }
-      if (g.phase === 'envelope') {
-        if (g.stakes) lockCall(job, 70, { now: (t += 5000) });
-        else state.beginAnswer(job, { now: (t += 1000) });
-        continue;
-      }
-      if (g.phase === 'answer') {
-        const it = state.currentItem(job);
-        t += 40000;
-        const result = writeLedgerA(state.unguard(job), it, script(++n), { now: gradeAt(n), today: TODAY, combo });
-        combo = nextCombo(combo, result);
-        applyTarget(job, result, { now: t, cards: cardById });
-        continue;
-      }
-      if (g.phase === 'payout' || g.phase === 'bagpush') { push(job, { now: (t += 9000) }); continue; }
-      if (g.phase === 'brief') { brief(job, {}, { now: (t += 20000) }); continue; }
-      if (g.phase === 'getaway') { crack(job, { now: (t += 25000) }); continue; }
-      break;
-    }
-    const flat = clone(base);
-    runFlat(flat, queue, scriptFor(5));
-    for (const k of COMPARED) assert.deepEqual(job[k], flat[k], `${k} differs after CALL IT`);
+    /* and the page is still there to be finished — on EITHER route (CUT-BRIEF: every unanswered
+       question stays due) */
+    assert.ok(job.inProgress.queue.length - job.inProgress.idx > 0, 'nothing is left to answer');
   });
 });
 
 /* ========================================================================================== */
-describe('J5c — and it is structural: Ledger A is not reachable from js/job/*', () => {
+describe('and it is structural: Ledger A is not reachable from js/job/*', () => {
   test('the save state.js runs against THROWS on every Ledger A write', () => {
     const save = clone(CORPUS[0]);
     const id = Object.keys(save.cards)[0];
@@ -581,16 +480,13 @@ describe('J5c — and it is structural: Ledger A is not reachable from js/job/*'
     assert.throws(() => { s.errors.push({}); }, LedgerError);
     assert.throws(() => { s.forecastLog.push({}); }, LedgerError);
     assert.throws(() => { s.cards[id].history.push({}); }, LedgerError);
-    /* ROUND 3 (ledger-invariance, finding 64). The proof names FIVE keys and the guard covered
-       four of them: `counters` is SHARED by construction (`finishPage` writes `counters.pages`),
-       so it used to be wide open — `s.counters.clears = 999` landed silently, and the suite never
-       probed it, which is why the gap was invisible from both sides. `counters` is now a NARROW
+    /* `counters` is SHARED by construction (`finishPage` writes `counters.pages`), so it is a NARROW
        proxy: `pages` — the single key `finishPage` writes — and nothing else. */
     assert.throws(() => { s.counters.clears = 999; }, LedgerError, 'counters is writable from js/job/*');
     assert.throws(() => { s.counters.mocks = 1; }, LedgerError);
     assert.throws(() => { delete s.counters.pages; }, LedgerError);
     assert.throws(() => { s.counters = { clears: 999 }; }, LedgerError, 'the whole counters object was replaceable');
-    /* …and `streak` / `jumps`, which G7 publishes as "unchanged" and which were in neither list */
+    /* …and `streak` / `jumps`, which are published as "unchanged" */
     assert.throws(() => { s.streak.count = 999; }, LedgerError, 'streak is writable from js/job/*');
     assert.throws(() => { s.streak = { count: 9, best: 9, lastDay: null, freezes: 0 }; }, LedgerError);
     assert.throws(() => { s.jumps.M1 = true; }, LedgerError, 'jumps is writable from js/job/*');
@@ -600,7 +496,7 @@ describe('J5c — and it is structural: Ledger A is not reachable from js/job/*'
 
   test('the ONE key `counters` lets through is `pages`, and finishPage still writes it', () => {
     // The narrow proxy is only honest if the write it exists for still works through it — the same
-    // `finishPage(s)` call `state.endJob` makes at `state.js:1856`, on the guarded save.
+    // `finishPage(s)` call `state.endJob` makes, on the guarded save.
     const save = clone(CORPUS[0]);
     const before = num(save.counters?.pages, 0);
     const s = guardSave(save);
@@ -624,38 +520,35 @@ describe('J5c — and it is structural: Ledger A is not reachable from js/job/*'
     assert.throws(() => { b.counters = {}; }, LedgerError);
   });
 
-  test('P(losing study progress) = 0: an all-miss job at the harshest call leaves Ledger A intact', () => {
+  test('P(losing study progress) = 0: an all-miss session at the dearest call leaves Ledger A intact', () => {
     const base = CORPUS[2];
     const job = clone(base);
     const before = ledgerOf(job, ALL_LEDGER_A);
     /* no grade path runs at all — the game alone drives every beat */
     let t = NOW;
     startJob(job, { today: TODAY, now: t });
-    beginTargets(job, { now: (t += 6000) });
     for (let i = 0; i < 400; i++) {
-      const g = state.stateOf(job);
-      if (!g || g.outcome != null) break;
-      if (g.phase === 'envelope') { lockCall(job, 85, { now: (t += 1000) }); continue; }
-      if (g.phase === 'answer') { applyTarget(job, MISS, { now: (t += 1000), cards: cardById }); continue; }
-      if (g.phase === 'payout' || g.phase === 'bagpush') { push(job, { now: (t += 1000) }); continue; }
-      if (g.phase === 'brief') { brief(job, {}, { now: (t += 1000) }); continue; }
-      if (g.phase === 'getaway') { crack(job, { now: (t += 1000) }); continue; }
-      break;
+      if (!state.stateOf(job) || targetsLeft(job) === 0) break;
+      const offered = state.callsFor(job);
+      lockCall(job, offered[offered.length - 1], { now: (t += 1000), ms: 1000 });
+      answerTarget(job, MISS, { now: (t += 1000), ms: 1000 });
     }
+    const over = endJob(job, { now: (t += 1000) });
     for (const k of ALL_LEDGER_A) {
       if (k === 'counters') continue;                      // finishPage's `pages` counter is the flat path's
       assert.deepEqual(job[k], before[k], `${k} was staked`);
     }
-    assert.equal(job.game.log.at(-1).bagged, 0, 'a wipeout paid something');
+    assert.equal(over.points, 0, 'a wipeout paid something');
+    assert.equal(job.game.today, 0, 'a wipeout banked points');
+    assert.equal(job.player.best, num(base.player?.best, 0), 'a wipeout moved the best day');
   });
 });
 
 /* ==========================================================================================
    THE VACUITY AUDIT, and the gap the honest flat path exposes
-   (ticket fix:tests r1 — round-1 ledger-invariance finding)
    ========================================================================================== */
 
-describe('J5c — the comparison is not vacuous, and where it still is, it says so', () => {
+describe('the comparison is not vacuous, and where it still is, it says so', () => {
   /** Did this key actually MOVE during the play? A key that never moves proves nothing. */
   function moved(base, after, key) {
     return JSON.stringify(base[key] ?? null) !== JSON.stringify(after[key] ?? null);
@@ -672,37 +565,29 @@ describe('J5c — the comparison is not vacuous, and where it still is, it says 
       startJob(probe, { today: TODAY, now: NOW });
       const queue = clone(queueOf(probe));
       const flat = clone(base);
-      runFlatScreen(flat, queue, scriptFor(i));   // r3: the WHOLE flat path, terminal included
+      runFlatScreen(flat, queue, scriptFor(i));   // the WHOLE flat path, terminal included
       for (const k of ALL_LEDGER_A) if (moved(base, flat, k)) exercised.add(k);
     }
     for (const k of ALL_LEDGER_A) if (!exercised.has(k)) empty.push(k);
-    // ROUND 3: all SIX of the keys G3.7 proof 11 names are now written by the arm that compares them
-    // — `forecastLog` because the flat arm runs the screen's own terminal, `runs` and `trophies` for
-    // the same reason. They are no longer waived.
     for (const k of ['cards', 'skills', 'xp', 'errors', 'counters', 'forecastLog', 'runs', 'trophies']) {
       assert.ok(exercised.has(k), `${k} is compared but never written — the assertion on it is vacuous`);
     }
-    // and the ones the arms genuinely cannot reach, NAMED rather than left to pass for free:
-    //   variants, frozen  — this corpus composes no Variant items, so the branches added to
-    //                       `writeLedgerA` are exercised directly in the next test instead.
-    //   streak            — ROUND 3 (finding 64): now in `LEDGER_A_KEYS`, so the guard refuses it
-    //                       structurally, but it only MOVES when the daily goal flips, which
-    //                       `scriptFor(i)` does not reach. The non-vacuous byte-identity comparison
-    //                       is in the next test, on the all-CLEAN arm where the goal is met.
-    //   jumps             — JUMP-HERE marks on old module ids: written by the placement screen,
-    //                       which neither arm runs. Compared so a future write cannot land here
-    //                       unnoticed; the guard is what actually holds it.
-    assert.deepEqual(empty.sort(), ['frozen', 'variants', 'streak', 'jumps'].sort(),
+    /* and the one the arms genuinely cannot reach, NAMED rather than left to pass for free:
+         jumps — JUMP-HERE marks on module ids: written by the placement screen, which neither arm
+                 runs. Compared so a future write cannot land here unnoticed; the guard is what
+                 actually holds it.
+       THE LIST SHRANK AT THE DEMOLITION (notes/DEMOLISH.md), and that is recorded here because the
+       assertion demands it: `variants`, `frozen` and `streak` used to be unreachable because the
+       board DRAFTED 3 of 5 contracts and the arms answered ~45 % of the page. The game now runs the
+       WHOLE composed page, so the corpus reaches Variant items (and their freeze/thaw) and the
+       daily goal, and all three are written by the play that compares them. */
+    assert.deepEqual(empty.sort(), ['jumps'],
       `these Ledger A keys are compared without ever being written: ${empty.join(', ')}. `
       + 'If the list has grown, the arm has stopped exercising something it used to; if it has shrunk, '
       + 'delete the name from this list so the shrinking is recorded.');
   });
 
   test('the variant, daily-goal and streak branches fire — they are not dead code in the writer', () => {
-    // `writeLedgerA`'s `if (isCard)` branches had no `else` until fix:tests r1, so `variants` and
-    // `frozen` were compared between two objects nothing ever touched, and `daily.goalMet` /
-    // `streak` were never reached. The corpus composes no Variant items (see the list above), so the
-    // two Variant branches are driven DIRECTLY here — a branch nothing calls is not a branch.
     const sv = clone(CORPUS[1]);
     const variantItem = {
       kind: 'variant', id: 'T-cs-lin-01#deadbeef', template: 'T-cs-lin-01', forCard: Object.keys(sv.cards)[0],
@@ -719,7 +604,7 @@ describe('J5c — the comparison is not vacuous, and where it still is, it says 
     const beforeFrozen = Object.keys(sv2.frozen ?? {}).length;
     writeLedgerA(sv2, variantItem, MISS, { now: NOW, today: TODAY, combo: 0 });
     assert.ok(Object.keys(sv2.frozen ?? {}).length > beforeFrozen,
-      'a missed Variant was not frozen — card.js:1005 is not being mirrored');
+      'a missed Variant was not frozen — card.js is not being mirrored');
 
     // a cleared Variant THAWS the frozen copy, which is the other half of the pair
     writeLedgerA(sv2, variantItem, CLEAN, { now: NOW + 60000, today: TODAY, combo: 0 });
@@ -736,36 +621,20 @@ describe('J5c — the comparison is not vacuous, and where it still is, it says 
       runFlat(flat, queue, () => CLEAN);           // always clean: 400 XP is reachable
       if (flat.daily?.[TODAY]?.goalMet) goalMet++;
       if (flat.streak?.lastDay === TODAY && base.streak?.lastDay !== TODAY) streakDays++;
-      /* ROUND 3 (ledger-invariance, finding 64). `streak` is in `LEDGER_A_KEYS` now, so the guard
-         refuses it — but a guard is only half the claim, and the byte-identity half is vacuous on
-         the audit corpus below (`scriptFor(i)` rarely reaches 400 XP). THIS is the arm where the
-         streak actually moves, so the two routes are compared here, where it is not vacuous. */
       if (flat.streak?.lastDay !== TODAY) continue;
       const job = clone(base);
       runInJob(job, () => CLEAN);
       assert.deepEqual(job.streak, flat.streak,
-        `save ${i}: the job and the flat page disagree about the STREAK — G7 publishes it unchanged`);
-      assert.equal(job.streak.lastDay, TODAY, `save ${i}: the job route did not stamp the streak day`);
+        `save ${i}: the game and the flat page disagree about the STREAK — it is published unchanged`);
+      assert.equal(job.streak.lastDay, TODAY, `save ${i}: the game route did not stamp the streak day`);
       compared++;
     }
     assert.ok(goalMet > 0, 'no corpus save reached the daily goal — `daily.goalMet` is still vacuous');
-    assert.ok(streakDays > 0, 'the goal was met but `store.markStreakDay` never stamped today — card.js:903 is not being mirrored');
+    assert.ok(streakDays > 0, 'the goal was met but `store.markStreakDay` never stamped today');
     assert.ok(compared > 0, 'the streak comparison above never ran — it proves nothing');
   });
 
-  test('THE RUN RECORD: a job files the page record, the forecast point and the daily goal the flat page files', () => {
-    /* ROUND 3 (ledger-invariance). This arm was `THE GAP`, and it asserted that a job writes
-       NEITHER a `runs[]` record nor a forecast point — with messages saying, in so many words, "when
-       the job screen starts writing them, delete this arm". The job screen HAS been writing them
-       since `screens/job.js:1421` → `run.js:commitJobRun`; the arm went on passing only because
-       `runInJob` stopped at `state.js` and never reached the screen terminal. A test that pins the
-       absence of a fix, and that a real fix cannot turn red, is worse than no test: it anchors the
-       bug. `runInJob` now runs the terminal, so the claim this arm makes is the one the document
-       makes — the two routes record the SAME page — and it fails if either side stops.
-
-       G3.7 proof 11 / G9 #8 name six keys; `forecastLog` is one of them and is compared byte-for-byte
-       in the identity tests above. `runs` is compared through `runShape`, which drops only the
-       identity of the sitting (`seed`, `seedTag`, `submittedAt`) — see the note on `runShape`. */
+  test('THE RUN RECORD: the game files the page record, the forecast point and the daily goal the flat page files', () => {
     const base = CORPUS[7];
     const probe = clone(base);
     startJob(probe, { today: TODAY, now: NOW });
@@ -774,78 +643,60 @@ describe('J5c — the comparison is not vacuous, and where it still is, it says 
     const flat = clone(base);
     const flatAnswers = runFlatScreen(flat, queue, scriptFor(7));
     const job = clone(base);
-    const jobAnswers = runInJob(job, scriptFor(7), { bagAt: (n) => n % 3 === 0 });
+    const jobAnswers = runInJob(job, scriptFor(7), { bankAt: (n) => n % 3 === 0 });
     assert.deepEqual(jobAnswers.map((a) => a.id), flatAnswers.map((a) => a.id), 'the two arms answered different items');
 
     // both routes write exactly one record for the page they closed
     assert.equal((flat.runs ?? []).length, (base.runs ?? []).length + 1, 'the flat path wrote no run record');
     assert.equal((job.runs ?? []).length, (base.runs ?? []).length + 1,
-      'a job wrote no runs[] record — screens/job.js:1421 → run.js:commitJobRun is the writer');
-    assert.equal(job.runs.at(-1).kind, 'page', 'a job IS Today\'s Page, and its record says so');
+      'the game wrote no runs[] record — screens/job.js → run.js commitJobRun is the writer');
+    assert.equal(job.runs.at(-1).kind, 'page', 'a session IS Today\'s Page, and its record says so');
     assert.equal(job.runs.at(-1).status, 'done');
 
     // …and the two records describe the same study, item for item
     assert.deepEqual(runShape(job.runs.at(-1)), runShape(flat.runs.at(-1)),
-      'the job and the flat page recorded different study for the same answers');
-    /* every ANSWER is in the record, not only the targets the page was drafted with: a missed
+      'the game and the flat page recorded different study for the same answers');
+    /* every ANSWER is in the record, not only the questions the page was composed with: a missed
        review requeues a Rematch onto the queue mid-page, which is why `jobQueue` is re-read on every
-       beat (screens/job.js:430) instead of being held from the draft. */
+       beat instead of being held from the start. */
     assert.equal(job.runs.at(-1).items.length, jobAnswers.length,
-      'the record dropped targets — jobQueue must be the queue as it stood at the END of the job');
-    assert.ok(jobAnswers.length >= queue.length, 'the play answered fewer targets than the draft held');
+      'the record dropped questions — jobQueue must be the queue as it stood at the END');
+    assert.ok(jobAnswers.length >= queue.length, 'the play answered fewer questions than the page held');
     assert.ok(job.runs.at(-1).xp > 0 && job.runs.at(-1).items.length > 0,
       'the record is empty, so comparing it proves nothing');
 
     /* The three fields `runShape` drops are the identity of the SITTING, and they are checked here
-       rather than waived: the job's record carries `composePage`'s own seed for the page it closed
+       rather than waived: the game's record carries `composePage`'s own seed for the page it closed
        (`commitJobRun` reads it off the before-snapshot, because `finishPage` has already cleared
        `inProgress` by then), while the flat arm's page is the harness's own `seed: 1`. */
-    assert.equal(job.runs.at(-1).seed, probe.inProgress.seed, 'the job\'s record lost the page seed');
-    assert.equal(job.runs.at(-1).seedTag, probe.inProgress.seedTag, 'the job\'s record lost the page seedTag');
+    assert.equal(job.runs.at(-1).seed, probe.inProgress.seed, 'the game\'s record lost the page seed');
+    assert.equal(job.runs.at(-1).seedTag, probe.inProgress.seedTag, 'the game\'s record lost the page seedTag');
     assert.equal(job.runs.at(-1).startedAt, flat.runs.at(-1).startedAt, 'both pages started at NOW');
 
-    /* VERIFY r1 — and so is the SIZE `runShape` drops, measured against `composePage` itself rather
-       than against the row. The old arm compared the job's row to a flat arm handed the job's own
-       draft, so "the two routes record the same page" could not fail; it is false, and the row now
-       says by how much. */
-    const deal = composedCountOf(probe.inProgress);   // `composePage`'s own tally for the page the job drafted out of
+    /* THE WHOLE PAGE, and no subset of it. The board that drafted 3 of 5 contracts is cut
+       (notes/DEMOLISH.md): the game runs `composePage`'s queue, so the row it writes covers the same
+       page the flat row covers, and the `drafted` / `composed` / `partial` provenance the draft
+       needed is gone with it. */
+    const deal = composedCountOf(probe.inProgress);
     const rec = job.runs.at(-1);
-    /* VERIFY r2 (ledger-invariance) — THIS PIN USED TO READ `rec.drafted === rec.items.length`, and
-       that is the defect it was supposed to guard, restated as an assertion. `items` is one entry per
-       ANSWER (`page.requeueReview` splices a second copy of every missed review into the queue, and
-       `scriptFor(7)` misses), while `composed` counts DISTINCT items. Comparing the two put `partial`
-       on two different units and moved it the wrong way — the more the student missed, the more of
-       the page the row claimed. `drafted` is now counted in `composed`'s unit, so it is asserted in
-       that unit: the distinct items the row recorded, never more than the answers, never more than
-       the page. */
     const distinctAnswered = new Set(rec.items.map((it) => it.id)).size;
-    assert.equal(rec.drafted, distinctAnswered,
-      '`drafted` must be the DISTINCT items the row covers, not the number of answers');
-    assert.ok(rec.items.length >= rec.drafted,
-      'a re-answered review must add an answer without adding coverage');
-    assert.ok(jobAnswers.length > queue.length,
-      'this script re-answered nothing, so the two units cannot be told apart here');
-    assert.equal(rec.composed, deal, '`composed` must be `composePage`\'s own count for this page');
-    assert.equal(rec.partial, rec.drafted < deal, '`partial` must be the comparison, not a policy');
-    assert.ok(rec.drafted <= deal,
-      `a row may never claim more of the page than the page holds (${rec.drafted} of ${deal})`);
-    assert.ok(rec.drafted < deal,
-      `this corpus save must draft a strict subset or the arm proves nothing (${rec.drafted} of ${deal})`);
+    assert.equal(distinctAnswered, deal,
+      `the game must answer the whole composed page (${distinctAnswered} of ${deal})`);
+    assert.equal(Object.hasOwn(rec, 'partial'), false,
+      'a row carries no size provenance any more — there is no draft to be partial of');
     assert.equal(Object.hasOwn(flat.runs.at(-1), 'partial'), false,
       'a flat page row carries no size provenance — the study route is untouched');
 
     // the forecast point and the daily goal, the other two writes of the same terminal
-    assert.ok((job.forecastLog ?? []).length > (base.forecastLog ?? []).length, 'a job logged no forecast point');
+    assert.ok((job.forecastLog ?? []).length > (base.forecastLog ?? []).length, 'the game logged no forecast point');
     assert.deepEqual(job.forecastLog, flat.forecastLog, 'the two routes logged different forecasts');
     assert.deepEqual(job.daily, flat.daily, '`checkDailyGoal` ran on one route and not the other');
-    assert.ok(job.game?.log?.length > 0, 'the job also records itself in `game.log`, which is Ledger B');
 
-    /* THE CONTROL, and the half of the old arm that was always true: `js/job/*` writes none of this.
-       Play the same job with the screen terminal switched off and the record is not there — which is
-       what keeps "Ledger A is not reachable from js/job/*" a claim about the game layer rather than
-       an accident of where this harness stops. */
+    /* THE CONTROL: `js/job/*` writes none of this. Play the same session with the screen terminal
+       switched off and the record is not there — which is what keeps "Ledger A is not reachable from
+       js/job/*" a claim about the game layer rather than an accident of where this harness stops. */
     const bare = clone(base);
-    runInJob(bare, scriptFor(7), { bagAt: (n) => n % 3 === 0, terminal: false });
+    runInJob(bare, scriptFor(7), { bankAt: (n) => n % 3 === 0, terminal: false });
     assert.equal((bare.runs ?? []).length, (base.runs ?? []).length,
       'js/job/* wrote a runs[] record — Ledger A must come from the screen, through guardSave');
     assert.equal((bare.forecastLog ?? []).length, (base.forecastLog ?? []).length,
@@ -853,29 +704,17 @@ describe('J5c — the comparison is not vacuous, and where it still is, it says 
 
     // and the study keys agree, which is the rest of the proof
     for (const k of COMPARED) {
-      assert.deepEqual(job[k], flat[k], `${k} differs between the job and the full flat path`);
+      assert.deepEqual(job[k], flat[k], `${k} differs between the game and the full flat path`);
     }
   });
 
   /**
-   * THE TROPHIES (round 2 as THE TROPHY GAP; rewritten round 3).
-   *
-   * Round 2 established the mechanism: trophies are driven by the run summary, so a route that
-   * writes no run record cannot earn a run trophy the identical flat play earns. It then asserted
-   * the LOSS — `assert.equal(jobT.includes('flawless-page'), false)` — with a message saying to
-   * delete the arm when the job screen started writing its record. The screen has been writing it
-   * since `commitJobRun` landed; the arm passed anyway because `runInJob` never reached the
-   * terminal. Now it does, so this asserts the invariance itself: **a job loses nothing.**
-   *
-   * The two directions are not symmetric and must not be asserted as if they were. A job may earn
-   * MORE than the flat page (`chain-8` reads `player.records.bestChain`; the crew and guard trophies
-   * read `save.game` — Ledger B, which the flat page does not write). Every extra is still proved to
-   * come from Ledger B by transplant, exactly as in round 2, so "the job earns more" can never
-   * quietly become "the job earns something the study layer should have paid for".
+   * THE TROPHIES. Trophies are driven by the run summary, so a route that writes no run record
+   * cannot earn a run trophy the identical flat play earns. **A session loses nothing** — and since
+   * the draft is cut, it runs the whole page, so `flawless-page` follows the page on both routes.
    */
-  test('THE TROPHIES: an all-clean job earns everything the identical flat play earns, and loses nothing', () => {
+  test('THE TROPHIES: an all-clean session earns everything the identical flat play earns, and loses nothing', () => {
     const allClean = () => CLEAN;
-    const gainedAnywhere = [];
     let checked = 0;
     for (let i = 0; i < 4; i++) {
       const base = CORPUS[i];
@@ -887,50 +726,32 @@ describe('J5c — the comparison is not vacuous, and where it still is, it says 
       const flat = clone(base);
       runFlatScreen(flat, queue, allClean);
       const job = clone(base);
-      runInJob(job, allClean, { bagAt: () => false });
+      runInJob(job, allClean, { bankAt: () => false });
 
       const flatT = trophyCheck(flat).sort();
       const jobT = trophyCheck(job).sort();
       const lost = flatT.filter((id) => !jobT.includes(id));
       const gained = jobT.filter((id) => !flatT.includes(id));
 
-      /* ── CORRECTED AT VERIFY r1 (ledger-invariance) ───────────────────────────────────────────
-         This arm asserted that the job earns `flawless-page` too, with the flat control handed the
-         JOB's drafted queue — so "the identical flat play" was the job's own 45 % of the page, and
-         the whole-page trophy was being compared against something that was not a whole page. The
-         drafted/composed gap is measured here instead of assumed, and the trophy follows the page:
-         a job that deals the whole page earns it (pinned in tests/run-lane-r2.test.mjs), and one
-         that deals part of it does not. Every OTHER trophy the flat play earns is still asserted
-         to be earned by the job — that is the invariance G7 publishes, and it is unweakened. */
-      const deal = composedCountOf(probe.inProgress);   // `composePage`'s own tally for the page the job drafted out of
-      const rec = job.runs.at(-1);
       assert.ok(flatT.includes('flawless-page'),
         `save ${i}: the all-clean FLAT page did not earn flawless-page — the control is broken, not the game`);
-      assert.equal(rec.partial, rec.drafted < deal,
-        `save ${i}: the row's own size claim is not the measured comparison`);
-      assert.equal(jobT.includes('flawless-page'), !rec.partial,
-        `save ${i}: the job dealt ${rec.drafted} of the page's ${deal} items and the whole-page trophy `
-        + `did not follow the page (earned: ${jobT.includes('flawless-page')})`);
-      const lostBeyondSize = lost.filter((id) => id !== 'flawless-page' || !rec.partial);
-      assert.deepEqual(lostBeyondSize, [],
-        `save ${i}: a job LOST ${lostBeyondSize.map((id) => `${id} (${trophyById[id]?.group})`).join(', ')} — `
-        + 'G7 publishes "Streak, trophies, XP, levels | unchanged"');
+      assert.ok(jobT.includes('flawless-page'),
+        `save ${i}: the all-clean session did not earn flawless-page — it answered the same whole page`);
+      assert.deepEqual(lost, [],
+        `save ${i}: a session LOST ${lost.map((id) => `${id} (${trophyById[id]?.group})`).join(', ')} — `
+        + 'trophies are published unchanged');
 
       /* `save.trophies` is the AWARDED set — written by `trophies.install`'s listener in the app and
-         by `trophyEvaluate` at the same beats in both arms here. `check()` above is the predicate;
-         this is the ledger key, and G3.7 proof 11 compares ledger keys. */
+         by `trophyEvaluate` at the same beats in both arms here. */
       const flatAwarded = Object.keys(flat.trophies ?? {}).sort();
       const jobAwarded = Object.keys(job.trophies ?? {}).sort();
       assert.ok(flatAwarded.length > 0, `save ${i}: nothing was awarded at all — the comparison is vacuous`);
-      /* the same size exception as above, and only it: a partial page may not hold the whole-page
-         trophy in the AWARDED set either, for the same measured reason (verify r1) */
-      const missing = flatAwarded.filter((id) => !jobAwarded.includes(id))
-        .filter((id) => id !== 'flawless-page' || !rec.partial);
+      const missing = flatAwarded.filter((id) => !jobAwarded.includes(id));
       assert.deepEqual(missing, [],
-        `save ${i}: the job's save is missing an awarded trophy the flat save holds`);
+        `save ${i}: the session's save is missing an awarded trophy the flat save holds`);
 
-      /* Anything the job earned and the flat page did not is proved to come from LEDGER B by
-         transplant — give the flat arm the job's `game` + `player` and the trophy must appear.
+      /* Anything the session earned and the flat page did not is proved to come from LEDGER B by
+         transplant — give the flat arm the session's `game` + `player` and the trophy must appear.
          Neither key is in `LEDGER_A_KEYS`, which is what makes the transplant legitimate. */
       for (const k of ['game', 'player']) {
         assert.equal(LEDGER_A_KEYS.includes(k), false, `${k} is Ledger A — this transplant would beg the question`);
@@ -938,14 +759,111 @@ describe('J5c — the comparison is not vacuous, and where it still is, it says 
       const flatWithLedgerB = trophyCheck({ ...flat, game: job.game, player: job.player });
       for (const id of gained) {
         assert.ok(flatWithLedgerB.includes(id),
-          `save ${i}: the job earned ${id} (${trophyById[id]?.group}) and Ledger B does NOT explain it`);
+          `save ${i}: the session earned ${id} (${trophyById[id]?.group}) and Ledger B does NOT explain it`);
       }
-      gainedAnywhere.push(...gained);
       checked++;
     }
     assert.equal(checked, 4, 'four corpus saves, each played twice');
-    // …and the game layer really does pay trophies of its own, so the `gained` half is not vacuous
-    assert.ok(gainedAnywhere.length > 0,
-      'no corpus save earned a game-layer trophy inside a job — the `gained` half of this comparison is vacuous');
+  });
+});
+
+/* ==========================================================================================
+   THE SWITCH IS A DOOR — `settings.game = false` is byte-identical COMPOSED
+
+   CUT-BRIEF puts this sentence inside "The Law of Two Ledgers", two lines under the one this file is
+   named for, so it is proved here.
+
+   ROUND 1 (study-untouched). The test that carried this claim — `cut-integrate.test.mjs`'s
+   `'settings.game = false is byte-identical COMPOSED'` — called `composePage` zero times, `buildRun`
+   zero times and touched no routing: it checked a migration, `plan.nextActionFor`, and a source grep.
+   Three surfaces decide what a student is actually asked, and it checked none of them. A test whose
+   NAME is a promise has to fail when the promise is broken, so the three surfaces are driven below,
+   differentially: the same save, the flag on and the flag off, output compared byte for byte.
+
+   Differential rather than a pinned snapshot on purpose. A committed snapshot of one commit's output
+   asserts the composer never changes — which it may, legitimately, for reasons that have nothing to
+   do with the game — and it rots the day it does. What CUT-BRIEF actually promises is narrower and
+   permanent: THE FLAG CHANGES NOTHING. That is what is asserted.
+   ========================================================================================== */
+
+import { buildRun, RUN_KINDS } from '../site/js/screens/run.js';
+import { ROUTE_PATTERNS } from '../site/js/app.js';
+import { startPage, composePage as compose } from '../site/js/page.js';
+import { listFiles, read as readRepo, stripCommentsAndStrings } from './_helpers.mjs';
+
+/** The same save, twice, differing only in the one flag. */
+const bothWays = (save) => [
+  { ...clone(save), settings: { ...clone(save.settings), game: true } },
+  { ...clone(save), settings: { ...clone(save.settings), game: false } },
+];
+
+describe('the switch is a door: settings.game = false is byte-identical COMPOSED', () => {
+  test('the COMPOSER: the same page, item for item, with the game on and off', () => {
+    let checked = 0;
+    for (const [i, base] of CORPUS.entries()) {
+      const [on, off] = bothWays(base);
+      const a = compose(on, { now: NOW, today: TODAY });
+      const b = compose(off, { now: NOW, today: TODAY });
+      assert.equal(JSON.stringify(b), JSON.stringify(a), `save ${i}: the flag changed what is studied`);
+      /* …and composing left the two saves identical too, the flag itself aside: no flag-shaped side
+         effect on Ledger A, on `inProgress`, or on the page counters the composer reads next time. */
+      const bare = (s) => JSON.stringify({ ...s, settings: { ...s.settings, game: null } });
+      assert.equal(bare(off), bare(on), `save ${i}: composing diverged the two saves`);
+      assert.ok(a.queue.length > 0, `save ${i}: an empty page proves nothing`);
+      checked++;
+    }
+    assert.equal(checked, CORPUS.length);
+  });
+
+  test('the QUEUE ON DISK: `startPage` writes the same `inProgress` either way', () => {
+    for (const [i, base] of CORPUS.entries()) {
+      const [on, off] = bothWays(base);
+      startPage(on, { now: NOW, today: TODAY });
+      startPage(off, { now: NOW, today: TODAY });
+      assert.equal(JSON.stringify(off.inProgress), JSON.stringify(on.inProgress),
+        `save ${i}: the flag changed the queue that was written to the disk`);
+    }
+  });
+
+  test('the DRILL, and every other run the app can build', () => {
+    /* `buildRun` is the other place items are chosen — Drill 5, the Daily, the Missed loop, the
+       Upgrade run. `RUN_KINDS` is run.js's own list, so a new kind is covered the day it is added. */
+    assert.ok(RUN_KINDS.includes('drill') && RUN_KINDS.includes('page'), `RUN_KINDS is ${RUN_KINDS}`);
+    let built = 0;
+    for (const [i, base] of CORPUS.entries()) {
+      const [on, off] = bothWays(base);
+      for (const kind of RUN_KINDS) {
+        const a = buildRun(kind, on, { now: NOW, today: TODAY });
+        const b = buildRun(kind, off, { now: NOW, today: TODAY });
+        assert.equal(JSON.stringify(b), JSON.stringify(a), `save ${i}: \`${kind}\` differs with the flag`);
+        if (a && a.items && a.items.length) built++;
+      }
+    }
+    assert.ok(built > 0, 'every run built empty — this test would pass on a broken builder');
+  });
+
+  test('the ROUTER: thirteen patterns, and the game is not a fourteenth', () => {
+    assert.equal(ROUTE_PATTERNS.length, 13, 'the game layer added a route');
+    assert.equal(ROUTE_PATTERNS.filter((p) => String(p).includes('job')).length, 0,
+      '`job` is a route pattern — the game is supposed to be the run screen with a different top strip');
+  });
+
+  test('and only the door itself reads the flag — no study module does', () => {
+    /* The door is the switch, the plan that offers the session, Home's button and the mount that
+       refuses. NOTHING that decides what is asked may read it, and this is the assertion that keeps
+       the two differential tests above from quietly becoming true for the wrong reason. */
+    const DOORS = ['js/store.js', 'js/plan.js', 'js/screens/job.js', 'js/screens/home.js', 'js/screens/settings.js'];
+    const readers = [];
+    for (const abs of listFiles('site/js')) {
+      const rel = abs.slice(abs.indexOf('site/js/') + 'site/'.length);
+      const code = stripCommentsAndStrings(readRepo(`site/${rel}`));
+      if (/settings\s*\.\s*game\b|\bgameOn\b|\bgameIsOn\b/.test(code)) readers.push(rel);
+    }
+    assert.deepEqual(readers.sort(), [...DOORS].sort(),
+      'a module outside the door now reads settings.game');
+    for (const quiet of ['js/page.js', 'js/screens/run.js', 'js/screens/card.js', 'js/xp.js',
+      'js/mastery.js', 'js/schedule.js', 'js/readiness.js', 'js/rarity.js']) {
+      assert.equal(readers.includes(quiet), false, `${quiet} reads the game flag`);
+    }
   });
 });

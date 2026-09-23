@@ -240,31 +240,37 @@ function renderHeader() {
 export function setHeader(patch) { Object.assign(hdr, patch); renderHeader(); }
 export const getHeader = () => ({ ...hdr });
 
-/* ---------------- the job header (COMPOSED-GAME G7 "Extended", G10 #22) ---------------- */
+/* ---------------- the game header ---------------- */
 /**
- * During a job four status read-outs are hidden and three stake read-outs take their place:
- * **five items during a job, six outside one**, pinned by `data/job.js HEADER` and asserted by
- * `tests/job-screen.test.mjs`. The ids are literals here on purpose — the shell must not pull the
- * 800-line game data table onto the cold-open path (S9 #1), so the test compares the two lists
- * instead of importing one into the other.
+ * **DURING A GAME SESSION THE SHELL PRINTS NO NUMBER AT ALL.**
+ *
+ * CUT-BRIEF's first hard limit: *"at most three numbers on screen at once during play: the pile, the
+ * streak multiplier, and what the current question pays. Nothing else numeric."* Those three live in
+ * the screen's own strip (`screens/job.js`). The header is on screen during play, so every read-out
+ * in it steps aside and NOTHING takes their place. (The header used to add `loose` / `bag` /
+ * `chain` beside them; all three are cut.)
+ *
+ * `notes/DEMOLISH.md` §6.5 left one decision open — whether the limit reaches the app shell — and
+ * this is the decision. It has to be yes: `hdr-readiness` prints `57` and `hdr-tminus` prints `T−3`,
+ * so keeping "just those two" would put FIVE numbers on a phone screen that is allowed three.
+ * `hdr-tminus` goes with them rather than being special-cased on the day it happens to read
+ * "TEST DAY": one rule, no state in which the shell prints a number during a session.
  */
-export const HDR_JOB_HIDE = Object.freeze(['hdr-level', 'hdr-streak', 'hdr-xp', 'hdr-combo']);
-export const HDR_JOB_ADD = Object.freeze(['hdr-loose', 'hdr-bag', 'hdr-chain']);
-export const HDR_JOB_KEEP = Object.freeze(['hdr-readiness', 'hdr-tminus']);
-const HDR_ALL = Object.freeze([...HDR_JOB_KEEP, ...HDR_JOB_HIDE, ...HDR_JOB_ADD]);
-const HDR_STAKE_LABEL = { 'hdr-loose': 'loose', 'hdr-bag': 'bag', 'hdr-chain': 'chain' };
+export const HDR_JOB_HIDE = Object.freeze(['hdr-readiness', 'hdr-tminus', 'hdr-level', 'hdr-streak', 'hdr-xp', 'hdr-combo']);
+/** Nothing survives into a session — the strip is the only place a number may appear. */
+export const HDR_JOB_KEEP = Object.freeze([]);
+const HDR_ALL = Object.freeze([...HDR_JOB_KEEP, ...HDR_JOB_HIDE]);
 
-const job = { on: false, loose: 0, bagged: 0, chain: 0, drop: false };
+const job = { on: false };
 
-/** `setJobHeader({loose, bagged, chain})` swaps the header into job mode; `null` swaps it back. */
+/** `setJobHeader(true)` swaps the header into game mode; `null` swaps it back. */
 export function setJobHeader(patch) {
-  if (patch == null) { job.on = false; job.drop = false; }
-  else Object.assign(job, { on: true }, patch);
+  job.on = patch != null && patch !== false;
   renderHeader();
 }
 export const getJobHeader = () => ({ ...job });
 
-/** The header items that are actually on screen right now — 6 outside a job, 5 during one. */
+/** The header items that are actually on screen right now — 6 outside a session, 2 during one. */
 export function headerItems() {
   if (typeof document === 'undefined') return [];
   return HDR_ALL.filter((id) => { const el = $(id); return !!el && !el.hidden; });
@@ -272,27 +278,9 @@ export function headerItems() {
 
 function renderJobHeader() {
   if (typeof document === 'undefined') return;
-  const right = document.querySelector('.hdr-right');
   const bar = document.querySelector('.hdr');
-  if (!right) return;
   if (bar) { if (job.on) bar.dataset.job = 'true'; else delete bar.dataset.job; }
   for (const id of HDR_JOB_HIDE) { const el = $(id); if (el) el.hidden = job.on; }
-  const value = { 'hdr-loose': Math.round(job.loose), 'hdr-bag': Math.round(job.bagged), 'hdr-chain': job.chain };
-  for (const id of HDR_JOB_ADD) {
-    let el = $(id);
-    if (!job.on) { el?.remove(); continue; }
-    if (!el) {
-      el = h(`span#${id}.hdr-stake`, { role: 'img' },
-        h('span.hdr-stake-k', HDR_STAKE_LABEL[id]), h('span.hdr-stake-v', '0'));
-      right.insertBefore(el, $('theme-toggle'));
-    }
-    el.querySelector('.hdr-stake-v').textContent = String(value[id]);
-    el.setAttribute('aria-label', `${HDR_STAKE_LABEL[id]} ${value[id]}`);
-  }
-  // G6 ANIMATION.bagDrop — 600 ms, in place in the header column, once per job (J6b owns the
-  // debrief's choreography; this is the hook it drives).
-  const bag = $('hdr-bag');
-  if (bag) { if (job.drop) bag.dataset.drop = 'true'; else delete bag.dataset.drop; }
 }
 
 function syncHeaderFromState(s) {
@@ -402,12 +390,7 @@ function route() {
  * whose href resolves to the URL the browser is already at fires NO `hashchange` — so every
  * "again" control in the app was inert, because each one is rendered by the screen it points at:
  *
- *   · `screens/run.js` debrief · `Another board` → `#/run/job`, rendered at `#/run/job`
- *     (COMPOSED-GAME.md:786 publishes it: *"the debrief's primary button is `Home`, and `Another
- *     board` is the secondary"*). Measured in chromium on `qa/fixtures/audit/midweek.json`: press
- *     it and `phase` is still `debrief`, `.job-contracts` absent, `.job-primary` absent — while a
- *     manual reload of the identical URL posts a board, so the ROUTE was always right.
- *   · `Another page` → `#/run/page`, rendered at `#/run/page`, on the flat path.
+ *   · the Page Summary's `Another page` → `#/run/page`, rendered at `#/run/page`.
  *   · `againLabel(kind)` → `#/run/:kind/:id`, rendered at `#/run/:kind/:id`.
  *
  * `screens/onboard.js:624` already carried the workaround in a comment — *"`&intro=1` only makes
@@ -415,16 +398,25 @@ function route() {
  * for every screen instead of per link: the anchor is the control the student sees, so the router
  * listens to the ACTIVATION as well as to the hash. Nothing else changes — a link to a different
  * hash is left entirely to the browser (the `hashchange` above routes it, one history entry, back
- * button intact), and a same-route press adds no history entry at all, which is what re-posting a
- * board should do.
+ * button intact), and a same-route press adds no history entry at all, which is what running the
+ * same thing again should do.
  *
  * Deliberately narrow, so this can never eat a click that means something else: primary button, no
  * modifier, not already handled by a screen (`defaultPrevented`), no `target`/`download`, an
  * in-page `#…` href only, and only when it resolves to the WHOLE current URL — query string
- * included, so `#/run/job?new=1` still goes through the hash the ordinary way.
- * Measured by `tests/_run-again.mjs`, asserted by `tests/run-lane-v3.test.mjs` §3.
+ * included, so `#/run/page?seed=x` still goes through the hash the ordinary way.
  */
 export function sameRouteClick(ev) {
+  /* GATED ON THE FLAG (round-3 integration). CUT-BRIEF: "settings.game = false returns the app to
+     byte-identical COMPOSED behaviour", and this handler is the game layer's — COMPOSED re-mounted
+     nothing on a same-route anchor (`screens/onboard.js` carried a per-link workaround instead).
+     The flag is read HERE and not at the install above, deliberately: a boot-time gate would leave
+     the handler out of step with `plan.pillsFor`, which reads the flag on every paint, for the whole
+     of the session in which a student flips the switch in Settings. The predicate is inlined rather
+     than imported from `plan.js` (which is `gameOn`, and is the same one line) because `plan.js` is
+     a lazy module and the shell must not pull the plan graph into its first paint — `screens/home.js`
+     inlines it for the same reason and says so. */
+  if (getState()?.settings?.game === false) return;
   if (ev.defaultPrevented || ev.button !== 0 || ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey) return;
   const t = ev.target;
   const a = t && typeof t.closest === 'function' ? t.closest('a[href]') : null;

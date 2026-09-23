@@ -193,14 +193,9 @@ list.push(def('oracle', 'runs', 'The Oracle',
 
 list.push(def('flawless-page', 'runs', 'Flawless Page',
   'Finish a whole Page with every item clean — first try, no hints.',
-  /* verify r1 (ledger-invariance), one line added by the `run` lane under BUILD-POLICY §2 — see
-     notes/repair-run.md → Requests. A JOB writes a `kind:'page'` row for the queue it DRAFTED, a
-     strict subset of the page `composePage` dealt (mean 45 % over 60 corpus saves), so seven clean
-     answers were buying the trophy twenty clean answers buy on `#/run/page`. `screens/run.js
-     commitJobRun` now stamps `partial` on the row by comparing its own `drafted` against the
-     `composed` count the page carries; a job that deals a WHOLE page is not partial and still
-     earns this. Rows written by the flat route carry no `partial` key and are unaffected. */
-  ctx => ctx.someRun(r => ctx.kindOf(r) === 'page' && r.status === 'done' && r.partial !== true
+  /* The game runs the WHOLE page now — there is no draft and no subset, so a game session's row is
+     a page's row and the `partial` gate the board needed is gone with it (notes/DEMOLISH.md). */
+  ctx => ctx.someRun(r => ctx.kindOf(r) === 'page' && r.status === 'done'
     && Array.isArray(r.items) && r.items.length > 0 && (r.flawless === true || r.items.every(ctx.isClean)))));
 
 list.push(def('mock-90', 'runs', 'Mock 90',
@@ -228,136 +223,14 @@ for (const b of bosses) {
     ctx => ctx.someRun(r => ctx.bossOf(r) === b.id && ctx.won(r) && ctx.flawless(r))));
 }
 
-/* ---- THE JOB (COMPOSED-GAME G7 "data/trophies.js": six pure predicates) ----
-   Every one of these reads `ctx.save.player` / `ctx.save.game` — the game layer's two keys — and
-   nothing else, so they stay what every predicate in this file is: a pure function of the save with no
-   clock, no DOM and no import from js/. With `settings.game = false` the two keys never move, so the
-   six tiles simply never fill and print their condition like any other unearned tile (S4).            */
+/* ---- the game ----
+   DEMOLITION (notes/DEMOLISH.md): six game trophies are gone with the mechanics they counted —
+   `crew-held` (the crew), `index-25` and `index-68` (the Fault Index), `chain-8` (the chain),
+   `calibrated` (the rating's Brier score) and `clean-getaway` (the Night Before's stamp, which paid
+   a Backcheck). designs/CUT-BRIEF.md deletes every one of them, and a trophy whose condition no
+   longer exists is a tile that can never fill. The game's own record — the best day, in points — is
+   `save.player.best`, and it is printed where it is earned.                                        */
 
-/**
- * The four wings of G3.4, repeated here rather than imported. `data/job.js` is 41 KB of constants on a
- * boot path a student with the layer off never needs — the same call `store.js` makes and for the same
- * reason (notes/J10.md §Deviations). `tests/job-index.test.mjs` asserts this map deep-equals
- * `data/job.js`'s own `WINGS`, so the two can never drift.
- */
-const GAME_WINGS = Object.freeze({
-  RECALL: Object.freeze(['VOC', 'NOTE', 'CLASS', 'ASN-PLP', 'ASN-ANG']),
-  FIGURES: Object.freeze(['PAIRS', 'FIG-ALG', 'BISECT-L', 'BISECT-Q', 'SEG-ALG']),
-  WORDS: Object.freeze(['CSARITH', 'CS-LIN', 'CS-RATIO', 'CS-QUAD']),
-  ALGEBRA: Object.freeze(['SYS', 'FAC1', 'FAC2', 'QUAD-SOLVE', 'QUAD-CTX']),
-});
-export const GAME_WING_IDS = Object.freeze(Object.keys(GAME_WINGS));
-
-/** G2 — the Fault Index is 68 entries; a tag is SEALED at 3 clean resolutions across 3 distinct days. */
-const INDEX_TAGS = 68;
-/** The `index-25` waypoint — `data/job.js` FAULT_INDEX.milestones[0]. */
-const INDEX_PART = 25;
-/** G3.1 / RATING — the `calibrated` window and its Brier bar. */
-const CALIBRATED_WINDOW = 20;
-const CALIBRATED_BRIER_MAX = 0.10;
-/** G2 — the chain caps its multiplier at 8. */
-const CHAIN_DEEP = 8;
-/** G2 `m_chain = 1 + 0.2·min(chain, 8)` — the multiplier that cap is worth. */
-const CHAIN_MULT_CAP = 2.6;
-
-/* Every number above is repeated here rather than imported, for the same reason GAME_WINGS is (below):
- * `data/job.js` is 41 KB of constants on a boot path a student with the layer off never needs.
- * `tests/job-meta-constants.test.mjs` asserts each one equals its `data/job.js` original, so the two
- * can never drift — and every sentence below INTERPOLATES them rather than restating them, so a
- * rebalance moves the prose and the predicate together or fails the suite. */
-
-const num = (x) => (Number.isFinite(x) ? x : 0);
-const gameOf = (ctx) => (ctx.save && typeof ctx.save.game === 'object' && ctx.save.game ? ctx.save.game : {});
-const playerOf = (ctx) => (ctx.save && typeof ctx.save.player === 'object' && ctx.save.player ? ctx.save.player : {});
-const recordsOf = (ctx) => { const p = playerOf(ctx); return p.records && typeof p.records === 'object' ? p.records : {}; };
-
-/** How many of the four wings hold a manned crew mark (rank 1 STEADY or 2 HELD). */
-function wingsManned(ctx) {
-  const crew = gameOf(ctx).crew;
-  if (!crew || typeof crew !== 'object') return 0;
-  let n = 0;
-  for (const id of GAME_WING_IDS) if (GAME_WINGS[id].some(make => crew[make] === 1 || crew[make] === 2)) n++;
-  return n;
-}
-
-/** How many of the 68 tags are sealed. */
-function sealedTags(ctx) {
-  const tags = gameOf(ctx).tags;
-  if (!tags || typeof tags !== 'object') return 0;
-  let n = 0;
-  for (const k of Object.keys(tags)) { const t = tags[k]; if (t && typeof t === 'object' && t.sealed === true) n++; }
-  return Math.min(INDEX_TAGS, n);
-}
-
-/** The deepest chain the save can prove: the ledger record, or the job running right now. */
-function bestChain(ctx) {
-  const rec = num(recordsOf(ctx).bestChain);
-  const live = ctx.save && ctx.save.inProgress && ctx.save.inProgress.game;
-  return Math.max(rec, live && typeof live === 'object' ? num(live.chain) : 0);
-}
-
-/**
- * The rolling Brier over the last 20 INFORMATIVE calls.
- *
- * WHAT `save.player.rating.calls` HOLDS (round-2 window fix, and this comment was wrong about it
- * until round 3). It holds the last **50 CALLS**, not the last 50 informative ones: a call whose
- * weight is under `RATING.informativeMin` still takes its slot and is stored as a **blank slot**
- * with `p: null, w: 0` (`js/job/call.js callEntry`, and the banner at `windowPush` — "This used to
- * `return list` unchanged when `w < 0.25` … Every call now takes its slot"). So the
- * `Number.isFinite(c.p)` filter below is what SELECTS the informative calls. It is load-bearing,
- * not defensive: drop it and farmed blank slots feed the `calibrated` trophy, which is the exact
- * material the informative gate exists to exclude.
- *
- * AND THE FILTER COMES FIRST. `slice(-size)` before the filter asks for the last twenty SLOTS to
- * all be informative, which is a different and far harder claim than the one this trophy publishes
- * ("over 20 informative calls") — and it disagreed with the other surface that prints this same
- * number (`screens/stats.js reliabilityBlock`, which filters first). Measured on a 50-slot window
- * that alternates a calibrated 85-call at q̂ = 0.85 with a blank on mastered material: 25
- * informative calls at a true Brier of 0.0225, which Stats printed as "at or under 0.10" while
- * this predicate returned `null` and the trophy stayed unearned for ever.
- *
- * One entry is `{p, ok, w, …}`, so the Brier term is `(p − o)²` — the same quantity
- * `credit(p, ok) = 10 − 40(p − o)²` is built on. Fewer than 20 informative calls is not a
- * calibrated student yet, so it returns null rather than a flattering mean.
- */
-function rollingBrier(ctx, size = CALIBRATED_WINDOW) {
-  const r = playerOf(ctx).rating;
-  const calls = r && Array.isArray(r.calls) ? r.calls : [];
-  const informative = calls.filter(c => c && typeof c === 'object' && Number.isFinite(c.p));
-  const win = informative.slice(-size);
-  if (win.length < size) return null;
-  let sum = 0;
-  for (const c of win) { const d = c.p - (c.ok ? 1 : 0); sum += d * d; }
-  return sum / win.length;
-}
-
-list.push(def('crew-held', 'craft', 'Crew Held',
-  'Have a crew manned in all four wings — RECALL, FIGURES, WORDS and ALGEBRA — at the same time.',
-  ctx => wingsManned(ctx) >= GAME_WING_IDS.length,
-  ctx => ({ have: wingsManned(ctx), need: GAME_WING_IDS.length })));
-
-list.push(def('index-25', 'craft', 'Twenty-five Sealed',
-  `Seal ${INDEX_PART} entries in the Fault Index. A tag seals after three clean resolutions on three different days with no re-trigger in between.`,
-  ctx => sealedTags(ctx) >= INDEX_PART,
-  ctx => ({ have: Math.min(INDEX_PART, sealedTags(ctx)), need: INDEX_PART })));
-
-list.push(def('index-68', 'craft', 'The Whole Index',
-  `Seal all ${INDEX_TAGS} entries in the Fault Index — the ${INDEX_TAGS} mistakes you no longer make.`,
-  ctx => sealedTags(ctx) >= INDEX_TAGS,
-  ctx => ({ have: sealedTags(ctx), need: INDEX_TAGS })));
-
-list.push(def('chain-8', 'runs', 'Chain of Eight',
-  `Reach a chain of ${CHAIN_DEEP} inside one job. That is where the chain multiplier caps, at ×${CHAIN_MULT_CAP}.`,
-  ctx => bestChain(ctx) >= CHAIN_DEEP,
-  ctx => ({ have: Math.min(CHAIN_DEEP, bestChain(ctx)), need: CHAIN_DEEP })));
-
-list.push(def('calibrated', 'runs', 'Calibrated',
-  `Hold a rolling Brier score of ${CALIBRATED_BRIER_MAX.toFixed(2)} or better over ${CALIBRATED_WINDOW} informative calls — your calls match how often you are actually right.`,
-  ctx => { const b = rollingBrier(ctx); return b != null && b <= CALIBRATED_BRIER_MAX; }));
-
-list.push(def('clean-getaway', 'runs', 'Clean Getaway',
-  'Finish the Night Before run on the eve of the test, the one night no board posts.',
-  ctx => recordsOf(ctx).cleanGetaway === true));
 
 /* ---- habit ---- */
 list.push(def('streak-3', 'habit', 'Three Days',

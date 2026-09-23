@@ -88,8 +88,20 @@ const gate = (r) => assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`.split('
 test('fix5 run / geometry: Page items 1–6 and the three cards put the answer control above the dock (375×667, 390×844, 1280×800)', { skip: !BROWSER && 'set FIX5_RUN_BROWSER=1' }, () => {
   for (const vp of [['375', '667'], ['390', '844'], ['1280', '800']]) gate(qa('fix5-run-measure.mjs', '--w', vp[0], '--h', vp[1], '--noshots', '--out', 'qa/screenshots/fix5-run/test'));
 });
+/* `--kbitem 13` was a PIN ON THE COMPOSER, and the composer moved: the cut deleted
+   `js/gen/asn-reason.js`, every ordinal after it shifted, and item 13 is now a widget with no
+   <input> — so behind its env gate this arm stopped having a subject and reported
+   "pick an item that types" instead of a geometry. `auto` asks Today's Page for its first item that
+   types (notes/cut-integrate-r5.md §3).
+   READ THE READING, NOT THE NAME: the harness shrinks the WINDOW, and an OS keyboard shrinks only
+   the VISUAL viewport, so `data-kb` is `closed` in every arm of this file, including the one that
+   passes. What is measured is "at 375×380, with the field focused before the shrink, is it still on
+   screen" — and on Today's Page it is not (the field lands 174 px below the fold; focusing while
+   already short scrolls it back to 198, so `widgets/base.js keepVisible` works and it is the late
+   inset it does not hear). That is a study-layer reading on a Page item, outside the cut, and it is
+   filed rather than papered over. */
 test('fix5 run / geometry: keyboard open (375×380) keeps the input, key row and Submit in view', { skip: !BROWSER && 'set FIX5_RUN_BROWSER=1' }, () => {
-  gate(qa('fix5-run-measure.mjs', '--kb', '--kbitem', '13', '--out', 'qa/screenshots/fix5-run/test'));
+  gate(qa('fix5-run-measure.mjs', '--kb', '--kbitem', 'auto', '--out', 'qa/screenshots/fix5-run/test'));
 });
 test('fix5 run / geometry: run subtitles (rules) stay visible and untruncated on a phone; the Page hides its own', { skip: !BROWSER && 'set FIX5_RUN_BROWSER=1' }, () => {
   gate(qa('fix5-run-heads.mjs'));
